@@ -1,0 +1,263 @@
+// The contract between the hangar core and a plugin.
+//
+// Everything a person can ask for is a plugin. A plugin DECLARES what it
+// offers (Describe) and ACTS when the core asks it to (Configure, Plan,
+// Create, Delete, Act, Reconcile). It never calls the core, it never sees
+// another plugin's credential, and it never decides who may ask: identity,
+// tiers, limits, the registry and the audit belong to the core.
+//
+// Values that are JSON documents travel as bytes holding JSON (UTF-8): specs,
+// params, observed state, schemas. A JSON number stays a number that way,
+// which a google.protobuf.Struct would turn into a double.
+//
+// Four rules a plugin must keep (ARCHITECTURE.md, "The plugin contract"):
+//
+//  1. Create, Delete and Act are IDEMPOTENT on the resource id. The core may
+//     call them again after a crash, with the same resource and the same
+//     params, and must get the same outcome — the plugin finds the engine
+//     object it already made (by the id it wrote on it) instead of making a
+//     second one. Delete of something already gone succeeds.
+//  2. Plan has no side effects. The core calls it to learn what a request
+//     would hold before it admits the request.
+//  3. An action's params are absolute ("memory 8"), never relative
+//     ("memory +2"), so that rule 1 holds for actions too.
+//  4. Refusals are gRPC statuses: INVALID_ARGUMENT for a request that can
+//     never succeed as written, FAILED_PRECONDITION for one the engine refuses
+//     in its present state, UNAVAILABLE when the engine cannot be reached (the
+//     core retries). Anything else is a failure.
+syntax = "proto3";
+
+package hangar.plugin.v1;
+
+option go_package = "github.com/tomblancdev/hangar/sdk/pluginpb";
+
+service PluginService {
+  // What the plugin offers. Called once, before anything else.
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+  // The zones the operator enabled it on, each with THIS plugin's credential
+  // for that zone. The plugin opens its driver per zone and reports what the
+  // driver can do.
+  rpc Configure(ConfigureRequest) returns (ConfigureResponse);
+  // What a create or an action would hold, without doing it.
+  rpc Plan(PlanRequest) returns (PlanResponse);
+  rpc Create(CreateRequest) returns (CreateResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc Act(ActRequest) returns (ActResponse);
+  // Desired (the registry) against actual (the engine): repaired or reported.
+  rpc Reconcile(ReconcileRequest) returns (ReconcileResponse);
+}
+
+// ---- Describe ---------------------------------------------------------------
+
+message DescribeRequest {
+  // The protocol the core speaks; a plugin that cannot speak it says so.
+  uint32 protocol = 1;
+}
+
+message DescribeResponse {
+  // The plugin's own name. The operator's config enables it under this name,
+  // and every dimension it declares is spelled "<name>.<something>".
+  string name = 1;
+  string version = 2;
+  repeated ResourceType types = 3;
+  repeated Dimension dimensions = 4;
+  // Capability flags every zone must have for the plugin to be enabled there.
+  repeated string requires = 5;
+  // The one secret it needs per zone. A description only: the value arrives
+  // in Configure, and only this plugin's.
+  Credential credential = 6;
+  // The names of the events it may emit (written to the audit).
+  repeated string events = 7;
+}
+
+message ResourceType {
+  // "machine". Unique across every plugin a core runs.
+  string name = 1;
+  // "m": the ids of this type read m-0123456789abcdef0. Unique across plugins.
+  string id_prefix = 2;
+  string title = 3;
+  string description = 4;
+  // A JSON Schema (draft 2020-12) of the spec. The core validates every
+  // request against it before the plugin sees one, and the command line and
+  // the console draw their flags and forms from it.
+  bytes schema = 5;
+  // Beyond create and delete, which every type has.
+  repeated Action actions = 6;
+  // Capability flags this type needs on a zone (on top of the plugin's).
+  repeated string requires = 7;
+}
+
+message Action {
+  string name = 1;
+  string description = 2;
+  // A JSON Schema of its params; empty = it takes none.
+  bytes params_schema = 3;
+  // true = it can change what the resource holds (a resize): the core calls
+  // Plan first and admits the difference against the owner's limits.
+  bool changes_usage = 4;
+  // Capability flags it needs on the zone; where they are missing the action
+  // is not offered there.
+  repeated string requires = 5;
+}
+
+enum DimensionKind {
+  DIMENSION_KIND_UNSPECIFIED = 0;
+  // An amount summed over the owner's resources: a count, vCPU, GB.
+  DIMENSION_KIND_QUANTITY = 1;
+  // A value picked from a set the tier allows: a kind, a class, an image.
+  DIMENSION_KIND_CHOICE = 2;
+}
+
+message Dimension {
+  // "<plugin>.<name>", e.g. "machines.memory_gb".
+  string name = 1;
+  DimensionKind kind = 2;
+  // "GB", "vCPU"; empty for a count or a choice.
+  string unit = 3;
+  string description = 4;
+}
+
+message Credential {
+  bool required = 1;
+  // What it is and the least it must be allowed to do, for the operator.
+  string description = 2;
+}
+
+// ---- Configure --------------------------------------------------------------
+
+message ConfigureRequest {
+  repeated ZoneConfig zones = 1;
+  // The plugin's own settings from the operator's config (JSON object).
+  bytes settings = 2;
+}
+
+message ZoneConfig {
+  string name = 1;
+  // The engine driver's name ("fake", "proxmox", …) and how to reach it.
+  string driver = 2;
+  string endpoint = 3;
+  map<string, string> options = 4;
+  // THIS plugin's credential for THIS zone. Never another plugin's.
+  bytes credential = 5;
+}
+
+message ConfigureResponse {
+  repeated ZoneReport zones = 1;
+}
+
+message ZoneReport {
+  string name = 1;
+  // What the driver it opened for this zone can do (capability flags).
+  repeated string capabilities = 2;
+  // Why the zone could not be opened; the core disables the plugin there.
+  string error = 3;
+}
+
+// ---- The resources ----------------------------------------------------------
+
+message Resource {
+  string id = 1;
+  string type = 2;
+  string zone = 3;
+  // The owner's subject, as the identity provider names them.
+  string owner = 4;
+  // Desired (JSON).
+  bytes spec = 5;
+  // Last observed (JSON), as the plugin last reported it.
+  bytes observed = 6;
+  map<string, string> tags = 7;
+}
+
+message PlanRequest {
+  string type = 1;
+  string zone = 2;
+  // Empty for a create; otherwise the action's name.
+  string action = 3;
+  // A create's spec, already valid against the type's schema.
+  bytes spec = 4;
+  // An action's params, already valid against its params schema.
+  bytes params = 5;
+  // For an action: the resource as the registry holds it.
+  Resource current = 6;
+}
+
+message PlanResponse {
+  // The desired spec once the request is done, defaults applied.
+  bytes spec = 1;
+  // Every QUANTITY dimension this resource would hold, whole (not a delta).
+  map<string, int64> usage = 2;
+  // Every CHOICE dimension this resource would pick.
+  map<string, string> choices = 3;
+  // Why the plugin refuses the request; empty = it does not.
+  repeated Refusal refusals = 4;
+}
+
+message Refusal {
+  // A JSON pointer into the spec or params ("/memory_gb"); empty = the whole.
+  string field = 1;
+  string reason = 2;
+}
+
+message CreateRequest {
+  // The id is minted by the core before the call: write it on the engine
+  // object, and find it again by it (rule 1).
+  Resource resource = 1;
+}
+
+message CreateResponse {
+  bytes observed = 1;
+  repeated Event events = 2;
+}
+
+message DeleteRequest {
+  Resource resource = 1;
+}
+
+message DeleteResponse {
+  repeated Event events = 1;
+}
+
+message ActRequest {
+  Resource resource = 1;
+  string action = 2;
+  bytes params = 3;
+}
+
+message ActResponse {
+  // The desired spec after the action (empty = unchanged).
+  bytes spec = 1;
+  bytes observed = 2;
+  // What the action answers the person, if anything (JSON).
+  bytes result = 3;
+  repeated Event events = 4;
+}
+
+enum Drift {
+  DRIFT_UNSPECIFIED = 0;
+  // Actual matches desired.
+  DRIFT_IN_SYNC = 1;
+  // It did not, and the plugin put it back.
+  DRIFT_REPAIRED = 2;
+  // It does not, and the plugin will not repair it itself (it says why).
+  DRIFT_DRIFTED = 3;
+  // The engine no longer has it.
+  DRIFT_MISSING = 4;
+}
+
+message ReconcileRequest {
+  Resource resource = 1;
+}
+
+message ReconcileResponse {
+  Drift drift = 1;
+  string detail = 2;
+  bytes observed = 3;
+  repeated Event events = 4;
+}
+
+message Event {
+  // One of the names the plugin declared in Describe.
+  string name = 1;
+  string message = 2;
+  map<string, string> fields = 3;
+}

@@ -1,0 +1,10 @@
+# The plugin protocol's Go code is generated, committed, and checked by CI to
+# be what this file makes of proto/ (tools/protogen.sh).
+version: v2
+plugins:
+  - local: [go, tool, -modfile=tools/go.mod, protoc-gen-go]
+    out: .
+    opt: module=github.com/tomblancdev/hangar
+  - local: [go, tool, -modfile=tools/go.mod, protoc-gen-go-grpc]
+    out: .
+    opt: module=github.com/tomblancdev/hangar

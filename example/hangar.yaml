@@ -1,0 +1,56 @@
+# A hangar with nothing to install: one zone on the fake engine, the toy
+# plugin, two tiers. Try it:
+#
+#   hangar token create --config example/hangar.yaml --subject alice \
+#       --groups example-users --name try
+#   hangar serve --config example/hangar.yaml
+#
+# then, with the token printed by the first command:
+#
+#   curl -H "Authorization: Bearer $TOKEN" localhost:8080/v1/types
+#   curl -H "Authorization: Bearer $TOKEN" -X POST localhost:8080/v1/resources \
+#       -d '{"type":"box","zone":"playground","spec":{"cores":2}}'
+
+listen: ":8080"
+data_dir: ./data
+house: ""                     # your word for the mark; empty = the product's own
+
+identity:
+  # oidc:                     # the identity provider people already sign in with
+  #   issuer: https://id.example.com/application/o/hangar/
+  #   audience: hangar        # the client id its tokens are issued to
+  #   groups_claim: groups
+  tokens:
+    max_ttl: 720h
+
+# The FIRST tier whose groups a person is in is theirs: most to least.
+tiers:
+  - name: operators
+    groups: [example-operators]
+    operator: true             # sees and acts on everyone's resources
+    zones: ["*"]
+    limits:
+      "*": unlimited
+  - name: users
+    groups: [example-users]
+    zones: [playground]
+    limits:
+      toy.boxes: 2             # a dimension a tier does not name, it gets none of
+      toy.cores: 4
+      toy.memory_gb: 8
+      toy.kind: [container]    # a choice: the values allowed
+
+zones:
+  - name: playground
+    driver: fake
+    endpoint: ./data/playground.json   # the fake engine's state: edit it to make it drift
+    options:
+      capabilities: kind.container,kind.vm,guest.tags,resize.live.cpu_cap
+
+plugins:
+  - name: toy
+    builtin: toy
+    zones: [playground]
+
+reconcile:
+  every: 30s

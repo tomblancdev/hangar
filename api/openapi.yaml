@@ -1,0 +1,612 @@
+openapi: 3.1.0
+info:
+  title: Le Hangar
+  version: "{{VERSION}}"
+  summary: A small cloud's control plane — ask for a machine, get one within your limits.
+  description: |
+    One API for everything a person can ask for. What can be asked for is
+    whatever the enabled plugins declare: `GET /v1/types` is the catalogue,
+    each type with the JSON Schema of its spec and its actions, and the
+    command line and the console are drawn from it.
+
+    **The ask.** Every request goes through the same questions, and every no
+    says which one and why, with the numbers: signed in? (401) · in a tier?
+    (403 `no-tier`) · the zone open to the tier and able to host the type?
+    (403 `zone`, 422 `unavailable-here`) · the spec valid? (422 `schema`) ·
+    does the plugin accept it? (422 `plugin-refused`) · within the tier's
+    limits? (403 `limit`, e.g. "2 of 2 toy.boxes used; this asks for 1
+    more"). Then an **operation** is started and returned (202): poll it,
+    or wait on it with `?wait=`.
+
+    **Retries.** Every create, delete and action takes a `client_token`
+    (AWS's ClientToken): the same token with the same request returns the
+    first operation (200) instead of starting a second; with a different
+    request it is refused (409 `conflict`).
+
+    **Errors** are RFC 9457 problem documents (`application/problem+json`)
+    whose `type` is `urn:hangar:problem:<kind>`.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: /
+security:
+  - bearer: []
+tags:
+  - name: house
+    description: What every product of the family answers, signed in or not.
+  - name: catalogue
+    description: What may be asked for, where, and how much of it is yours.
+  - name: resources
+    description: Everything any plugin makes.
+  - name: operations
+    description: The long actions, as they run.
+  - name: tokens
+    description: API tokens for automation.
+paths:
+  /:
+    get:
+      tags: [house]
+      summary: The front page.
+      security: []
+      responses:
+        "200":
+          description: A page with the mark and where the API is.
+          content:
+            text/html: {}
+  /healthz:
+    get:
+      tags: [house]
+      summary: Is the brain able to answer?
+      description: 200 when the registry answers and every plugin runs; 503 with the reasons otherwise.
+      security: []
+      responses:
+        "200":
+          description: Healthy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: Something the brain needs is down.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+  /metrics:
+    get:
+      tags: [house]
+      summary: Prometheus metrics.
+      security: []
+      responses:
+        "200":
+          description: The text exposition format.
+          content:
+            text/plain: {}
+  /openapi.json:
+    get:
+      tags: [house]
+      summary: This document.
+      security: []
+      responses:
+        "200":
+          description: The contract.
+          content:
+            application/json: {}
+  /mark.svg:
+    get:
+      tags: [house]
+      summary: The mark, carrying the operator's house word when one is set.
+      security: []
+      responses:
+        "200":
+          description: An animated SVG.
+          content:
+            image/svg+xml: {}
+
+  /v1/whoami:
+    get:
+      tags: [catalogue]
+      summary: Who the brain thinks you are, and your tier.
+      responses:
+        "200":
+          description: You.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Whoami" }
+        default: { $ref: "#/components/responses/Problem" }
+  /v1/types:
+    get:
+      tags: [catalogue]
+      summary: The catalogue — every type the plugins offer.
+      description: Each type with its spec's JSON Schema, its actions (with their params' schemas), and the zones open to you where it and each action can be asked for.
+      responses:
+        "200":
+          description: The catalogue.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [types]
+                properties:
+                  types:
+                    type: array
+                    items: { $ref: "#/components/schemas/Type" }
+        default: { $ref: "#/components/responses/Problem" }
+  /v1/zones:
+    get:
+      tags: [catalogue]
+      summary: The zones open to you, and what each plugin can do there.
+      responses:
+        "200":
+          description: The zones.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [zones]
+                properties:
+                  zones:
+                    type: array
+                    items: { $ref: "#/components/schemas/Zone" }
+        default: { $ref: "#/components/responses/Problem" }
+  /v1/limits:
+    get:
+      tags: [catalogue]
+      summary: Your tier's limit on every dimension, and what you hold.
+      responses:
+        "200":
+          description: The limits.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tier, limits]
+                properties:
+                  tier: { type: string }
+                  limits:
+                    type: array
+                    items: { $ref: "#/components/schemas/Limit" }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /v1/resources:
+    get:
+      tags: [resources]
+      summary: List resources — yours; an operator's pick of owner, or everyone's.
+      parameters:
+        - { name: type, in: query, schema: { type: string } }
+        - { name: zone, in: query, schema: { type: string } }
+        - name: state
+          in: query
+          description: Repeatable. Default — the live states (every one but deleted and failed).
+          schema:
+            type: array
+            items: { $ref: "#/components/schemas/ResourceState" }
+          explode: true
+        - name: tag
+          in: query
+          description: Repeatable `key=value`; every one must match.
+          schema:
+            type: array
+            items: { type: string }
+          explode: true
+        - name: owner
+          in: query
+          description: Operators only; others always list their own.
+          schema: { type: string }
+        - name: after
+          in: query
+          description: The `next` of the previous page.
+          schema: { type: integer, minimum: 0 }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
+      responses:
+        "200":
+          description: A page of resources.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [resources]
+                properties:
+                  resources:
+                    type: array
+                    items: { $ref: "#/components/schemas/Resource" }
+                  next:
+                    type: integer
+                    description: Absent on the last page.
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [resources]
+      summary: Ask for a resource.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateRequest" }
+      responses:
+        "202":
+          description: Accepted; the operation that makes it is running.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Accepted" }
+        "200":
+          description: This client token was already used for this very request; its operation, as it stands.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Accepted" }
+        default: { $ref: "#/components/responses/Problem" }
+  /v1/resources/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+    get:
+      tags: [resources]
+      summary: One resource.
+      responses:
+        "200":
+          description: The resource.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Resource" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [resources]
+      summary: Ask for a resource to go.
+      parameters:
+        - { name: client_token, in: query, schema: { $ref: "#/components/schemas/ClientToken" } }
+      responses:
+        "202":
+          description: Accepted; the operation that removes it is running.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Accepted" }
+        "200":
+          description: A replay of a client token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Accepted" }
+        default: { $ref: "#/components/responses/Problem" }
+  /v1/resources/{id}/actions/{action}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      - { name: action, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [resources]
+      summary: Ask for one of the type's actions.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActRequest" }
+      responses:
+        "202":
+          description: Accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Accepted" }
+        "200":
+          description: A replay of a client token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Accepted" }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /v1/operations:
+    get:
+      tags: [operations]
+      summary: Your operations, newest first (an operator's — everyone's).
+      parameters:
+        - { name: resource, in: query, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
+      responses:
+        "200":
+          description: Operations.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [operations]
+                properties:
+                  operations:
+                    type: array
+                    items: { $ref: "#/components/schemas/Operation" }
+        default: { $ref: "#/components/responses/Problem" }
+  /v1/operations/{id}:
+    get:
+      tags: [operations]
+      summary: One operation.
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - name: wait
+          in: query
+          description: Seconds to wait for a running operation to finish before answering.
+          schema: { type: integer, minimum: 0, maximum: 60, default: 0 }
+      responses:
+        "200":
+          description: The operation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operation" }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /v1/tokens:
+    get:
+      tags: [tokens]
+      summary: Your API tokens (never their secrets).
+      responses:
+        "200":
+          description: Tokens.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tokens]
+                properties:
+                  tokens:
+                    type: array
+                    items: { $ref: "#/components/schemas/Token" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [tokens]
+      summary: Make an API token.
+      description: Only a person signed in through the identity provider may make one — a token cannot make tokens. It acts as you, with your groups as they are now, and lives at most the operator's `max_ttl`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TokenRequest" }
+      responses:
+        "201":
+          description: Made. The secret is shown this once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenCreated" }
+        default: { $ref: "#/components/responses/Problem" }
+  /v1/tokens/{id}:
+    delete:
+      tags: [tokens]
+      summary: Revoke a token.
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Revoked. }
+        default: { $ref: "#/components/responses/Problem" }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: A token signed by the operator's OIDC provider for the configured client id (an ID token, or an access token in JWT form), or an API token (`hgr_…`).
+  responses:
+    Problem:
+      description: Refused — the problem says which question failed, and why.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+  schemas:
+    Id:
+      type: string
+      description: A short prefix naming the kind, a dash, seventeen hex digits.
+      pattern: "^[a-z][a-z0-9]{0,7}-[0-9a-f]{17}$"
+      examples: ["box-0123456789abcdef0", "op-0123456789abcdef0"]
+    ClientToken:
+      type: string
+      maxLength: 64
+      description: Makes a retry of this request return its first operation instead of starting another.
+    ResourceState:
+      type: string
+      enum: [creating, ready, updating, deleting, deleted, failed, lost]
+      description: "`lost`: the engine no longer has it (found by reconcile). `failed`: a create that did not happen."
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        version: { type: string }
+        why:
+          type: array
+          items: { type: string }
+    Whoami:
+      type: object
+      required: [subject, groups, tier, operator, via]
+      properties:
+        subject: { type: string }
+        name: { type: string }
+        groups: { type: array, items: { type: string } }
+        tier: { type: string }
+        operator: { type: boolean }
+        via: { type: string, description: "oidc, or token:<id>" }
+        scopes: { type: array, items: { type: string, enum: [read, write] } }
+    Type:
+      type: object
+      required: [name, id_prefix, plugin, schema, zones, actions]
+      properties:
+        name: { type: string }
+        id_prefix: { type: string }
+        plugin: { type: string }
+        title: { type: string }
+        description: { type: string }
+        schema:
+          type: object
+          description: The JSON Schema (2020-12) of the type's spec.
+        zones:
+          type: array
+          items: { type: string }
+          description: The zones open to you where this type can be made.
+        actions:
+          type: array
+          items: { $ref: "#/components/schemas/Action" }
+    Action:
+      type: object
+      required: [name, changes_usage, zones]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        params_schema: { type: object }
+        changes_usage:
+          type: boolean
+          description: It can change what the resource holds; it is admitted against your limits.
+        zones:
+          type: array
+          items: { type: string }
+          description: Where it is offered (a zone whose engine lacks a capability it needs is not listed).
+    Zone:
+      type: object
+      required: [name, driver, plugins]
+      properties:
+        name: { type: string }
+        driver: { type: string }
+        plugins:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              capabilities: { type: array, items: { type: string } }
+              error: { type: string }
+    Limit:
+      type: object
+      required: [name, kind, plugin, limit, used]
+      properties:
+        name: { type: string, examples: ["toy.boxes"] }
+        kind: { type: string, enum: [quantity, choice] }
+        unit: { type: string }
+        description: { type: string }
+        plugin: { type: string }
+        limit:
+          description: A number, "unlimited", or — for a choice — the values allowed.
+          oneOf:
+            - { type: integer, minimum: 0 }
+            - { const: unlimited }
+            - { type: array, items: { type: string } }
+        used: { type: integer, minimum: 0 }
+    Resource:
+      type: object
+      required: [id, type, plugin, owner, zone, state, spec, observed, choices, usage, tags, created_at, updated_at]
+      properties:
+        id: { $ref: "#/components/schemas/Id" }
+        type: { type: string }
+        plugin: { type: string }
+        owner: { type: string }
+        zone: { type: string }
+        state: { $ref: "#/components/schemas/ResourceState" }
+        spec: { type: object, description: Desired — its shape is the type's schema. }
+        observed: { type: object, description: As the plugin last reported it. }
+        choices: { type: object, additionalProperties: { type: string } }
+        usage: { type: object, additionalProperties: { type: integer } }
+        tags: { type: object, additionalProperties: { type: string } }
+        drift: { type: string, description: What reconcile found when not in sync. }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time }
+    CreateRequest:
+      type: object
+      required: [type, zone]
+      additionalProperties: false
+      properties:
+        type: { type: string, examples: ["box"] }
+        zone: { type: string }
+        spec:
+          type: object
+          description: Checked against the type's schema (`GET /v1/types`).
+        tags:
+          type: object
+          maxProperties: 50
+          additionalProperties: { type: string, maxLength: 256 }
+          description: Keys starting with `hangar` are the core's.
+        client_token: { $ref: "#/components/schemas/ClientToken" }
+    ActRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        params:
+          type: object
+          description: Checked against the action's params schema.
+        client_token: { $ref: "#/components/schemas/ClientToken" }
+    Accepted:
+      type: object
+      required: [operation, resource]
+      properties:
+        operation: { $ref: "#/components/schemas/Operation" }
+        resource: { $ref: "#/components/schemas/Resource" }
+    Operation:
+      type: object
+      required: [id, owner, resource_id, kind, state, attempts, created_at, updated_at]
+      properties:
+        id: { $ref: "#/components/schemas/Id" }
+        owner: { type: string }
+        resource_id: { $ref: "#/components/schemas/Id" }
+        kind: { type: string, enum: [create, delete, action] }
+        action: { type: string }
+        params: { type: object }
+        client_token: { type: string }
+        state: { type: string, enum: [running, succeeded, failed] }
+        error: { type: string }
+        result: { description: What the action answers, if anything. }
+        attempts: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+    Token:
+      type: object
+      required: [id, owner, name, groups, scopes, created_at, expires_at]
+      properties:
+        id: { $ref: "#/components/schemas/Id" }
+        owner: { type: string }
+        name: { type: string }
+        groups: { type: array, items: { type: string } }
+        scopes: { type: array, items: { type: string, enum: [read, write] } }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        last_used: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+    TokenRequest:
+      type: object
+      required: [name, expires_in]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        expires_in: { type: integer, minimum: 60, description: Seconds. }
+        scopes:
+          type: array
+          items: { type: string, enum: [read, write] }
+          description: Default — both.
+    TokenCreated:
+      type: object
+      required: [token, secret]
+      properties:
+        token: { $ref: "#/components/schemas/Token" }
+        secret: { type: string, description: "hgr_…, shown this once." }
+    Problem:
+      type: object
+      required: [type, title, status, detail, kind]
+      properties:
+        type: { type: string, examples: ["urn:hangar:problem:limit"] }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string, examples: ["2 of 2 toy.boxes used; this asks for 1 more"] }
+        kind:
+          type: string
+          enum: [sign-in, no-tier, scope, not-found, bad-request, zone, unavailable-here, schema, plugin-refused, limit, busy, conflict, engine, plugin-down, internal]
+        violations:
+          type: array
+          description: For `schema` and `plugin-refused` — each field that does not fit.
+          items:
+            type: object
+            properties:
+              field: { type: string, description: A JSON pointer. }
+              reason: { type: string }
+        refusals:
+          type: array
+          description: For `limit` — every dimension the request exceeds, with the numbers.
+          items:
+            type: object
+            required: [reason, dimension, message]
+            properties:
+              reason: { type: string, enum: [limit, choice] }
+              dimension: { type: string }
+              limit: { type: integer }
+              used: { type: integer }
+              asked: { type: integer }
+              value: { type: string }
+              allowed: { type: array, items: { type: string } }
+              message: { type: string }
+        operation:
+          $ref: "#/components/schemas/Id"
+          description: For `busy` — the operation holding the resource.

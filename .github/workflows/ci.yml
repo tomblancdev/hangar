@@ -1,0 +1,78 @@
+name: ci
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  # This repo is a product anyone can run. Whoever runs it keeps their own
+  # addresses, hostnames, domains and house word in their own configuration;
+  # the only thing crossing between them is a pinned tag. The check names no
+  # house of its own — a denylist of somebody's hostnames would be that
+  # somebody's environment, published here.
+  no-environment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh tools/no-environment.sh
+
+  go:
+    needs: [no-environment]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - name: gofmt
+        run: test -z "$(gofmt -l . | tee /dev/stderr)"
+      - run: go vet ./...
+      # the whole suite, the binary's end-to-end run included
+      - run: go test -race ./...
+      - run: CGO_ENABLED=0 go build -trimpath -o /tmp/hangar ./cmd/hangar
+
+  # The plugin protocol's generated code is what proto/ makes, with the
+  # tools pinned in tools/go.mod.
+  protocol:
+    needs: [no-environment]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: tools/go.mod }
+      - run: sh tools/protogen.sh --check
+
+  image:
+    needs: [no-environment, go, protocol]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}
+            type=raw,value=edge,enable={{is_default_branch}}
+            type=sha
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

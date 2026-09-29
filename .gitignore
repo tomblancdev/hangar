@@ -1,0 +1,8 @@
+/hangar
+/out
+/data/
+/example/data/
+*.db
+*.db-wal
+*.db-shm
+.claude/worktrees/
