@@ -368,7 +368,7 @@ func configureRequest(cfg *config.Config, pc config.Plugin) (*pluginpb.Configure
 	req := &pluginpb.ConfigureRequest{Settings: settings}
 	for _, name := range pc.Zones {
 		z, _ := cfg.Zone(name)
-		zc := &pluginpb.ZoneConfig{Name: z.Name, Driver: z.Driver, Endpoint: z.Endpoint, Options: z.Options}
+		zc := &pluginpb.ZoneConfig{Name: z.Name, Driver: z.Driver, Endpoint: z.Endpoint, Options: z.Options, Watch: z.Watch()}
 		if s, ok := pc.Credentials[name]; ok {
 			v, err := s.Read()
 			if err != nil {

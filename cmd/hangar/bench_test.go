@@ -75,6 +75,9 @@ zones:
       bridge: hbnet
       vmids: 11000-11019
       ca_file: %s
+    room:                     # the bench's priority guest, VM 100: the token reads its power
+      memory_gb: 6
+      reservations: [{name: priority, memory_gb: 3, while_running: "100"}]
 plugins:
   - name: machines
     builtin: machines

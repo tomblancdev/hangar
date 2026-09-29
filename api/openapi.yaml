@@ -15,8 +15,17 @@ info:
     (403 `zone`, 422 `unavailable-here`) · the spec valid? (422 `schema`) ·
     does the plugin accept it? (422 `plugin-refused`) · within the tier's
     limits? (403 `limit`, e.g. "2 of 2 toy.boxes used; this asks for 1
-    more"). Then an **operation** is started and returned (202): poll it,
-    or wait on it with `?wait=`.
+    more") · room in the zone's pools? (409 `room`, e.g. "zone lab's
+    borrowed room is held for priority (while guest 4100 runs): ask again
+    when it ends, or for guaranteed room"). Then an **operation** is
+    started and returned (202): poll it, or wait on it with `?wait=`.
+
+    **Room.** A zone may count its memory in two pools — guaranteed (booked
+    while a resource lives) and spot (lent while it runs, taken back when a
+    reservation needs it). A reservation waiting on a guest is claimed by
+    that guest's hook before it starts and released after it stops
+    (`/v1/zones/{zone}/claim`, `/release`): the zone's borrowed room is then
+    held, and each resource brought to what its hold means for it.
 
     **Retries.** Every create, delete and action takes a `client_token`
     (AWS's ClientToken): the same token with the same request returns the
@@ -147,6 +156,47 @@ paths:
                   zones:
                     type: array
                     items: { $ref: "#/components/schemas/Zone" }
+        default: { $ref: "#/components/responses/Problem" }
+  /v1/zones/{zone}/claim:
+    post:
+      tags: [catalogue]
+      summary: A guest's hook, before it starts — put its reservation in force and hold what the zone lends.
+      description: |
+        For a tier with `room: true` (or an operator), through a token of the
+        scope `room` alone. The holds are applied before the answer — each
+        resource stopped, shrunk or capped as its plugin says — and finish
+        even if the caller stops waiting.
+      parameters:
+        - { name: zone, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClaimRequest" }
+      responses:
+        "200":
+          description: The reservation is in force; what each resource became.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClaimResult" }
+        default: { $ref: "#/components/responses/Problem" }
+  /v1/zones/{zone}/release:
+    post:
+      tags: [catalogue]
+      summary: A guest's hook, after it stopped — end its reservation and lift the holds.
+      parameters:
+        - { name: zone, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClaimRequest" }
+      responses:
+        "200":
+          description: The reservation ended; what each resource became.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClaimResult" }
         default: { $ref: "#/components/responses/Problem" }
   /v1/limits:
     get:
@@ -413,7 +463,7 @@ components:
         tier: { type: string }
         operator: { type: boolean }
         via: { type: string, description: "oidc, or token:<id>" }
-        scopes: { type: array, items: { type: string, enum: [read, write] } }
+        scopes: { type: array, items: { type: string, enum: [read, write, room] } }
     Type:
       type: object
       required: [name, id_prefix, plugin, schema, zones, actions]
@@ -460,6 +510,35 @@ components:
             properties:
               capabilities: { type: array, items: { type: string } }
               error: { type: string }
+        awake: { type: boolean, description: Whether it answered its last survey awake (a zone that sleeps is not). }
+        room:
+          type: object
+          description: A zone that counts room — its pools (MiB), what is booked and lent, and its reservations.
+          required: [memory_mb, guaranteed_mb, spot_mb, booked_mb, spot_used_mb, reservations]
+          properties:
+            memory_mb: { type: integer }
+            guaranteed_mb: { type: integer, description: The memory less every reservation — what can be promised. }
+            spot_mb: { type: integer, description: The room the conditional reservations keep while none is in force — what can be lent. }
+            booked_mb: { type: integer }
+            spot_used_mb: { type: integer }
+            held_by: { type: string, description: The reservation holding the borrowed room now. }
+            reservations:
+              type: array
+              items:
+                type: object
+                required: [name, memory_mb, condition, in_force]
+                properties:
+                  name: { type: string }
+                  memory_mb: { type: integer }
+                  condition: { type: string, examples: ["while guest 4100 runs"] }
+                  in_force: { type: boolean }
+                  claim:
+                    type: object
+                    properties:
+                      zone: { type: string }
+                      reservation: { type: string }
+                      by: { type: string }
+                      claimed_at: { type: string, format: date-time }
     Limit:
       type: object
       required: [name, kind, plugin, limit, used]
@@ -492,9 +571,41 @@ components:
         usage: { type: object, additionalProperties: { type: integer } }
         tags: { type: object, additionalProperties: { type: string } }
         drift: { type: string, description: What reconcile found when not in sync. }
+        room:
+          type: object
+          description: What it takes from its zone's pools, in MiB.
+          properties:
+            guaranteed_mb: { type: integer, description: Booked while it lives. }
+            spot_mb: { type: integer, description: Borrowed while it runs. }
+            running: { type: boolean, description: Whether it is meant to run. }
+        hold: { type: string, description: The key of the reservation holding its borrowed room back. }
+        hold_since: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         deleted_at: { type: string, format: date-time }
+    ClaimRequest:
+      type: object
+      required: [guest]
+      additionalProperties: false
+      properties:
+        guest: { type: string, maxLength: 64, description: "The engine's own name for the guest whose hook calls (a Proxmox VMID)." }
+    ClaimResult:
+      type: object
+      required: [zone, reservation, condition, resources]
+      properties:
+        zone: { type: string }
+        reservation: { type: string }
+        condition: { type: string }
+        held_by: { type: string, description: The reservation holding the zone's borrowed room after the call. }
+        resources:
+          type: array
+          items:
+            type: object
+            required: [resource, result]
+            properties:
+              resource: { $ref: "#/components/schemas/Id" }
+              result: { type: string, enum: [in_sync, repaired, drifted, missing, skipped] }
+              detail: { type: string }
     CreateRequest:
       type: object
       required: [type, zone]
@@ -551,7 +662,7 @@ components:
         owner: { type: string }
         name: { type: string }
         groups: { type: array, items: { type: string } }
-        scopes: { type: array, items: { type: string, enum: [read, write] } }
+        scopes: { type: array, items: { type: string, enum: [read, write, room] } }
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         last_used: { type: string, format: date-time }
@@ -565,8 +676,8 @@ components:
         expires_in: { type: integer, minimum: 60, description: Seconds. }
         scopes:
           type: array
-          items: { type: string, enum: [read, write] }
-          description: Default — both.
+          items: { type: string, enum: [read, write, room] }
+          description: "Default — read and write. `room` stands alone: a guest's hook's token (claim and release, nothing else)."
     TokenCreated:
       type: object
       required: [token, secret]
@@ -583,7 +694,7 @@ components:
         detail: { type: string, examples: ["2 of 2 toy.boxes used; this asks for 1 more"] }
         kind:
           type: string
-          enum: [sign-in, no-tier, scope, not-found, bad-request, zone, unavailable-here, schema, plugin-refused, limit, busy, conflict, engine, plugin-down, internal]
+          enum: [sign-in, no-tier, scope, not-found, bad-request, zone, unavailable-here, schema, plugin-refused, limit, room, busy, conflict, engine, plugin-down, internal]
         violations:
           type: array
           description: For `schema` and `plugin-refused` — each field that does not fit.
@@ -607,6 +718,18 @@ components:
               value: { type: string }
               allowed: { type: array, items: { type: string } }
               message: { type: string }
+        room:
+          type: object
+          description: For `room` — the pool the request does not fit, with the numbers (MiB).
+          required: [pool, zone, message]
+          properties:
+            pool: { type: string, enum: [guaranteed, spot] }
+            zone: { type: string }
+            held_for: { type: string, description: The reservation holding the borrowed room, when that is why. }
+            pool_mb: { type: integer }
+            used_mb: { type: integer }
+            asked_mb: { type: integer }
+            message: { type: string }
         operation:
           $ref: "#/components/schemas/Id"
           description: For `busy` — the operation holding the resource.

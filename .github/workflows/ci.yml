@@ -32,6 +32,7 @@ jobs:
       # the whole suite, the binary's end-to-end run included
       - run: go test -race ./...
       - run: CGO_ENABLED=0 go build -trimpath -o /tmp/hangar ./cmd/hangar
+      - run: CGO_ENABLED=0 go build -trimpath -o /tmp/hangar-hook ./cmd/hangar-hook && /tmp/hangar-hook --help >/dev/null
 
   # The plugin protocol's generated code is what proto/ makes, with the
   # tools pinned in tools/go.mod.

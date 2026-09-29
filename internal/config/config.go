@@ -68,6 +68,10 @@ type Tier struct {
 	Groups []string `yaml:"groups"`
 	// Operator: sees and acts on every resource, not only its own.
 	Operator bool `yaml:"operator"`
+	// Room: claims and releases the reservations of the zones open to it —
+	// the tier of the hooks on the guests they wait on (their tokens carry
+	// the scope room alone).
+	Room bool `yaml:"room"`
 	// Zones open to the tier; "*" = all.
 	Zones []string `yaml:"zones"`
 	// Limits per dimension ("toy.boxes": 2). A dimension the tier does not
@@ -112,6 +116,70 @@ type Zone struct {
 	Driver   string            `yaml:"driver"`
 	Endpoint string            `yaml:"endpoint"`
 	Options  map[string]string `yaml:"options"`
+	// Room: the memory the zone's resources may count on, and the room it
+	// keeps for others (ARCHITECTURE.md §6). Absent = the zone counts no
+	// room: whatever the tiers allow fits.
+	Room *Room `yaml:"room"`
+	// Wake: a zone that sleeps is woken by this call before anything starts
+	// in it.
+	Wake *Wake `yaml:"wake"`
+}
+
+// Room is a zone's capacity and its reservations. The guaranteed pool is the
+// memory less every reservation, as if all were in force; the spot pool is
+// the room the conditional reservations keep while none of them is — when
+// one is, it takes the whole spot pool back.
+type Room struct {
+	// MemoryGB: what the product's resources may count on in this zone —
+	// the zone's memory less what is not theirs (or declare that as a
+	// reservation with no condition).
+	MemoryGB int `yaml:"memory_gb"`
+	// Reservations: room kept for someone else, always or on a condition.
+	Reservations []Reservation `yaml:"reservations"`
+	// Grace: how long a hold is kept on the word of a claim — or of the
+	// engine's node, acting alone — when its condition does not read true yet:
+	// the time a priority guest takes to be seen running (default 10m).
+	Grace time.Duration `yaml:"grace"`
+}
+
+// Reservation is room kept for someone else. With no condition it is always
+// in force; while_running and while_down make it borrowable the rest of the
+// time.
+type Reservation struct {
+	Name     string `yaml:"name"`
+	MemoryGB int    `yaml:"memory_gb"`
+	// WhileRunning: a guest outside the product, by the engine's own name
+	// (a Proxmox VMID); its hook claims the room before it starts.
+	WhileRunning string `yaml:"while_running"`
+	// WhileDown: a node of the engine; its guests land here when it fails.
+	WhileDown string `yaml:"while_down"`
+}
+
+// Key is the hold's key written on what the reservation holds: the guest's
+// name, or down-<node>. A reservation with no condition holds nothing.
+func (r Reservation) Key() string {
+	switch {
+	case r.WhileRunning != "":
+		return r.WhileRunning
+	case r.WhileDown != "":
+		return "down-" + r.WhileDown
+	}
+	return ""
+}
+
+// Wake is the call that wakes a zone that sleeps: a webhook.
+type Wake struct {
+	URL string `yaml:"url"`
+	// Method: default POST.
+	Method string `yaml:"method"`
+	// Body: sent as it is, as JSON ({"wait": true}).
+	Body string `yaml:"body"`
+	// Headers carry the call's credential, from a file or an environment
+	// variable of the core's — never written here.
+	Headers map[string]Secret `yaml:"headers"`
+	// Timeout: how long the zone may take to answer after the call (default
+	// 5m); a start still waiting then fails, and says so.
+	Timeout time.Duration `yaml:"timeout"`
 }
 
 // Plugin enables one plugin on some zones.
@@ -210,6 +278,87 @@ func (c *Config) defaults() {
 	if c.Reconcile.Every == 0 {
 		c.Reconcile.Every = time.Minute
 	}
+	for i := range c.Zones {
+		z := &c.Zones[i]
+		if z.Room != nil && z.Room.Grace == 0 {
+			z.Room.Grace = 10 * time.Minute
+		}
+		if w := z.Wake; w != nil {
+			if w.Method == "" {
+				w.Method = "POST"
+			}
+			if w.Timeout == 0 {
+				w.Timeout = 5 * time.Minute
+			}
+		}
+	}
+}
+
+// keyRe: what a hold's key may hold — it is written in engines' tags.
+var keyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+
+func (z Zone) validateRoom(bad func(string, ...any)) {
+	if w := z.Wake; w != nil {
+		if !strings.HasPrefix(w.URL, "https://") && !strings.HasPrefix(w.URL, "http://") {
+			bad("zone %s: wake.url must be a URL", z.Name)
+		}
+		for h, s := range w.Headers {
+			if (s.File == "") == (s.Env == "") {
+				bad("zone %s: wake header %s: exactly one of file or env", z.Name, h)
+			}
+		}
+	}
+	r := z.Room
+	if r == nil {
+		return
+	}
+	if r.MemoryGB < 1 {
+		bad("zone %s: room.memory_gb is the memory its resources may count on; at least 1", z.Name)
+	}
+	names, keys := map[string]bool{}, map[string]bool{}
+	var sum int
+	for i, rv := range r.Reservations {
+		if !nameRe.MatchString(rv.Name) {
+			bad("zone %s: reservations[%d]: name %q: lowercase letters, digits, - and _", z.Name, i, rv.Name)
+		}
+		if names[rv.Name] {
+			bad("zone %s: reservation %q twice", z.Name, rv.Name)
+		}
+		names[rv.Name] = true
+		if rv.MemoryGB < 1 {
+			bad("zone %s: reservation %s keeps no memory", z.Name, rv.Name)
+		}
+		sum += rv.MemoryGB
+		if rv.WhileRunning != "" && rv.WhileDown != "" {
+			bad("zone %s: reservation %s: one condition, while_running or while_down", z.Name, rv.Name)
+		}
+		if k := rv.Key(); k != "" {
+			if !keyRe.MatchString(k) {
+				bad("zone %s: reservation %s: %q is written in engines' tags: lowercase letters, digits, - and _", z.Name, rv.Name, k)
+			}
+			if keys[k] {
+				bad("zone %s: two reservations wait on %s", z.Name, k)
+			}
+			keys[k] = true
+		}
+	}
+	if sum > r.MemoryGB {
+		bad("zone %s: its reservations keep %d GB, more than the %d GB of room it has", z.Name, sum, r.MemoryGB)
+	}
+}
+
+// Watch lists the guests a zone's reservations wait on, for the plugins'
+// drivers to read (and nothing more).
+func (z Zone) Watch() []string {
+	var out []string
+	if z.Room != nil {
+		for _, r := range z.Room.Reservations {
+			if r.WhileRunning != "" {
+				out = append(out, r.WhileRunning)
+			}
+		}
+	}
+	return out
 }
 
 func (c *Config) validate() error {
@@ -240,6 +389,7 @@ func (c *Config) validate() error {
 		if z.Driver == "" {
 			bad("zone %s: no driver", z.Name)
 		}
+		z.validateRoom(bad)
 	}
 
 	if len(c.Tiers) == 0 {

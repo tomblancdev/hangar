@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased — la place
+
+A zone's room: what can be promised, what is only lent, and the guests that
+matter more than yours — proved on the repo's throwaway Proxmox VE, with the
+hook running on its node.
+
+- **Zones count room** (`room` in a zone): its memory, and reservations kept
+  for someone else — always, `while_running` a guest of the operator's, or
+  `while_down` a node. Two pools follow: **guaranteed** (the memory less
+  every reservation — booked while a resource lives) and **spot** (the room
+  the conditional reservations keep while none is in force — lent while it
+  runs). Admission is in the limits' transaction: a request beyond a pool is
+  refused (409 `room`) with the arithmetic; while the spot pool is held a
+  resource runs on what it booked only.
+- **Holds**: while a conditional reservation is in force, the core holds
+  every room-taking resource of the zone (`hold` in the protocol) and the
+  plugin brings each to what that means for it; lifted, it brings them back.
+- **The claim**: `POST /v1/zones/{zone}/claim` and `/release` — a guest's
+  hook, before it starts and after it stops, with a token of the new scope
+  `room` (claims and releases, nothing else) for a tier with `room: true`.
+  The brain holds before it answers. A claim stands for the zone's `grace`,
+  then only while its guest reads running — or cannot be read: a hiccup is
+  not a guest gone; a release that never came ends there. A hold the node
+  placed alone is adopted. One room decision at a time per zone: a pass's
+  survey never reads a release's own tags mid-way (read on the bench).
+- **Surveys** (the protocol's `Survey`, the drivers' `Watcher` facet): what
+  a reservation waits on, which resources carry a hold, whether the zone is
+  awake — at start and at every reconcile pass.
+- **Waking**: a zone's `wake` webhook, called before anything starts in it
+  when it reads asleep, then waited for; a reconcile never wakes a zone, and
+  does not judge its resources while it sleeps.
+- **The machines plugin**: classes `guaranteed`, `spot`, `guaranteed+spot`
+  (`floor_gb`: it shrinks to its floor instead of stopping, never below what
+  it holds, and says what it could not give back — only where a running
+  guest of its kind gives memory back); `cores_beside` (the CPU cap while
+  held); `resume` (a spot machine starts again when the room returns, or
+  stays stopped); start and stop are planned (they change the room). The
+  class, admitted size, floor and cap are written on the guest as tags.
+- **The Proxmox VE driver**: `resize.live.cpu_cap` (`cpulimit`) and
+  `hook.pre_start`; the fence accepts `VM.Audit` — alone — on the guests a
+  zone watches; a node reads down only when the cluster's membership says
+  `offline` (`unknown` cannot tell), and a zone awake when its node answers.
+- **`hangar-hook`**, a second binary (standard library only): a guest's
+  hookscript on the node. On a product machine, the node's own admission
+  (set on the VM templates, inherited by every clone); on a priority guest,
+  the claim — the brain first, the node alone from the tags when it cannot be
+  reached — never refusing that guest's start.
+- **The bench** gains a priority guest (VM 100) and the watch grant on it.
+
 ## Unreleased — les machines
 
 The first plugin that makes real machines, and the first real engine:

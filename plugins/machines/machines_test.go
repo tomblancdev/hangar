@@ -3,6 +3,7 @@ package machines
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -213,4 +214,53 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// What a hold means for each class: spot stops, a floor shrinks to it,
+// cores_beside caps the ones that keep running, and nothing held means the
+// spec as it is.
+func TestWhatAHoldMeans(t *testing.T) {
+	gs := Spec{Class: GuaranteedSpot, Cores: 4, MemoryGB: 8, FloorGB: 2, CoresBeside: 1, Running: true}
+	for name, c := range map[string]struct {
+		s    Spec
+		hold string
+		want want
+	}{
+		"spot, free":           {Spec{Class: Spot, MemoryGB: 2, Running: true}, "", want{running: true, memoryMB: 2048}},
+		"spot, held":           {Spec{Class: Spot, MemoryGB: 2, Running: true}, "4100", want{memoryMB: 2048, holds: []string{"4100"}}},
+		"a floor, held":        {gs, "4100", want{running: true, memoryMB: 2048, cpuLimit: 1, holds: []string{"4100"}}},
+		"a floor, free":        {gs, "", want{running: true, memoryMB: 8192}},
+		"guaranteed, capped":   {Spec{Class: Guaranteed, Cores: 4, MemoryGB: 4, CoresBeside: 2, Running: true}, "4100", want{running: true, memoryMB: 4096, cpuLimit: 2, holds: []string{"4100"}}},
+		"guaranteed, uncapped": {Spec{Class: Guaranteed, Cores: 4, MemoryGB: 4, Running: true}, "4100", want{running: true, memoryMB: 4096}},
+	} {
+		got := wanted(c.s, c.hold)
+		if got.running != c.want.running || got.memoryMB != c.want.memoryMB || got.cpuLimit != c.want.cpuLimit || !slices.Equal(got.holds, c.want.holds) {
+			t.Errorf("%s: %+v, want %+v", name, got, c.want)
+		}
+	}
+	if tags := tagsOf(gs); tags["class"] != "guaranteed+spot" || tags["floor"] != "2048" || tags["beside"] != "1" || tags["admitted"] != "8192" {
+		t.Errorf("the tags: %v", tags)
+	}
+	if r := room(gs); r.GetGuaranteedMb() != 2048 || r.GetSpotMb() != 6144 || !r.GetRunning() {
+		t.Errorf("the room: %v", r)
+	}
+}
+
+// A floor needs a zone whose running guests give memory back, and a cap a
+// zone that caps CPU: where they cannot, the plan says so.
+func TestAClassAsksOfItsZone(t *testing.T) {
+	p := configured(t, fake.Name, "kind.container,kind.vm,guest.tags,fence.pool")
+	r, _ := plan(t, p, `{"image": "debian-13", "kind": "container", "class": "guaranteed+spot", "cores": 2, "memory_gb": 4, "floor_gb": 1}`)
+	if !strings.Contains(reasons(r), "gives no memory back, so it cannot shrink to a floor") {
+		t.Fatalf("a floor where memory is not given back: %s", reasons(r))
+	}
+	r, _ = plan(t, p, `{"image": "debian-13", "kind": "container", "class": "guaranteed", "cores": 2, "memory_gb": 4, "cores_beside": 1}`)
+	if !strings.Contains(reasons(r), "zone z caps no CPU") {
+		t.Fatalf("a cap where CPU is not capped: %s", reasons(r))
+	}
+	p = configured(t, fake.Name, "")
+	r, s := plan(t, p, `{"image": "debian-13", "kind": "container", "class": "guaranteed+spot", "cores": 2, "memory_gb": 4, "floor_gb": 1, "cores_beside": 1}`)
+	if len(r.GetRefusals()) > 0 || !s.Resume || r.GetRoom().GetGuaranteedMb() != 1024 || r.GetRoom().GetSpotMb() != 3072 {
+		t.Fatalf("%s %+v %v", reasons(r), s, r.GetRoom())
+	}
 }

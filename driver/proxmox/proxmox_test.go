@@ -135,6 +135,41 @@ func TestTheFenceIsReadFromTheTokensOwnPermissions(t *testing.T) {
 	}
 }
 
+// A reservation's guest, outside the pool, may be READ — VM.Audit on it, and
+// only on a guest the zone watches. Anything more there, or the same read on
+// a guest it does not watch, and the token is not fenced.
+func TestTheFenceLetsAWatchedGuestBeRead(t *testing.T) {
+	a := newAPI()
+	a.res = []resource{{VMID: 11000, Node: "node-a", Type: "lxc", Pool: "hangar"}, {VMID: 100, Node: "node-a", Type: "qemu"}}
+	a.perms["/vms/100"] = map[string]int{"VM.Audit": 0}
+	watching := func(watch ...string) *Driver {
+		t.Helper()
+		srv := httptest.NewTLSServer(a)
+		t.Cleanup(srv.Close)
+		d, err := Open(context.Background(), driver.Params{Zone: "z", Endpoint: srv.URL, Credential: []byte("tok@pve!t=s3cret"), Watch: watch,
+			Options: map[string]string{"node": "node-a", "pool": "hangar", "storage": "s", "seed_storage": "i", "bridge": "b",
+				"vmids": "11000-11009", "fingerprint": fmt.Sprintf("%x", sha(srv.Certificate().Raw))}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d.(*Driver)
+	}
+	if d := watching("100"); !has(d.Capabilities(), driver.FencePool) {
+		t.Fatalf("reading a watched guest is outside the fence: %s", d.FenceReport())
+	}
+	if d := watching(); has(d.Capabilities(), driver.FencePool) || !strings.Contains(d.FenceReport(), "VM.Audit on /vms/100") {
+		t.Fatalf("reading a guest the zone does not watch is fenced: %q", d.FenceReport())
+	}
+	a.perms["/vms/100"]["VM.Console"] = 0
+	if d := watching("100"); has(d.Capabilities(), driver.FencePool) || !strings.Contains(d.FenceReport(), "VM.Console on /vms/100") {
+		t.Fatalf("more than a read on a watched guest is fenced: %q", d.FenceReport())
+	}
+	if _, err := Open(context.Background(), driver.Params{Zone: "z", Endpoint: "https://192.0.2.1:8006", Credential: []byte("a@pve!b=c"),
+		Watch: []string{"priority"}, Options: map[string]string{"node": "n", "pool": "p", "storage": "s", "seed_storage": "i", "bridge": "b", "vmids": "200-300"}}); err == nil {
+		t.Fatal("a watched guest named otherwise than by its VMID was accepted")
+	}
+}
+
 // A hook that refuses a start: the API answers 200 and a task id, and the
 // refusal lives only in the task. The driver must wait for it and say why.
 func TestARefusedStartIsReadFromItsTask(t *testing.T) {
@@ -244,18 +279,24 @@ func TestFreeVMIDAsksTheClusterAboutWhatTheFenceHides(t *testing.T) {
 }
 
 func TestTags(t *testing.T) {
-	s, err := tags("m-0123456789abcdef0", map[string]string{"class": "spot", "type": "t3.medium"})
-	if err != nil || s != "class.spot;hangar-id.m-0123456789abcdef0;type.t3.medium" {
+	s, err := tags("m-0123456789abcdef0", map[string]string{"class": "guaranteed+spot", "type": "t3.medium"}, []string{"4100"})
+	if err != nil || s != "class.guaranteed+spot;hangar-id.m-0123456789abcdef0;held.4100;type.t3.medium" {
 		t.Fatalf("%q %v", s, err)
 	}
 	if guestID(s) != "m-0123456789abcdef0" {
 		t.Fatal("the id did not read back")
 	}
-	if m := tagMap(s); m["class"] != "spot" || m["type"] != "t3.medium" || len(m) != 2 {
+	if m := tagMap(s); m["class"] != "guaranteed+spot" || m["type"] != "t3.medium" || len(m) != 2 {
 		t.Fatalf("%v", m)
 	}
-	if _, err := tags("m-1", map[string]string{"owner": "alice@example.com"}); !errors.Is(err, driver.ErrRefused) {
+	if h := holdsOf(s + ";held.down-node-b"); len(h) != 2 || h[0] != "4100" || h[1] != "down-node-b" {
+		t.Fatalf("holds %v", h)
+	}
+	if _, err := tags("m-1", map[string]string{"owner": "alice@example.com"}, nil); !errors.Is(err, driver.ErrRefused) {
 		t.Fatalf("an @ in a tag was written: %v", err)
+	}
+	if _, err := tags("m-1", map[string]string{"held": "4100"}, nil); !errors.Is(err, driver.ErrRefused) {
+		t.Fatalf("a plugin wrote the driver's own held tag: %v", err)
 	}
 }
 

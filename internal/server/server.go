@@ -97,6 +97,8 @@ var routes = []route{
 	{pattern: "GET /v1/whoami", api: func(s *Server) apiFunc { return s.whoami }},
 	{pattern: "GET /v1/types", api: func(s *Server) apiFunc { return s.types }},
 	{pattern: "GET /v1/zones", api: func(s *Server) apiFunc { return s.zones }},
+	{pattern: "POST /v1/zones/{zone}/claim", api: func(s *Server) apiFunc { return s.claim(true) }},
+	{pattern: "POST /v1/zones/{zone}/release", api: func(s *Server) apiFunc { return s.claim(false) }},
 	{pattern: "GET /v1/limits", api: func(s *Server) apiFunc { return s.limits }},
 	{pattern: "GET /v1/resources", api: func(s *Server) apiFunc { return s.listResources }},
 	{pattern: "POST /v1/resources", api: func(s *Server) apiFunc { return s.createResource }},
@@ -202,6 +204,7 @@ var titles = map[string]string{
 	core.KindSchema:      "Does not fit the schema",
 	core.KindPlugin:      "Refused by the plugin",
 	core.KindLimit:       "Over your limits",
+	core.KindRoom:        "No room in the zone",
 	core.KindBusy:        "Busy",
 	core.KindConflict:    "Conflict",
 	core.KindEngine:      "Refused by the engine",
@@ -219,6 +222,9 @@ func writeProblem(w http.ResponseWriter, p *core.Problem) {
 	}
 	if len(p.Refusals) > 0 {
 		body["refusals"] = p.Refusals
+	}
+	if p.Room != nil {
+		body["room"] = p.Room
 	}
 	if p.Operation != "" {
 		body["operation"] = p.Operation
@@ -345,8 +351,36 @@ func (s *Server) types(w http.ResponseWriter, _ *http.Request, who *core.Caller)
 	return writeJSON(w, 200, map[string]any{"types": s.core.Types(who)})
 }
 
-func (s *Server) zones(w http.ResponseWriter, _ *http.Request, who *core.Caller) error {
-	return writeJSON(w, 200, map[string]any{"zones": s.core.Zones(who)})
+func (s *Server) zones(w http.ResponseWriter, r *http.Request, who *core.Caller) error {
+	zs, err := s.core.Zones(r.Context(), who)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, 200, map[string]any{"zones": zs})
+}
+
+type claimBody struct {
+	// Guest: the engine's own name for the guest whose hook calls.
+	Guest string `json:"guest"`
+}
+
+// claim is a guest's hook: before it starts (claim) or after it stopped
+// (release), the room its zone keeps for it.
+func (s *Server) claim(claim bool) apiFunc {
+	return func(w http.ResponseWriter, r *http.Request, who *core.Caller) error {
+		var in claimBody
+		if err := decode(r, &in); err != nil {
+			return err
+		}
+		if in.Guest == "" || len(in.Guest) > 64 {
+			return &core.Problem{Status: 400, Kind: core.KindBadRequest, Detail: "name the guest (the engine's own name for it)"}
+		}
+		res, err := s.core.Claim(r.Context(), who, r.PathValue("zone"), in.Guest, claim)
+		if err != nil {
+			return err
+		}
+		return writeJSON(w, 200, res)
+	}
 }
 
 func (s *Server) limits(w http.ResponseWriter, r *http.Request, who *core.Caller) error {

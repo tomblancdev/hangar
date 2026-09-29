@@ -61,21 +61,44 @@ var schemaFS embed.FS
 
 // Resource is one row of the registry, with its tags and usage.
 type Resource struct {
-	ID        string            `json:"id"`
-	Type      string            `json:"type"`
-	Plugin    string            `json:"plugin"`
-	Owner     string            `json:"owner"`
-	Zone      string            `json:"zone"`
-	State     string            `json:"state"`
-	Spec      json.RawMessage   `json:"spec"`
-	Observed  json.RawMessage   `json:"observed"`
-	Choices   map[string]string `json:"choices"`
-	Usage     map[string]int64  `json:"usage"`
-	Tags      map[string]string `json:"tags"`
-	Drift     string            `json:"drift,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
-	DeletedAt *time.Time        `json:"deleted_at,omitempty"`
+	ID       string            `json:"id"`
+	Type     string            `json:"type"`
+	Plugin   string            `json:"plugin"`
+	Owner    string            `json:"owner"`
+	Zone     string            `json:"zone"`
+	State    string            `json:"state"`
+	Spec     json.RawMessage   `json:"spec"`
+	Observed json.RawMessage   `json:"observed"`
+	Choices  map[string]string `json:"choices"`
+	Usage    map[string]int64  `json:"usage"`
+	Tags     map[string]string `json:"tags"`
+	Drift    string            `json:"drift,omitempty"`
+	// Room: what it takes from its zone's pools.
+	Room Room `json:"room"`
+	// Hold: the key of the reservation holding its borrowed room back since
+	// HoldSince ("" = none).
+	Hold      string     `json:"hold,omitempty"`
+	HoldSince *time.Time `json:"hold_since,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+}
+
+// Room is what a resource takes from its zone: MiB booked in the guaranteed
+// pool while it lives, MiB borrowed from the spot pool while it runs, and
+// whether it is meant to run.
+type Room struct {
+	GuaranteedMB int64 `json:"guaranteed_mb"`
+	SpotMB       int64 `json:"spot_mb"`
+	Running      bool  `json:"running"`
+}
+
+// Claim is a reservation in force on someone's word (see 0002_room.sql).
+type Claim struct {
+	Zone        string    `json:"zone"`
+	Reservation string    `json:"reservation"`
+	By          string    `json:"by"`
+	ClaimedAt   time.Time `json:"claimed_at"`
 }
 
 // Operation is a long action as the person polls it.
@@ -273,11 +296,17 @@ func (t *Tx) InsertResource(r *Resource) error {
 	if r.Usage == nil {
 		r.Usage = map[string]int64{}
 	}
+	var since any
+	if r.Hold != "" {
+		r.HoldSince = &t.now
+		since = ts(t.now)
+	}
 	_, err := t.q.ExecContext(t.ctx, `INSERT INTO resources
-		(id, type, plugin, owner, zone, state, spec, observed, choices, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, type, plugin, owner, zone, state, spec, observed, choices, room_guaranteed, room_spot, running, hold, hold_since,
+		 created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.Type, r.Plugin, r.Owner, r.Zone, r.State, rawOr(r.Spec, "{}"), rawOr(r.Observed, "{}"),
-		mustJSON(nonNilS(r.Choices)), ts(t.now), ts(t.now))
+		mustJSON(nonNilS(r.Choices)), r.Room.GuaranteedMB, r.Room.SpotMB, r.Room.Running, r.Hold, since, ts(t.now), ts(t.now))
 	if err != nil {
 		return err
 	}
@@ -335,6 +364,10 @@ type Change struct {
 	Usage    map[string]int64
 	Choices  map[string]string
 	Drift    *string
+	Room     *Room
+	// Hold: the reservation's key now holding its room ("" lifts it); the
+	// time it began is kept while the key stays the same.
+	Hold *string
 	// IfState: apply only while the resource is still in this state
 	// (ErrMoved otherwise).
 	IfState string
@@ -370,6 +403,18 @@ func (t *Tx) update(id string, c Change) error {
 		sets = append(sets, "drift = ?")
 		args = append(args, *c.Drift)
 	}
+	if c.Room != nil {
+		sets = append(sets, "room_guaranteed = ?", "room_spot = ?", "running = ?")
+		args = append(args, c.Room.GuaranteedMB, c.Room.SpotMB, c.Room.Running)
+	}
+	if c.Hold != nil {
+		var since any
+		if *c.Hold != "" {
+			since = ts(t.now)
+		}
+		sets = append(sets, "hold_since = CASE WHEN hold = ? THEN hold_since ELSE ? END", "hold = ?")
+		args = append(args, *c.Hold, since, *c.Hold)
+	}
 	where := " WHERE id = ?"
 	args = append(args, id)
 	if c.IfState != "" {
@@ -400,15 +445,16 @@ func (s *Store) Resource(ctx context.Context, id string) (*Resource, error) {
 	return getResource(ctx, s.db, id)
 }
 
-const resourceCols = `seq, id, type, plugin, owner, zone, state, spec, observed, choices, drift, created_at, updated_at, deleted_at`
+const resourceCols = `seq, id, type, plugin, owner, zone, state, spec, observed, choices, drift,
+	room_guaranteed, room_spot, running, hold, hold_since, created_at, updated_at, deleted_at`
 
 func scanResource(sc interface{ Scan(...any) error }) (*Resource, int64, error) {
 	var r Resource
 	var seq int64
 	var spec, observed, choices, created, updated string
-	var deleted sql.NullString
+	var deleted, since sql.NullString
 	if err := sc.Scan(&seq, &r.ID, &r.Type, &r.Plugin, &r.Owner, &r.Zone, &r.State, &spec, &observed, &choices,
-		&r.Drift, &created, &updated, &deleted); err != nil {
+		&r.Drift, &r.Room.GuaranteedMB, &r.Room.SpotMB, &r.Room.Running, &r.Hold, &since, &created, &updated, &deleted); err != nil {
 		return nil, 0, err
 	}
 	r.Spec, r.Observed = json.RawMessage(spec), json.RawMessage(observed)
@@ -416,6 +462,7 @@ func scanResource(sc interface{ Scan(...any) error }) (*Resource, int64, error) 
 		return nil, 0, err
 	}
 	r.CreatedAt, r.UpdatedAt, r.DeletedAt = parseTS(created), parseTS(updated), parseNullTS(deleted)
+	r.HoldSince = parseNullTS(since)
 	return &r, seq, nil
 }
 
@@ -565,6 +612,67 @@ func usageOf(ctx context.Context, q querier, owner string) (map[string]int64, er
 			return nil, err
 		}
 		out[d] = n
+	}
+	return out, rows.Err()
+}
+
+// ZoneUse is what a zone's live resources take from its pools: MiB booked in
+// the guaranteed pool, and MiB of the spot pool in use — by those meant to
+// run and not held. except leaves one resource out (an action's own share).
+func (t *Tx) ZoneUse(zone, except string) (booked, spot int64, err error) {
+	return zoneUse(t.ctx, t.q, zone, except)
+}
+
+// ZoneUse is what a zone's live resources take from its pools (a listing's).
+func (s *Store) ZoneUse(ctx context.Context, zone string) (booked, spot int64, err error) {
+	return zoneUse(ctx, s.db, zone, "")
+}
+
+func zoneUse(ctx context.Context, q querier, zone, except string) (booked, spot int64, err error) {
+	args := []any{zone, except}
+	for _, st := range Live {
+		args = append(args, st)
+	}
+	err = q.QueryRowContext(ctx, `SELECT COALESCE(SUM(room_guaranteed), 0),
+		COALESCE(SUM(CASE WHEN running = 1 AND hold = '' THEN room_spot ELSE 0 END), 0)
+		FROM resources WHERE zone = ? AND id != ? AND state IN (`+strings.TrimSuffix(strings.Repeat("?, ", len(Live)), ", ")+`)`,
+		args...).Scan(&booked, &spot)
+	return booked, spot, err
+}
+
+// ---- Claims -----------------------------------------------------------------
+
+// PutClaim records a reservation in force on someone's word; a second claim
+// of the same reservation starts its time anew.
+func (t *Tx) PutClaim(zone, reservation, by string) error {
+	_, err := t.q.ExecContext(t.ctx, `INSERT INTO claims (zone, reservation, by, claimed_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT (zone, reservation) DO UPDATE SET by = excluded.by, claimed_at = excluded.claimed_at`,
+		zone, reservation, by, ts(t.now))
+	return err
+}
+
+// DeleteClaim ends a claim; one already gone is not an error.
+func (t *Tx) DeleteClaim(zone, reservation string) error {
+	_, err := t.q.ExecContext(t.ctx, `DELETE FROM claims WHERE zone = ? AND reservation = ?`, zone, reservation)
+	return err
+}
+
+// Claims lists the claims in force.
+func (s *Store) Claims(ctx context.Context) ([]Claim, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT zone, reservation, by, claimed_at FROM claims ORDER BY zone, reservation`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Claim
+	for rows.Next() {
+		var c Claim
+		var at string
+		if err := rows.Scan(&c.Zone, &c.Reservation, &c.By, &at); err != nil {
+			return nil, err
+		}
+		c.ClaimedAt = parseTS(at)
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

@@ -54,6 +54,7 @@ const (
 	PluginService_Delete_FullMethodName    = "/hangar.plugin.v1.PluginService/Delete"
 	PluginService_Act_FullMethodName       = "/hangar.plugin.v1.PluginService/Act"
 	PluginService_Reconcile_FullMethodName = "/hangar.plugin.v1.PluginService/Reconcile"
+	PluginService_Survey_FullMethodName    = "/hangar.plugin.v1.PluginService/Survey"
 )
 
 // PluginServiceClient is the client API for PluginService service.
@@ -73,6 +74,11 @@ type PluginServiceClient interface {
 	Act(ctx context.Context, in *ActRequest, opts ...grpc.CallOption) (*ActResponse, error)
 	// Desired (the registry) against actual (the engine): repaired or reported.
 	Reconcile(ctx context.Context, in *ReconcileRequest, opts ...grpc.CallOption) (*ReconcileResponse, error)
+	// What the engine says about a zone's room now: whether the conditions its
+	// reservations wait on are met, which of the plugin's resources carry a
+	// hold the core may not have placed, and whether the zone is awake. A
+	// plugin whose resources take no room leaves it unimplemented.
+	Survey(ctx context.Context, in *SurveyRequest, opts ...grpc.CallOption) (*SurveyResponse, error)
 }
 
 type pluginServiceClient struct {
@@ -153,6 +159,16 @@ func (c *pluginServiceClient) Reconcile(ctx context.Context, in *ReconcileReques
 	return out, nil
 }
 
+func (c *pluginServiceClient) Survey(ctx context.Context, in *SurveyRequest, opts ...grpc.CallOption) (*SurveyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SurveyResponse)
+	err := c.cc.Invoke(ctx, PluginService_Survey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PluginServiceServer is the server API for PluginService service.
 // All implementations must embed UnimplementedPluginServiceServer
 // for forward compatibility.
@@ -170,6 +186,11 @@ type PluginServiceServer interface {
 	Act(context.Context, *ActRequest) (*ActResponse, error)
 	// Desired (the registry) against actual (the engine): repaired or reported.
 	Reconcile(context.Context, *ReconcileRequest) (*ReconcileResponse, error)
+	// What the engine says about a zone's room now: whether the conditions its
+	// reservations wait on are met, which of the plugin's resources carry a
+	// hold the core may not have placed, and whether the zone is awake. A
+	// plugin whose resources take no room leaves it unimplemented.
+	Survey(context.Context, *SurveyRequest) (*SurveyResponse, error)
 	mustEmbedUnimplementedPluginServiceServer()
 }
 
@@ -200,6 +221,9 @@ func (UnimplementedPluginServiceServer) Act(context.Context, *ActRequest) (*ActR
 }
 func (UnimplementedPluginServiceServer) Reconcile(context.Context, *ReconcileRequest) (*ReconcileResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Reconcile not implemented")
+}
+func (UnimplementedPluginServiceServer) Survey(context.Context, *SurveyRequest) (*SurveyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Survey not implemented")
 }
 func (UnimplementedPluginServiceServer) mustEmbedUnimplementedPluginServiceServer() {}
 func (UnimplementedPluginServiceServer) testEmbeddedByValue()                       {}
@@ -348,6 +372,24 @@ func _PluginService_Reconcile_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PluginService_Survey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SurveyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServiceServer).Survey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginService_Survey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServiceServer).Survey(ctx, req.(*SurveyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PluginService_ServiceDesc is the grpc.ServiceDesc for PluginService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -382,6 +424,10 @@ var PluginService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Reconcile",
 			Handler:    _PluginService_Reconcile_Handler,
+		},
+		{
+			MethodName: "Survey",
+			Handler:    _PluginService_Survey_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

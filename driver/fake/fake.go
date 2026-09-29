@@ -8,6 +8,11 @@
 // the file, or in-process with Forget, Tamper, FailNext), which is what
 // reconcile is for.
 //
+// The file also holds what a zone's reservations wait on: "watched" (the
+// power of guests outside the fence, by name), "nodes_down", and "asleep" —
+// a zone that sleeps answers no guest call until the file says otherwise, as
+// a webhook that wakes it would.
+//
 // Zone options:
 //
 //	capabilities              comma-separated flags; default: every documented
@@ -21,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -43,6 +49,7 @@ type Engine struct {
 	mu       sync.Mutex
 	path     string // "" = memory only
 	caps     []driver.Capability
+	watch    []string
 	state    state
 	failNext error
 }
@@ -53,7 +60,19 @@ type state struct {
 	// Specs: what each guest was created with (its keys, user data, image),
 	// which a Guest does not report — kept so tests can read what arrived.
 	Specs map[string]driver.GuestSpec `json:"specs,omitempty"`
+	// Watched: whether each guest outside the fence runs, by name.
+	Watched map[string]bool `json:"watched,omitempty"`
+	// NodesDown: the engine's nodes that are down.
+	NodesDown map[string]bool `json:"nodes_down,omitempty"`
+	// Asleep: the zone sleeps; its guests cannot be reached.
+	Asleep bool `json:"asleep,omitempty"`
+	// WatchFails: the watched guests' power cannot be read (an API hiccup).
+	WatchFails bool `json:"watch_fails,omitempty"`
 }
+
+// errAsleep is what a sleeping zone answers: an engine that cannot be reached
+// (the plugin reports it as such, and the core tries again later).
+var errAsleep = errors.New("the zone is asleep: its engine does not answer")
 
 // Open opens a fake zone. The endpoint is empty (memory) or a file path.
 func Open(_ context.Context, p driver.Params) (driver.Driver, error) {
@@ -63,7 +82,7 @@ func Open(_ context.Context, p driver.Params) (driver.Driver, error) {
 			return nil, fmt.Errorf("fake zone %s: the credential is not the one this zone expects", p.Zone)
 		}
 	}
-	e := &Engine{state: state{Guests: map[string]*driver.Guest{}}}
+	e := &Engine{state: state{Guests: map[string]*driver.Guest{}}, watch: slices.Clone(p.Watch)}
 	e.caps = defaultCaps()
 	if list := p.Options["capabilities"]; list != "" {
 		e.caps = nil
@@ -149,13 +168,20 @@ func (e *Engine) save() error {
 }
 
 // fail returns the error a test planted, once; otherwise it reads the file,
-// so every call starts from the engine as it is. Called with e.mu held.
+// so every call starts from the engine as it is — and a zone asleep answers
+// nothing. Called with e.mu held.
 func (e *Engine) fail() error {
 	if err := e.failNext; err != nil {
 		e.failNext = nil
 		return err
 	}
-	return e.load()
+	if err := e.load(); err != nil {
+		return err
+	}
+	if e.state.Asleep {
+		return errAsleep
+	}
+	return nil
 }
 
 func (e *Engine) CreateGuest(_ context.Context, s driver.GuestSpec) (driver.Guest, error) {
@@ -184,9 +210,13 @@ func (e *Engine) CreateGuest(_ context.Context, s driver.GuestSpec) (driver.Gues
 	if name == "" {
 		name = s.ID
 	}
+	if s.CPULimit > 0 && !e.has(driver.ResizeLiveCPUCap) {
+		return driver.Guest{}, fmt.Errorf("%w: this zone caps no CPU", driver.ErrRefused)
+	}
 	g := &driver.Guest{
 		ID: s.ID, EngineRef: fmt.Sprintf("fake-%d", e.state.Seq), Kind: s.Kind, Name: name, Node: "fake",
 		Cores: s.Cores, MemoryMB: s.MemoryMB, DiskGB: s.DiskGB, Running: !s.Stopped, Tags: maps.Clone(s.Tags),
+		Holds: sortedHolds(s.Holds), CPULimit: s.CPULimit,
 	}
 	e.state.Guests[s.ID] = g
 	if e.state.Specs == nil {
@@ -283,8 +313,89 @@ func (e *Engine) ResizeGuest(_ context.Context, id string, cores, memoryMB int) 
 	if g.Running && memoryMB < g.MemoryMB && !e.has(driver.ResizeLiveMemoryDown) {
 		return driver.Guest{}, fmt.Errorf("%w: a running guest's memory only grows here", driver.ErrRefused)
 	}
+	if g.Running && g.MemoryUsedMB > 0 && memoryMB < g.MemoryMB && memoryMB < g.MemoryUsedMB+64 {
+		return driver.Guest{}, fmt.Errorf("%w: it holds %d MB now; its memory goes no lower than %d MB while it runs",
+			driver.ErrRefused, g.MemoryUsedMB, g.MemoryUsedMB+64)
+	}
 	g.Cores, g.MemoryMB = cores, memoryMB
 	return clone(g), e.save()
+}
+
+func (e *Engine) SetCPULimit(_ context.Context, id string, cores int) (driver.Guest, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.fail(); err != nil {
+		return driver.Guest{}, err
+	}
+	g, ok := e.state.Guests[id]
+	if !ok {
+		return driver.Guest{}, driver.ErrNotFound
+	}
+	if !e.has(driver.ResizeLiveCPUCap) {
+		return driver.Guest{}, fmt.Errorf("%w: this zone caps no CPU", driver.ErrRefused)
+	}
+	g.CPULimit = cores
+	return clone(g), e.save()
+}
+
+func (e *Engine) Retag(_ context.Context, id string, tags map[string]string, holds []string) (driver.Guest, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.fail(); err != nil {
+		return driver.Guest{}, err
+	}
+	g, ok := e.state.Guests[id]
+	if !ok {
+		return driver.Guest{}, driver.ErrNotFound
+	}
+	g.Tags, g.Holds = maps.Clone(tags), sortedHolds(holds)
+	return clone(g), e.save()
+}
+
+func sortedHolds(h []string) []string {
+	if len(h) == 0 {
+		return nil
+	}
+	out := slices.Clone(h)
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// ---- The watcher facet ------------------------------------------------------
+
+// GuestRunning reads a watched guest's power from the file; a guest the zone
+// was not asked to watch is refused, as a fenced engine would.
+func (e *Engine) GuestRunning(_ context.Context, ref string) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !slices.Contains(e.watch, ref) {
+		return false, fmt.Errorf("%w: guest %s is not one this zone watches", driver.ErrRefused, ref)
+	}
+	if err := e.load(); err != nil {
+		return false, err
+	}
+	if e.state.WatchFails {
+		return false, errors.New("the engine did not answer")
+	}
+	return e.state.Watched[ref], nil
+}
+
+func (e *Engine) NodeDown(_ context.Context, node string) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.load(); err != nil {
+		return false, err
+	}
+	return e.state.NodesDown[node], nil
+}
+
+func (e *Engine) Awake(context.Context) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.load(); err != nil {
+		return false, err
+	}
+	return !e.state.Asleep, nil
 }
 
 // ---- What tests do to the engine behind the registry's back ----------------
@@ -328,7 +439,11 @@ func (e *Engine) FailNext(err error) {
 func clone(g *driver.Guest) driver.Guest {
 	c := *g
 	c.Tags = maps.Clone(g.Tags)
+	c.Holds = slices.Clone(g.Holds)
 	return c
 }
 
-var _ driver.Guests = (*Engine)(nil)
+var (
+	_ driver.Guests  = (*Engine)(nil)
+	_ driver.Watcher = (*Engine)(nil)
+)

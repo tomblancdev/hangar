@@ -37,7 +37,7 @@ func TestMigrationsRunOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if v, _ := s.Version(context.Background()); v != 1 {
+		if v, _ := s.Version(context.Background()); v != 2 {
 			t.Fatalf("schema version %d", v)
 		}
 		_ = s.Close()
@@ -169,5 +169,58 @@ func TestTokens(t *testing.T) {
 	}
 	if err := s.RevokeToken(ctx, "alice", tok.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatal("a revoked token is revoked once")
+	}
+}
+
+// A zone's pools count what its live resources take: every floor booked,
+// running or not; borrowed room only while meant to run and not held.
+func TestZoneUse(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	add := func(id, state string, room Room, hold string) {
+		t.Helper()
+		if err := s.Tx(ctx, func(tx *Tx) error {
+			return tx.InsertResource(&Resource{ID: id, Type: "machine", Plugin: "machines", Owner: "alice", Zone: "z",
+				State: state, Spec: json.RawMessage(`{}`), Room: room, Hold: hold})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("m-1", Ready, Room{GuaranteedMB: 1024, SpotMB: 3072, Running: true}, "")   // a floor + a top-up in use
+	add("m-2", Ready, Room{SpotMB: 2048, Running: true}, "4100")                   // held: borrows nothing now
+	add("m-3", Ready, Room{SpotMB: 2048}, "")                                      // stopped
+	add("m-4", Deleted, Room{GuaranteedMB: 8192, SpotMB: 8192, Running: true}, "") // gone
+	add("m-5", Creating, Room{GuaranteedMB: 512}, "")
+	var booked, spot int64
+	err := s.Tx(ctx, func(tx *Tx) (err error) { booked, spot, err = tx.ZoneUse("z", "m-5"); return })
+	if err != nil || booked != 1024 || spot != 3072 {
+		t.Fatalf("booked %d, spot %d, %v", booked, spot, err)
+	}
+	r, _ := s.Resource(ctx, "m-2")
+	if r.Hold != "4100" || r.HoldSince == nil || !r.Room.Running || r.Room.SpotMB != 2048 {
+		t.Fatalf("%+v", r)
+	}
+	since := *r.HoldSince
+	same, lifted := "4100", ""
+	time.Sleep(2 * time.Millisecond)
+	_ = s.Tx(ctx, func(tx *Tx) error { return tx.Update("m-2", Change{Hold: &same}) })
+	if r, _ = s.Resource(ctx, "m-2"); !r.HoldSince.Equal(since) {
+		t.Fatalf("the same hold began again: %v then %v", since, r.HoldSince)
+	}
+	_ = s.Tx(ctx, func(tx *Tx) error { return tx.Update("m-2", Change{Hold: &lifted}) })
+	if r, _ = s.Resource(ctx, "m-2"); r.Hold != "" || r.HoldSince != nil {
+		t.Fatalf("a lifted hold: %+v", r)
+	}
+
+	if err := s.Tx(ctx, func(tx *Tx) error { return tx.PutClaim("z", "priority", "hook") }); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := s.Claims(ctx)
+	if err != nil || len(cs) != 1 || cs[0].Reservation != "priority" || cs[0].By != "hook" {
+		t.Fatalf("%+v %v", cs, err)
+	}
+	_ = s.Tx(ctx, func(tx *Tx) error { return tx.DeleteClaim("z", "priority") })
+	if cs, _ = s.Claims(ctx); len(cs) != 0 {
+		t.Fatalf("a released claim stays: %+v", cs)
 	}
 }

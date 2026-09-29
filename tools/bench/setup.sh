@@ -9,6 +9,11 @@
 #      Debian's cloud image, in pool hangar-images
 #   4. the fence: pool hangar, a role that acts only there, a read-and-clone
 #      role on the images, one user and its API token (privilege-separated)
+#   5. a priority guest: VM 100, the operator's own, outside the pools — the
+#      guest a zone keeps room for while it runs; the token may read its
+#      power (VM.Audit on it) and nothing else there. The hook itself
+#      (cmd/hangar-hook) is a build of this repo: the room's bench test puts
+#      it in place, on this guest and on the VM template.
 #
 # The token's secret is written to /root/hangar-token (0600) as
 # `user@realm!name=secret`, for bench.sh to copy out; it is never printed.
@@ -106,6 +111,11 @@ pveum role add HangarImages --privs VM.Audit,VM.Clone,Pool.Audit 2>/dev/null ||
 pveum role add HangarTemplates --privs Datastore.Audit 2>/dev/null || pveum role modify HangarTemplates --privs Datastore.Audit
 seeds=Datastore.Allocate,Datastore.AllocateTemplate,Datastore.Audit
 pveum role add HangarSeeds --privs "$seeds" 2>/dev/null || pveum role modify HangarSeeds --privs "$seeds"
+pveum role add HangarWatch --privs VM.Audit 2>/dev/null || pveum role modify HangarWatch --privs VM.Audit
+if ! qm config 100 >/dev/null 2>&1; then
+	say "VM 100, a priority guest (no disk: it only has to start and stop)"
+	qm create 100 --name priority --memory 512 --cores 1 --net0 virtio,bridge=hbnet >/dev/null
+fi
 pveum user add hangar-machines@pve --comment "hangar's machines plugin" 2>/dev/null || true
 if [ ! -s /root/hangar-token ]; then
 	pveum user token remove hangar-machines@pve bench 2>/dev/null || true
@@ -124,6 +134,7 @@ for who in "--users hangar-machines@pve" "--tokens hangar-machines@pve!bench"; d
 		pveum acl modify /storage/local --roles HangarTemplates $who # read the container templates
 		pveum acl modify /storage/hangar-seeds --roles HangarSeeds $who
 		pveum acl modify /sdn/zones/hbench/hbnet --roles PVESDNUser $who
+		pveum acl modify /vms/100 --roles HangarWatch $who # its power, read: the zone's reservation waits on it
 	}
 done
 # A control for the fence: a token that reaches everything (root's, not

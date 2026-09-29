@@ -29,10 +29,13 @@ import (
 	"github.com/tomblancdev/hangar/internal/registry"
 )
 
-// Scopes an API token may carry. An OIDC session has both.
+// Scopes an API token may carry. An OIDC session has read and write. Room is
+// a token's for a guest's hook: it claims and releases the room its
+// reservation keeps, and does nothing else — not even read.
 const (
 	ScopeRead  = "read"
 	ScopeWrite = "write"
+	ScopeRoom  = "room"
 )
 
 // TokenPrefix starts every API token's secret, so a leaked one is
@@ -156,9 +159,12 @@ func Mint(ctx context.Context, store *registry.Store, owner, name string, groups
 		scopes = []string{ScopeRead, ScopeWrite}
 	}
 	for _, s := range scopes {
-		if s != ScopeRead && s != ScopeWrite {
-			return "", nil, &RequestError{Message: fmt.Sprintf("no scope %q: read or write", s)}
+		if s != ScopeRead && s != ScopeWrite && s != ScopeRoom {
+			return "", nil, &RequestError{Message: fmt.Sprintf("no scope %q: read, write, or room (a hook's)", s)}
 		}
+	}
+	if slices.Contains(scopes, ScopeRoom) && len(scopes) > 1 {
+		return "", nil, &RequestError{Message: "a room token is a hook's, and holds that scope alone"}
 	}
 	if slices.Contains(scopes, ScopeWrite) && !slices.Contains(scopes, ScopeRead) {
 		scopes = append(scopes, ScopeRead)

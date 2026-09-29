@@ -66,6 +66,9 @@ type Params struct {
 	Endpoint   string
 	Options    map[string]string
 	Credential []byte
+	// Watch: guests outside the fence the zone's reservations name; the
+	// driver may read their power (Watcher), and nothing more.
+	Watch []string
 }
 
 // Driver is an open connection to one zone's engine.
@@ -155,8 +158,28 @@ type Guests interface {
 	// ResizeGuest sets cores and memory. What a RUNNING guest can change is
 	// what Traits says for its kind; anything else is ErrRefused.
 	ResizeGuest(ctx context.Context, id string, cores, memoryMB int) (Guest, error)
+	// SetCPULimit caps the CPU time a guest may use to that many cores' worth,
+	// at once, running or not; 0 lifts the cap. Where the engine lacks
+	// resize.live.cpu_cap it is ErrRefused.
+	SetCPULimit(ctx context.Context, id string, cores int) (Guest, error)
+	// Retag writes a guest's tags and holds anew (the core's id stays).
+	Retag(ctx context.Context, id string, tags map[string]string, holds []string) (Guest, error)
 	// Traits says what a guest of this kind can take on this engine.
 	Traits(kind string) Traits
+}
+
+// Watcher is the facet of a driver that reads what a zone's reservations wait
+// on: a guest outside its fence that it was allowed to watch, a node of the
+// engine, and whether the zone itself answers. A driver that cannot read them
+// does not implement it; a zone of it then keeps no conditional reservation.
+type Watcher interface {
+	// GuestRunning: whether a watched guest runs now, read live.
+	GuestRunning(ctx context.Context, ref string) (bool, error)
+	// NodeDown: whether a node of the engine is down.
+	NodeDown(ctx context.Context, node string) (bool, error)
+	// Awake: whether the zone's engine answers and the node its guests run
+	// on is up. A zone that sleeps is not awake; an error is not either.
+	Awake(ctx context.Context) (bool, error)
 }
 
 // Traits is what a guest of one kind can take on one engine — finer than a
@@ -189,6 +212,11 @@ type GuestSpec struct {
 	// UserData is handed to its first boot, where Traits says it takes any.
 	UserData []byte
 	Tags     map[string]string
+	// Holds: the keys of the reservations holding its room back, written on
+	// it for a node that acts without the brain to read.
+	Holds []string
+	// CPULimit: a cap from birth (cores' worth; 0 = none).
+	CPULimit int
 	// Stopped: create it without starting it.
 	Stopped bool
 }
@@ -206,4 +234,11 @@ type Guest struct {
 	Running   bool              `json:"running"`
 	Addresses []string          `json:"addresses,omitempty"`
 	Tags      map[string]string `json:"tags,omitempty"`
+	// Holds: the reservations' keys written on it (see GuestSpec.Holds).
+	Holds []string `json:"holds,omitempty"`
+	// CPULimit: its CPU cap in cores' worth; 0 = none.
+	CPULimit int `json:"cpu_limit,omitempty"`
+	// MemoryUsedMB: what a running guest holds now, where the engine says
+	// (a limit written below it is refused); 0 = unknown or stopped.
+	MemoryUsedMB int `json:"memory_used_mb,omitempty"`
 }

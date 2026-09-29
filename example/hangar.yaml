@@ -58,6 +58,16 @@ zones:
     endpoint: ./data/playground.json   # the fake engine's state: edit it to make it drift
     options:
       capabilities: kind.container,kind.vm,guest.tags,resize.live.cpu_cap,fence.pool
+    # room:                    # count the zone's memory in two pools (ARCHITECTURE.md §6)
+    #   memory_gb: 16          #   what its resources may count on
+    #   reservations:          #   room kept for others: always, or on a condition
+    #     - {name: host, memory_gb: 2}
+    #     - {name: priority, memory_gb: 8, while_running: "4100"}   # a guest of yours
+    #                          #   → 6 GB can be promised, 8 lent while guest 4100 sleeps
+    #                          #   (the fake engine: "watched": {"4100": true} in its file)
+    # wake:                    # a zone that sleeps, woken before anything starts in it
+    #   url: https://power.example.com/api/targets/node-c/wake
+    #   headers: {Authorization: {env: WAKE_TOKEN}}
 
 plugins:
   - name: toy

@@ -34,6 +34,7 @@ import (
 	"github.com/tomblancdev/hangar/internal/metrics"
 	"github.com/tomblancdev/hangar/internal/plugins"
 	"github.com/tomblancdev/hangar/internal/registry"
+	"github.com/tomblancdev/hangar/internal/room"
 	"github.com/tomblancdev/hangar/sdk/pluginpb"
 )
 
@@ -61,6 +62,8 @@ type Core struct {
 
 	waitMu  sync.Mutex
 	waiters map[string]*waiter
+
+	room roomState // the zones' reservations: what is in force, and why
 }
 
 type waiter struct {
@@ -93,6 +96,7 @@ type Problem struct {
 	Detail     string              `json:"detail"`
 	Violations []plugins.Violation `json:"violations,omitempty"`
 	Refusals   []limits.Refusal    `json:"refusals,omitempty"`
+	Room       *room.Refusal       `json:"room,omitempty"`
 	Operation  string              `json:"operation,omitempty"`
 }
 
@@ -124,6 +128,7 @@ const (
 	KindSchema      = "schema"
 	KindPlugin      = "plugin-refused"
 	KindLimit       = "limit"
+	KindRoom        = "room"
 	KindBusy        = "busy"
 	KindConflict    = "conflict"
 	KindEngine      = "engine"
@@ -149,6 +154,9 @@ func (c *Core) refused(ctx context.Context, p *Problem) *Problem {
 	reason := p.Kind
 	if len(p.Refusals) > 0 {
 		reason = p.Refusals[0].Reason
+	}
+	if p.Room != nil {
+		reason = "room-" + p.Room.Pool
 	}
 	c.metrics.Inc("hangar_requests_refused_total", reason)
 	audit.From(ctx).Set(func(e *audit.Event) { e.Result, e.Reason, e.Detail = "refused", reason, p.Detail })
@@ -239,12 +247,14 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 	r = &registry.Resource{
 		ID: ids.New(t.Prefix), Type: t.Name, Plugin: t.Plugin, Owner: who.Subject, Zone: in.Zone,
 		State: registry.Creating, Spec: plan.GetSpec(), Choices: plan.GetChoices(), Usage: plan.GetUsage(), Tags: in.Tags,
+		Room: roomOf(plan.GetRoom()),
 	}
 	op = &registry.Operation{
 		ID: ids.New(ids.Operation), Owner: who.Subject, ResourceID: r.ID, Kind: registry.OpCreate,
 		ClientToken: in.ClientToken, RequestHash: hash,
 	}
 	var refusals []limits.Refusal
+	var noRoom *room.Refusal
 	c.admit.Lock()
 	err = c.store.Tx(ctx, func(tx *registry.Tx) error {
 		if in.ClientToken != "" {
@@ -262,6 +272,13 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 		if refusals = limits.Admit(who.Tier, c.host.Dimensions(), used, nil, r.Usage, nil, r.Choices); len(refusals) > 0 {
 			return errRefused
 		}
+		// the zone's pools: a machine born while the room is held is born held
+		if r.Hold, noRoom, err = c.admitRoom(tx, r.Zone, r.ID, registry.Room{}, "", r.Room); err != nil || noRoom != nil {
+			if err == nil {
+				err = errNoRoom
+			}
+			return err
+		}
 		if err := tx.InsertResource(r); err != nil {
 			return err
 		}
@@ -276,6 +293,8 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 	switch {
 	case errors.Is(err, errRefused):
 		return nil, nil, false, c.refused(ctx, limitProblem(refusals))
+	case errors.Is(err, errNoRoom):
+		return nil, nil, false, c.refused(ctx, roomProblem(noRoom))
 	case errors.Is(err, errReplayRace):
 		// the same token arrived twice at once; the other one won
 		op, r, p := c.replay(ctx, who, in.ClientToken, hash)
@@ -293,6 +312,7 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 
 var (
 	errRefused    = errors.New("refused")
+	errNoRoom     = errors.New("no room")
 	errReplayRace = errors.New("client token raced")
 )
 
@@ -567,6 +587,7 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 		Params: in.Params, ClientToken: in.ClientToken, RequestHash: hash,
 	}
 	var refusals []limits.Refusal
+	var noRoom *room.Refusal
 	c.admit.Lock()
 	err := c.store.Tx(ctx, func(tx *registry.Tx) error {
 		if plan != nil {
@@ -579,6 +600,18 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 			if refusals = limits.Admit(who.Tier, c.host.Dimensions(), used, r.Usage, change.Usage, r.Choices, change.Choices); len(refusals) > 0 {
 				return errRefused
 			}
+			after := roomOf(plan.GetRoom())
+			hold, ref, err := c.admitRoom(tx, r.Zone, r.ID, r.Room, r.Hold, after)
+			if err != nil {
+				return err
+			}
+			if ref != nil {
+				noRoom = ref
+				return errNoRoom
+			}
+			if after != (registry.Room{}) || r.Room != (registry.Room{}) {
+				change.Room, change.Hold = &after, &hold
+			}
 		}
 		if err := tx.Update(r.ID, change); err != nil {
 			return err
@@ -589,6 +622,8 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 	switch {
 	case errors.Is(err, errRefused):
 		return nil, nil, false, c.refused(ctx, limitProblem(refusals))
+	case errors.Is(err, errNoRoom):
+		return nil, nil, false, c.refused(ctx, roomProblem(noRoom))
 	case errors.Is(err, registry.ErrMoved):
 		return nil, nil, false, c.refused(ctx, problem(409, KindBusy, "%s changed while you asked: try again", r.ID))
 	case err != nil:
@@ -597,6 +632,9 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 	audit.From(ctx).Set(func(e *audit.Event) { e.Operation, e.Result = op.ID, "accepted" })
 	// what the resource was, to give back if the action fails
 	before := *r
+	if change.Room != nil {
+		r.Room, r.Hold = *change.Room, *change.Hold
+	}
 	c.start(op, &before)
 	r.State = registry.Updating
 	return op, r, false, nil
@@ -739,10 +777,14 @@ type ZoneView struct {
 	Name    string                       `json:"name"`
 	Driver  string                       `json:"driver"`
 	Plugins map[string]plugins.ZoneState `json:"plugins"`
+	// Room: its pools and reservations, when it counts room.
+	Room *RoomView `json:"room,omitempty"`
+	// Awake: whether it answered its last survey awake (absent: unknown).
+	Awake *bool `json:"awake,omitempty"`
 }
 
 // Zones lists the zones open to the caller.
-func (c *Core) Zones(who *Caller) []ZoneView {
+func (c *Core) Zones(ctx context.Context, who *Caller) ([]ZoneView, error) {
 	out := []ZoneView{}
 	for _, z := range c.cfg.Zones {
 		if !limits.ZoneOpen(who.Tier, z.Name) {
@@ -754,9 +796,19 @@ func (c *Core) Zones(who *Caller) []ZoneView {
 				v.Plugins[p.Name] = st
 			}
 		}
+		if z.Room != nil {
+			rv, err := c.roomView(ctx, z)
+			if err != nil {
+				return nil, err
+			}
+			v.Room = rv
+		}
+		if up, known := c.awake(z.Name); known {
+			v.Awake = &up
+		}
 		out = append(out, v)
 	}
-	return out
+	return out, nil
 }
 
 // LimitView is one dimension of the caller's tier: its limit and their use.
@@ -800,6 +852,17 @@ func (c *Core) Run(ctx context.Context) error {
 	running, err := c.store.Running(ctx)
 	if err != nil {
 		return err
+	}
+	if err := c.loadClaims(ctx); err != nil {
+		return err
+	}
+	// what the zones' reservations wait on, read before anything is resumed
+	for _, z := range c.cfg.Zones {
+		if z.Room != nil || z.Wake != nil {
+			unlock := c.decide(z.Name)
+			c.surveyZone(ctx, z, true)
+			unlock()
+		}
 	}
 	for _, op := range running {
 		c.log.Info("resuming an operation the brain stopped during", "operation", op.ID, "kind", op.Kind, "resource", op.ResourceID)
@@ -859,6 +922,17 @@ func (c *Core) execute(op *registry.Operation, prev *registry.Resource) {
 		return
 	}
 	p := c.host.Plugin(t.Plugin)
+	// a zone that sleeps is woken before something starts in it
+	if z, _ := c.cfg.Zone(r.Zone); z.Wake != nil && r.Room.Running && op.Kind != registry.OpDelete &&
+		(op.Kind == registry.OpCreate || prev == nil || !prev.Room.Running) {
+		if err := c.wakeZone(ctx, z); err != nil {
+			if ctx.Err() != nil {
+				return // shutting down: the operation resumes next start
+			}
+			c.finish(op, r, nil, err, prev)
+			return
+		}
+	}
 	var result outcome
 	for attempt := 0; ; attempt++ {
 		_ = c.store.Attempt(ctx, op.ID)
@@ -974,6 +1048,7 @@ func (c *Core) finish(op *registry.Operation, r *registry.Resource, out *outcome
 			if len(prev) > 0 && prev[0] != nil {
 				// give back what the admission reserved
 				change.Spec, change.Usage, change.Choices = prev[0].Spec, prev[0].Usage, prev[0].Choices
+				change.Room = &prev[0].Room
 				if change.Usage == nil {
 					change.Usage = map[string]int64{}
 				}
@@ -1103,7 +1178,8 @@ func (c *Core) loadRefs(ctx context.Context, refs []plugins.Ref, doc json.RawMes
 }
 
 func toProto(r *registry.Resource) *pluginpb.Resource {
-	return &pluginpb.Resource{Id: r.ID, Type: r.Type, Zone: r.Zone, Owner: r.Owner, Spec: r.Spec, Observed: r.Observed, Tags: r.Tags}
+	return &pluginpb.Resource{Id: r.ID, Type: r.Type, Zone: r.Zone, Owner: r.Owner, Spec: r.Spec, Observed: r.Observed, Tags: r.Tags,
+		Hold: r.Hold}
 }
 
 // ---- Reconcile ----------------------------------------------------------
@@ -1112,6 +1188,26 @@ func toProto(r *registry.Resource) *pluginpb.Resource {
 // reported, and a resource its engine lost is marked lost (and found again
 // when it comes back).
 func (c *Core) ReconcileOnce(ctx context.Context) {
+	// the zones' room first: what their reservations wait on, and the hold
+	// each resource is to be brought to
+	asleep := map[string]bool{}
+	for _, z := range c.cfg.Zones {
+		if z.Room == nil && z.Wake == nil {
+			continue
+		}
+		unlock := c.decide(z.Name)
+		if c.surveyZone(ctx, z, true) {
+			if up, _ := c.awake(z.Name); !up {
+				unlock()
+				asleep[z.Name] = true // not woken by a reconcile: its machines are looked at when it wakes
+				continue
+			}
+		}
+		if _, err := c.holdZone(ctx, z); err != nil {
+			c.log.Error("reconcile: the zone's holds could not be written", "zone", z.Name, "err", err)
+		}
+		unlock()
+	}
 	var after int64
 	for {
 		rs, next, err := c.store.Resources(ctx, registry.Filter{States: []string{registry.Ready, registry.Lost}, After: after, Limit: 500})
@@ -1122,6 +1218,9 @@ func (c *Core) ReconcileOnce(ctx context.Context) {
 		for _, r := range rs {
 			if ctx.Err() != nil {
 				return
+			}
+			if asleep[r.Zone] {
+				continue
 			}
 			c.reconcile(ctx, r)
 		}
@@ -1138,25 +1237,47 @@ func (c *Core) reconcile(ctx context.Context, r *registry.Resource) {
 		return // an operation holds it; the next round will look
 	}
 	defer mu.Unlock()
+	// read again under the lock: an operation may have ended since the listing
+	if now, err := c.store.Resource(ctx, r.ID); err == nil {
+		r = now
+	}
+	if r.State != registry.Ready && r.State != registry.Lost {
+		return
+	}
+	c.reconcileLocked(ctx, r)
+}
+
+// reconcileLocked compares one resource with its engine and writes the
+// verdict; its lock is held. It returns the verdict and what it said.
+func (c *Core) reconcileLocked(ctx context.Context, r *registry.Resource) (string, string) {
 	t := c.host.Type(r.Type)
 	if t == nil {
-		return
+		return "skipped", "no enabled plugin answers for type " + r.Type
 	}
 	client, err := c.host.Plugin(t.Plugin).Client(ctx)
 	if err != nil {
 		c.log.Warn("reconcile: plugin down", "plugin", t.Plugin, "err", err)
-		return
+		return "skipped", err.Error()
 	}
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	resp, err := client.Reconcile(cctx, &pluginpb.ReconcileRequest{Resource: toProto(r)})
 	if err != nil {
 		c.log.Warn("reconcile: the plugin could not answer", "resource", r.ID, "err", err)
-		return
+		return "skipped", status.Convert(err).Message()
 	}
 	verdict := strings.TrimPrefix(strings.ToLower(resp.GetDrift().String()), "drift_")
 	c.metrics.Inc("hangar_reconcile_total", r.Type, verdict)
 	change := registry.Change{IfState: r.State, Observed: resp.GetObserved()}
+	if len(resp.GetSpec()) > 0 {
+		// the plugin moved what the resource is meant to be (a machine a
+		// hold stopped for good), with the room it now takes
+		change.Spec = resp.GetSpec()
+		if resp.GetRoom() != nil {
+			rm := roomOf(resp.GetRoom())
+			change.Room = &rm
+		}
+	}
 	e := audit.Event{Action: "reconcile", Actor: "hangar", Resource: r.ID, Type: r.Type, Zone: r.Zone, Result: verdict, Detail: resp.GetDetail()}
 	clear := ""
 	loud := true
@@ -1179,23 +1300,24 @@ func (c *Core) reconcile(ctx context.Context, r *registry.Resource) {
 		loud = r.Drift != d
 	case pluginpb.Drift_DRIFT_MISSING:
 		if r.State == registry.Lost {
-			return
+			return verdict, resp.GetDetail()
 		}
 		d := resp.GetDetail()
 		change.State, change.Drift = registry.Lost, &d
 	default:
-		return
+		return verdict, resp.GetDetail()
 	}
 	err = c.store.Tx(ctx, func(tx *registry.Tx) error { return tx.Update(r.ID, change) })
 	if errors.Is(err, registry.ErrMoved) {
-		return
+		return "skipped", "it changed while it was looked at"
 	}
 	if err != nil {
 		c.log.Error("reconcile: the verdict could not be written", "resource", r.ID, "err", err)
-		return
+		return "skipped", err.Error()
 	}
 	if loud {
 		c.audit.Write(e)
 	}
 	c.events(r, resp.GetEvents())
+	return verdict, resp.GetDetail()
 }

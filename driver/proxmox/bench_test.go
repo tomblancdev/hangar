@@ -66,7 +66,7 @@ func (b *bench) open(t *testing.T, tokenFile string) *Driver {
 		t.Fatal(err)
 	}
 	d, err := Open(context.Background(), driver.Params{
-		Zone: "bench", Endpoint: b.url, Credential: tok,
+		Zone: "bench", Endpoint: b.url, Credential: tok, Watch: []string{"100"}, // the bench's priority guest
 		Options: map[string]string{
 			"node": "pve-bench", "pool": "hangar", "images_pool": "hangar-images", "storage": "local-zfs",
 			"seed_storage": "hangar-seeds", "bridge": "hbnet", "vmids": "11000-11019", "ca_file": b.ca,
@@ -302,5 +302,41 @@ func TestBenchAHookRefusesAStart(t *testing.T) {
 	t.Logf("refused: %v", err)
 	if g, _ = d.Guest(ctx, id); g.Running {
 		t.Fatal("it runs anyway")
+	}
+}
+
+// What a zone's reservations wait on, read with the machines' own token: the
+// power of the priority guest it may watch (VM.Audit on VM 100, nothing
+// more), the node's state (no grant needed) — and a guest it does not watch
+// refused.
+func TestBenchTheWatcher(t *testing.T) {
+	b := onBench(t)
+	d := b.open(t, b.token)
+	ctx := context.Background()
+	b.must(t, "qm stop 100 >/dev/null 2>&1; true")
+	if on, err := d.GuestRunning(ctx, "100"); err != nil || on {
+		t.Fatalf("VM 100 stopped reads %v, %v", on, err)
+	}
+	b.must(t, "qm set 100 --delete hookscript >/dev/null 2>&1; qm start 100")
+	t.Cleanup(func() { b.must(t, "qm stop 100") })
+	if on, err := d.GuestRunning(ctx, "100"); err != nil || !on {
+		t.Fatalf("VM 100 running reads %v, %v", on, err)
+	}
+	// a lone node is never "offline" (no membership says so); when pvestatd
+	// lags it reads "unknown", which cannot tell — never down
+	if down, err := d.NodeDown(ctx, "pve-bench"); down || (err != nil && !strings.Contains(err.Error(), "cannot tell")) {
+		t.Fatalf("the node reads down: %v, %v", down, err)
+	} else if err != nil {
+		t.Logf("the node: %v", err)
+	}
+	if up, err := d.Awake(ctx); err != nil || !up {
+		t.Fatalf("the zone reads asleep: %v, %v", up, err)
+	}
+	if _, err := d.GuestRunning(ctx, "9000"); !errors.Is(err, driver.ErrRefused) {
+		t.Fatalf("a guest the zone does not watch: %v", err)
+	}
+	// the control: the same token cannot stop what it watches
+	if err := d.c.run(ctx, "POST", "/nodes/pve-bench/qemu/100/status/stop", nil); err == nil || !strings.Contains(err.Error(), "VM.PowerMgmt") {
+		t.Fatalf("the token stopped the watched guest: %v", err)
 	}
 }

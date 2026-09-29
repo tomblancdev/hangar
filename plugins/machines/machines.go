@@ -12,6 +12,16 @@
 //     pairs by id ("x-hangar-ref"); the core checks they are the owner's own
 //     and hands them over with the create.
 //
+// A machine takes room in its zone by its class (ARCHITECTURE.md §6):
+// guaranteed (all its memory booked), spot (all borrowed: it stops when a
+// reservation needs the room, and starts again when the room returns unless
+// it says resume: false), or guaranteed+spot (a floor booked, the rest
+// borrowed: it shrinks to its floor instead of stopping — only where a
+// running guest of its kind gives memory back). cores_beside caps the CPU of
+// the ones that stay while the room is held. The class, floor, cap and the
+// size admitted are written on the guest as tags, for the engine's node to
+// act on when the brain cannot be reached.
+//
 // It requires fence.pool: a zone whose credential reaches beyond the
 // product's own guests is not one it will act on.
 //
@@ -49,6 +59,18 @@ import (
 // Name is the plugin's own name: the operator enables it as "machines".
 const Name = "machines"
 
+// The classes: where a machine's memory is counted in its zone's pools.
+const (
+	Guaranteed     = "guaranteed"
+	Spot           = "spot"
+	GuaranteedSpot = "guaranteed+spot"
+)
+
+// usedMargin is what a running guest's memory must stay above what it holds
+// by when a hold shrinks it: a limit written below its use makes the kernel
+// kill inside it (read on Proxmox VE: the container's init died).
+const usedMargin = 64
+
 // Size is cores and memory.
 type Size struct {
 	Cores    int `json:"cores"`
@@ -69,14 +91,23 @@ const DefaultType = "t3.micro"
 
 // Spec is a machine's desired state.
 type Spec struct {
-	Name     string   `json:"name,omitempty"`
-	Kind     string   `json:"kind"`
-	Type     string   `json:"type,omitempty"`
-	Cores    int      `json:"cores"`
-	MemoryGB int      `json:"memory_gb"`
-	DiskGB   int      `json:"disk_gb"`
-	Image    string   `json:"image"`
-	Class    string   `json:"class"`
+	Name     string `json:"name,omitempty"`
+	Kind     string `json:"kind"`
+	Type     string `json:"type,omitempty"`
+	Cores    int    `json:"cores"`
+	MemoryGB int    `json:"memory_gb"`
+	DiskGB   int    `json:"disk_gb"`
+	Image    string `json:"image"`
+	Class    string `json:"class"`
+	// FloorGB: with guaranteed+spot, the memory that stays when the room is
+	// held; the rest is borrowed.
+	FloorGB int `json:"floor_gb,omitempty"`
+	// CoresBeside: the CPU cap, in cores' worth, while the room is held (a
+	// machine that stays); 0 = never capped.
+	CoresBeside int `json:"cores_beside,omitempty"`
+	// Resume: a spot machine a hold stopped starts again when the room
+	// returns; false = it stays stopped until its owner starts it.
+	Resume   bool     `json:"resume"`
 	KeyPairs []string `json:"key_pairs,omitempty"`
 	UserData string   `json:"user_data,omitempty"`
 	Running  bool     `json:"running"`
@@ -93,6 +124,10 @@ type Observed struct {
 	DiskGB    int      `json:"disk_gb,omitempty"`
 	Running   bool     `json:"running"`
 	Addresses []string `json:"addresses,omitempty"`
+	// CPULimit: its CPU cap while the room is held; 0 = none.
+	CPULimit int `json:"cpu_limit,omitempty"`
+	// Held: the reservations holding its room back, as its engine reads.
+	Held []string `json:"held,omitempty"`
 }
 
 // KeyPair is a key pair's spec.
@@ -131,8 +166,14 @@ const machineSchema = `{
                    "description": "Its root disk." },
     "image":     { "type": "string", "minLength": 1, "maxLength": 128,
                    "description": "What it starts from, by the name the operator gave it." },
-    "class":     { "type": "string", "enum": ["guaranteed", "spot"], "default": "spot",
-                   "description": "Guaranteed room, or room borrowed and given back when its owner needs it." },
+    "class":     { "type": "string", "enum": ["guaranteed", "spot", "guaranteed+spot"], "default": "spot",
+                   "description": "Guaranteed room; room borrowed and given back when the zone needs it (it stops); or a guaranteed floor with the rest borrowed (it shrinks to its floor instead)." },
+    "floor_gb":  { "type": "integer", "minimum": 1, "maximum": 1024,
+                   "description": "With guaranteed+spot: the memory that stays when the room is needed." },
+    "cores_beside": { "type": "integer", "minimum": 1, "maximum": 128,
+                   "description": "While the zone's room is needed, its CPU is capped to this many cores' worth (a machine that keeps running)." },
+    "resume":    { "type": "boolean", "default": true,
+                   "description": "A spot machine stopped to give its room back starts again when the room returns; false = it stays stopped." },
     "key_pairs": { "type": "array", "maxItems": 10, "uniqueItems": true,
                    "items": { "type": "string", "x-hangar-ref": "keypair" },
                    "description": "Your key pairs, by id: their public keys let you in." },
@@ -199,8 +240,8 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 				Description: "A container or a VM, started from an image, sized by a type.",
 				Schema:      []byte(machineSchema),
 				Actions: []*pluginpb.Action{
-					{Name: "start", Description: "Power it on."},
-					{Name: "stop", Description: "Shut it down (asked, then made to)."},
+					{Name: "start", Description: "Power it on.", ChangesUsage: true},
+					{Name: "stop", Description: "Shut it down (asked, then made to).", ChangesUsage: true},
 					{Name: "reboot", Description: "Restart it."},
 					{Name: "resize", Description: "Set its size: a type, or cores and memory_gb. A running machine changes only what its kind can change live.",
 						ParamsSchema: []byte(sizeSchema), ChangesUsage: true},
@@ -219,13 +260,13 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 			{Name: "machines.disk_gb", Kind: pluginpb.DimensionKind_DIMENSION_KIND_QUANTITY, Unit: "GB", Description: "Root disks across every machine."},
 			{Name: "machines.key_pairs", Kind: pluginpb.DimensionKind_DIMENSION_KIND_QUANTITY, Description: "How many key pairs."},
 			{Name: "machines.kind", Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "The kinds allowed: vm, container."},
-			{Name: "machines.class", Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "The classes allowed: guaranteed, spot."},
+			{Name: "machines.class", Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "The classes allowed: guaranteed, spot, guaranteed+spot."},
 		},
 		Requires: []string{driver.GuestTags, driver.FencePool},
 		Credential: &pluginpb.Credential{Required: false,
 			Description: "Per zone, the engine's credential fenced to the product's own guests (Proxmox: an API token, user@realm!name=secret — the least it needs is in docs/proxmox.md). None for the fake engine."},
 		Events: []string{"machine.created", "machine.deleted", "machine.started", "machine.stopped", "machine.rebooted",
-			"machine.resized", "machine.repaired", "keypair.imported", "keypair.deleted"},
+			"machine.resized", "machine.repaired", "machine.held", "machine.released", "keypair.imported", "keypair.deleted"},
 	}, nil
 }
 
@@ -259,7 +300,7 @@ func (p *Plugin) Configure(ctx context.Context, req *pluginpb.ConfigureRequest) 
 	resp := &pluginpb.ConfigureResponse{}
 	for _, z := range req.GetZones() {
 		d, err := driver.Open(ctx, z.GetDriver(), driver.Params{
-			Zone: z.GetName(), Endpoint: z.GetEndpoint(), Options: z.GetOptions(), Credential: z.GetCredential(),
+			Zone: z.GetName(), Endpoint: z.GetEndpoint(), Options: z.GetOptions(), Credential: z.GetCredential(), Watch: z.GetWatch(),
 		})
 		if err != nil {
 			resp.Zones = append(resp.Zones, &pluginpb.ZoneReport{Name: z.GetName(), Error: err.Error()})
@@ -268,6 +309,11 @@ func (p *Plugin) Configure(ctx context.Context, req *pluginpb.ConfigureRequest) 
 		if _, ok := d.(driver.Guests); !ok {
 			_ = d.Close()
 			resp.Zones = append(resp.Zones, &pluginpb.ZoneReport{Name: z.GetName(), Error: "its driver runs no guests"})
+			continue
+		}
+		if _, ok := d.(driver.Watcher); !ok && len(z.GetWatch()) > 0 {
+			_ = d.Close()
+			resp.Zones = append(resp.Zones, &pluginpb.ZoneReport{Name: z.GetName(), Error: "its reservations watch guests, and its driver cannot read them"})
 			continue
 		}
 		if f, ok := d.(interface{ FenceReport() string }); ok && f.FenceReport() != "" {
@@ -354,6 +400,45 @@ func (p *Plugin) size(s *Spec, typ *string, cores, mem *int, create bool) *plugi
 	return nil
 }
 
+// room is what a machine takes from its zone, in MiB.
+func room(s Spec) *pluginpb.Room {
+	mem := int64(s.MemoryGB) * 1024
+	r := &pluginpb.Room{Running: s.Running}
+	switch s.Class {
+	case Guaranteed:
+		r.GuaranteedMb = mem
+	case GuaranteedSpot:
+		r.GuaranteedMb = int64(s.FloorGB) * 1024
+		r.SpotMb = mem - r.GuaranteedMb
+	default:
+		r.SpotMb = mem
+	}
+	return r
+}
+
+// classRefusals checks what a class asks of the machine and of its zone.
+func classRefusals(s Spec, zone string, g driver.Guests, caps []driver.Capability) []*pluginpb.Refusal {
+	var out []*pluginpb.Refusal
+	switch {
+	case s.Class == GuaranteedSpot && s.FloorGB == 0:
+		out = append(out, &pluginpb.Refusal{Field: "/floor_gb", Reason: "guaranteed+spot needs floor_gb: the memory that stays when the room is needed"})
+	case s.Class == GuaranteedSpot && s.FloorGB >= s.MemoryGB:
+		out = append(out, &pluginpb.Refusal{Field: "/floor_gb", Reason: fmt.Sprintf("floor_gb (%d) stays under memory_gb (%d): the rest is what it lends", s.FloorGB, s.MemoryGB)})
+	case s.Class != GuaranteedSpot && s.FloorGB != 0:
+		out = append(out, &pluginpb.Refusal{Field: "/floor_gb", Reason: "floor_gb goes with class guaranteed+spot"})
+	}
+	if s.Class == GuaranteedSpot && (!g.Traits(s.Kind).LiveMemoryDown || !slices.Contains(caps, driver.ResizeLiveMemoryDown)) {
+		out = append(out, &pluginpb.Refusal{Field: "/class", Reason: fmt.Sprintf("a running %s in zone %s gives no memory back, so it cannot shrink to a floor: guaranteed or spot", kindWord(s.Kind), zone)})
+	}
+	switch {
+	case s.CoresBeside != 0 && s.Class == Spot:
+		out = append(out, &pluginpb.Refusal{Field: "/cores_beside", Reason: "a spot machine stops when the room is needed; cores_beside is for the ones that keep running"})
+	case s.CoresBeside != 0 && s.CoresBeside < s.Cores && !slices.Contains(caps, driver.ResizeLiveCPUCap):
+		out = append(out, &pluginpb.Refusal{Field: "/cores_beside", Reason: fmt.Sprintf("zone %s caps no CPU", zone)})
+	}
+	return out
+}
+
 func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.PlanResponse, error) {
 	g, caps, err := p.guests(req.GetZone())
 	if err != nil {
@@ -377,11 +462,14 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 
 	var s Spec
 	var refusals []*pluginpb.Refusal
-	refuse := func(r *pluginpb.Refusal) {
-		if r != nil {
-			refusals = append(refusals, r)
+	refuse := func(r ...*pluginpb.Refusal) {
+		for _, x := range r {
+			if x != nil {
+				refusals = append(refusals, x)
+			}
 		}
 	}
+	held := req.GetCurrent().GetHold()
 	switch req.GetAction() {
 	case "":
 		var in struct {
@@ -390,7 +478,7 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 			Cores    *int    `json:"cores"`
 			MemoryGB *int    `json:"memory_gb"`
 		}
-		in.Kind, in.DiskGB, in.Class = "vm", 8, "spot"
+		in.Kind, in.DiskGB, in.Class, in.Resume = "vm", 8, Spot, true
 		if err := sdk.Decode(req.GetSpec(), &in); err != nil {
 			return nil, err
 		}
@@ -407,6 +495,7 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 		} else {
 			_, r := p.imageRef(s.Image, s.Kind)
 			refuse(r)
+			refuse(classRefusals(s, req.GetZone(), g, caps)...)
 		}
 		if s.UserData != "" && !g.Traits(s.Kind).UserData {
 			refuse(&pluginpb.Refusal{Field: "/user_data", Reason: fmt.Sprintf("a %s in zone %s boots no user data", kindWord(s.Kind), req.GetZone())})
@@ -415,12 +504,21 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 		if err := sdk.Decode(req.GetCurrent().GetSpec(), &s); err != nil {
 			return nil, err
 		}
+		if held != "" {
+			refuse(&pluginpb.Refusal{Reason: fmt.Sprintf("its room is held for %s: resize it once the room is back", held)})
+		}
 		var sp sizeParams
 		if err := sdk.Decode(req.GetParams(), &sp); err != nil {
 			return nil, err
 		}
 		was := s
 		refuse(p.size(&s, sp.Type, sp.Cores, sp.MemoryGB, false))
+		if s.Class == GuaranteedSpot && s.FloorGB >= s.MemoryGB {
+			refuse(&pluginpb.Refusal{Field: "/memory_gb", Reason: fmt.Sprintf("its floor is %d GB: memory_gb stays above it", s.FloorGB)})
+		}
+		if s.CoresBeside != 0 && s.CoresBeside < s.Cores && !slices.Contains(caps, driver.ResizeLiveCPUCap) {
+			refuse(&pluginpb.Refusal{Field: "/cores", Reason: fmt.Sprintf("zone %s caps no CPU, and cores_beside would cap this one", req.GetZone())})
+		}
 		if s.Running {
 			t := g.Traits(s.Kind)
 			if s.Cores != was.Cores && !t.LiveCores {
@@ -430,6 +528,11 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 				refuse(&pluginpb.Refusal{Field: "/memory_gb", Reason: fmt.Sprintf("a running %s's memory does not go that way here: stop it first", kindWord(s.Kind))})
 			}
 		}
+	case "start", "stop":
+		if err := sdk.Decode(req.GetCurrent().GetSpec(), &s); err != nil {
+			return nil, err
+		}
+		s.Running = req.GetAction() == "start"
 	default:
 		return nil, sdk.Refuse("no action %q to plan on a machine", req.GetAction())
 	}
@@ -438,6 +541,7 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 		Usage:    map[string]int64{"machines.count": 1, "machines.vcpu": int64(s.Cores), "machines.memory_gb": int64(s.MemoryGB), "machines.disk_gb": int64(s.DiskGB)},
 		Choices:  map[string]string{"machines.kind": s.Kind, "machines.class": s.Class},
 		Refusals: refusals,
+		Room:     room(s),
 	}, nil
 }
 
@@ -446,6 +550,49 @@ func kindWord(kind string) string {
 		return "VM"
 	}
 	return kind
+}
+
+// tagsOf are the tags a machine carries for its engine's node to read: its
+// class, the size admitted, its floor and CPU cap when it has them.
+func tagsOf(s Spec) map[string]string {
+	t := map[string]string{"class": s.Class, "admitted": strconv.Itoa(s.MemoryGB * 1024)}
+	if s.Class == GuaranteedSpot {
+		t["floor"] = strconv.Itoa(s.FloorGB * 1024)
+	}
+	if s.CoresBeside != 0 && s.CoresBeside < s.Cores {
+		t["beside"] = strconv.Itoa(s.CoresBeside)
+	}
+	return t
+}
+
+// want is the engine state a machine is brought to: its spec, bent by a hold.
+type want struct {
+	running  bool
+	memoryMB int
+	cpuLimit int
+	holds    []string
+}
+
+func wanted(s Spec, hold string) want {
+	w := want{running: s.Running, memoryMB: s.MemoryGB * 1024}
+	if hold == "" {
+		return w
+	}
+	capped := s.CoresBeside != 0 && s.CoresBeside < s.Cores
+	switch s.Class {
+	case Spot:
+		w.running, w.holds = false, []string{hold}
+	case GuaranteedSpot:
+		w.memoryMB, w.holds = s.FloorGB*1024, []string{hold}
+	default:
+		if capped {
+			w.holds = []string{hold}
+		}
+	}
+	if capped && s.Class != Spot {
+		w.cpuLimit = s.CoresBeside
+	}
+	return w
 }
 
 func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*pluginpb.CreateResponse, error) {
@@ -484,9 +631,13 @@ func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*plug
 		}
 		keys = append(keys, k.PublicKey)
 	}
+	// a machine born while its zone's room is held is born held: at its
+	// floor, capped, or — spot — not started
+	w := wanted(s, r.GetHold())
 	guest, err := g.CreateGuest(ctx, driver.GuestSpec{
-		ID: r.GetId(), Kind: s.Kind, Name: s.Name, Cores: s.Cores, MemoryMB: s.MemoryGB * 1024, DiskGB: s.DiskGB,
-		Image: ref, SSHKeys: keys, UserData: []byte(s.UserData), Tags: map[string]string{"class": s.Class},
+		ID: r.GetId(), Kind: s.Kind, Name: s.Name, Cores: s.Cores, MemoryMB: w.memoryMB, DiskGB: s.DiskGB,
+		Image: ref, SSHKeys: keys, UserData: []byte(s.UserData), Tags: tagsOf(s), Holds: w.holds, CPULimit: w.cpuLimit,
+		Stopped: !w.running,
 	})
 	if err != nil {
 		return nil, engineErr(err)
@@ -518,17 +669,32 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 	if err != nil {
 		return nil, err
 	}
+	hold := r.GetHold()
 	var guest driver.Guest
 	var ev *pluginpb.Event
 	switch req.GetAction() {
-	case "start", "stop":
-		s.Running = req.GetAction() == "start"
-		guest, err = g.SetPower(ctx, r.GetId(), s.Running)
-		ev = sdk.Event("machine."+map[string]string{"start": "started", "stop": "stopped"}[req.GetAction()], "", nil)
+	case "start":
+		if hold != "" && s.Class == Spot {
+			return nil, sdk.NotNow("its room is held for %s: it starts when the room is back", hold)
+		}
+		s.Running = true
+		guest, err = g.Guest(ctx, r.GetId())
+		if err == nil {
+			// started as the zone's room allows: at its floor, capped, while held
+			guest, _, _, err = converge(ctx, g, r.GetId(), s, hold, guest)
+		}
+		ev = sdk.Event("machine.started", "", nil)
+	case "stop":
+		s.Running = false
+		guest, err = g.SetPower(ctx, r.GetId(), false)
+		ev = sdk.Event("machine.stopped", "", nil)
 	case "reboot":
 		guest, err = g.Reboot(ctx, r.GetId())
 		ev = sdk.Event("machine.rebooted", "", nil)
 	case "resize":
+		if hold != "" {
+			return nil, sdk.NotNow("its room is held for %s: resize it once the room is back", hold)
+		}
 		var sp sizeParams
 		if err := sdk.Decode(req.GetParams(), &sp); err != nil {
 			return nil, err
@@ -536,7 +702,23 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 		if refusal := p.size(&s, sp.Type, sp.Cores, sp.MemoryGB, false); refusal != nil {
 			return nil, sdk.Refuse("%s", refusal.GetReason())
 		}
+		// a grown size is written on the guest before it takes effect, a
+		// shrunk one after: a node reading "admitted" never refuses a size
+		// the brain admitted
+		before, rerr := g.Guest(ctx, r.GetId())
+		if rerr != nil {
+			return nil, engineErr(rerr)
+		}
+		grows := s.MemoryGB*1024 > before.MemoryMB
+		if grows {
+			if _, err := g.Retag(ctx, r.GetId(), tagsOf(s), before.Holds); err != nil {
+				return nil, engineErr(err)
+			}
+		}
 		guest, err = g.ResizeGuest(ctx, r.GetId(), s.Cores, s.MemoryGB*1024)
+		if err == nil && !grows {
+			guest, err = g.Retag(ctx, r.GetId(), tagsOf(s), before.Holds)
+		}
 		ev = sdk.Event("machine.resized", "", map[string]string{"cores": strconv.Itoa(s.Cores), "memory_gb": strconv.Itoa(s.MemoryGB)})
 	default:
 		return nil, sdk.Refuse("no action %q on a machine", req.GetAction())
@@ -545,6 +727,75 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 		return nil, engineErr(err)
 	}
 	return &pluginpb.ActResponse{Spec: sdk.JSON(s), Observed: sdk.JSON(observe(guest)), Events: []*pluginpb.Event{ev}}, nil
+}
+
+// converge brings a guest to its spec bent by a hold. Entering a hold, the
+// tags lead (a node reading them sees the hold before its effect) and the
+// guest is stopped, shrunk, capped; leaving one, it is regrown and uncapped
+// first, the tags follow, and it starts last. It returns what it changed
+// and, when a running guest holds more than its floor, what it could not
+// give back.
+func converge(ctx context.Context, g driver.Guests, id string, s Spec, hold string, guest driver.Guest) (driver.Guest, []string, string, error) {
+	w := wanted(s, hold)
+	tags := tagsOf(s)
+	var fixed []string
+	var short string
+	var err error
+	retag := func() error {
+		if maps.Equal(guest.Tags, tags) && slices.Equal(guest.Holds, w.holds) {
+			return nil
+		}
+		guest, err = g.Retag(ctx, id, tags, w.holds)
+		if err == nil {
+			fixed = append(fixed, "tags")
+		}
+		return err
+	}
+	entering := len(w.holds) > 0
+	if entering {
+		if err := retag(); err != nil {
+			return guest, fixed, "", err
+		}
+	}
+	if guest.Running && !w.running {
+		if guest, err = g.SetPower(ctx, id, false); err != nil {
+			return guest, fixed, "", err
+		}
+		fixed = append(fixed, "power")
+	}
+	if guest.Cores != s.Cores || guest.MemoryMB != w.memoryMB {
+		target := w.memoryMB
+		if guest.Running && target < guest.MemoryMB && guest.MemoryUsedMB > 0 && target < guest.MemoryUsedMB+usedMargin {
+			// what it holds cannot be taken from under it: shrink as far as
+			// it allows, and say what stays lent
+			target = min(guest.MemoryMB, guest.MemoryUsedMB+usedMargin)
+			short = fmt.Sprintf("it holds %d MB, above its floor of %d MB: %d MB could not be given back", guest.MemoryUsedMB, w.memoryMB, target-w.memoryMB)
+		}
+		if guest.Cores != s.Cores || guest.MemoryMB != target {
+			if guest, err = g.ResizeGuest(ctx, id, s.Cores, target); err != nil {
+				return guest, fixed, short, err
+			}
+			fixed = append(fixed, "size")
+		}
+	}
+	if guest.CPULimit != w.cpuLimit {
+		if guest, err = g.SetCPULimit(ctx, id, w.cpuLimit); err != nil {
+			return guest, fixed, short, err
+		}
+		fixed = append(fixed, "cpu cap")
+	}
+	if !entering {
+		if err := retag(); err != nil {
+			return guest, fixed, short, err
+		}
+	}
+	if !guest.Running && w.running {
+		if guest, err = g.SetPower(ctx, id, true); err != nil {
+			return guest, fixed, short, err
+		}
+		fixed = append(fixed, "power")
+	}
+	return guest, fixed, short, nil
 }
 
 func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) (*pluginpb.ReconcileResponse, error) {
@@ -563,31 +814,93 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 	if err != nil {
 		return nil, engineErr(err)
 	}
-	var fixed []string
-	if guest.Cores != s.Cores || guest.MemoryMB != s.MemoryGB*1024 {
-		fixedGuest, err := g.ResizeGuest(ctx, r.GetId(), s.Cores, s.MemoryGB*1024)
+	hold := r.GetHold()
+	resp := &pluginpb.ReconcileResponse{}
+	var events []*pluginpb.Event
+	if hold != "" && s.Class == Spot && s.Running && !s.Resume {
+		// stopped for good: it does not come back when the room does
+		s.Running = false
+		resp.Spec, resp.Room = sdk.JSON(s), room(s)
+	}
+	wasHeld := len(guest.Holds) > 0
+	guest, fixed, short, err := converge(ctx, g, r.GetId(), s, hold, guest)
+	if err != nil && !errors.Is(err, driver.ErrRefused) && !errors.Is(err, driver.ErrNotFound) {
+		return nil, engineErr(err) // not reached: the core tries again at its next pass
+	}
+	if err != nil {
+		resp.Drift, resp.Observed = pluginpb.Drift_DRIFT_DRIFTED, sdk.JSON(observe(guest))
+		resp.Detail = fmt.Sprintf("it could not be brought to what it should be (%s): %v", strings.Join(append(fixed, "…"), ", "), err)
+		return resp, nil
+	}
+	resp.Observed = sdk.JSON(observe(guest))
+	switch held := len(guest.Holds) > 0; {
+	case held && !wasHeld:
+		events = append(events, sdk.Event("machine.held", fmt.Sprintf("its room is held for %s", hold), map[string]string{"hold": hold}))
+	case !held && wasHeld:
+		events = append(events, sdk.Event("machine.released", "its room is back", nil))
+	}
+	switch {
+	case short != "":
+		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_DRIFTED, short
+	case len(fixed) == 0:
+		resp.Drift = pluginpb.Drift_DRIFT_IN_SYNC
+	default:
+		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_REPAIRED, fmt.Sprintf("put back: %v", fixed)
+		if hold != "" {
+			resp.Detail = fmt.Sprintf("held for %s: %v", hold, fixed)
+		}
+		events = append(events, sdk.Event("machine.repaired", resp.Detail, nil))
+	}
+	resp.Events = events
+	return resp, nil
+}
+
+// Survey reads what the zone's reservations wait on, which machines carry a
+// hold on the engine, and whether the zone is awake.
+func (p *Plugin) Survey(ctx context.Context, req *pluginpb.SurveyRequest) (*pluginpb.SurveyResponse, error) {
+	p.mu.RLock()
+	d, ok := p.zones[req.GetZone()]
+	p.mu.RUnlock()
+	if !ok {
+		return nil, sdk.NotNow("zone %s is not open to this plugin", req.GetZone())
+	}
+	w, ok := d.(driver.Watcher)
+	if !ok {
+		return nil, sdk.NotNow("zone %s's driver reads no conditions", req.GetZone())
+	}
+	resp := &pluginpb.SurveyResponse{Holds: map[string]string{}}
+	for _, c := range req.GetConditions() {
+		var met bool
+		var err error
+		switch {
+		case c.GetGuestRunning() != "":
+			met, err = w.GuestRunning(ctx, c.GetGuestRunning())
+		case c.GetNodeDown() != "":
+			met, err = w.NodeDown(ctx, c.GetNodeDown())
+		default:
+			err = errors.New("an empty condition")
+		}
+		st := &pluginpb.ConditionState{Met: met}
 		if err != nil {
-			return &pluginpb.ReconcileResponse{Drift: pluginpb.Drift_DRIFT_DRIFTED, Observed: sdk.JSON(observe(guest)),
-				Detail: fmt.Sprintf("it has %d cores and %d MB, not %d and %d GB, and could not be put back: %v",
-					guest.Cores, guest.MemoryMB, s.Cores, s.MemoryGB, err)}, nil
+			st = &pluginpb.ConditionState{Error: err.Error()}
 		}
-		guest = fixedGuest
-		fixed = append(fixed, "size")
+		resp.Conditions = append(resp.Conditions, st)
 	}
-	if guest.Running != s.Running {
-		if guest, err = g.SetPower(ctx, r.GetId(), s.Running); err != nil {
-			return nil, engineErr(err)
+	awake, err := w.Awake(ctx)
+	resp.Awake = awake && err == nil
+	if !resp.Awake {
+		return resp, nil
+	}
+	gs, err := d.(driver.Guests).Guests(ctx)
+	if err != nil {
+		return nil, engineErr(err)
+	}
+	for _, gu := range gs {
+		if len(gu.Holds) > 0 {
+			resp.Holds[gu.ID] = gu.Holds[0]
 		}
-		fixed = append(fixed, "power")
 	}
-	if len(fixed) == 0 {
-		return &pluginpb.ReconcileResponse{Drift: pluginpb.Drift_DRIFT_IN_SYNC, Observed: sdk.JSON(observe(guest))}, nil
-	}
-	detail := fmt.Sprintf("put back: %v", fixed)
-	return &pluginpb.ReconcileResponse{
-		Drift: pluginpb.Drift_DRIFT_REPAIRED, Detail: detail, Observed: sdk.JSON(observe(guest)),
-		Events: []*pluginpb.Event{sdk.Event("machine.repaired", detail, nil)},
-	}, nil
+	return resp, nil
 }
 
 func (p *Plugin) machine(r *pluginpb.Resource) (driver.Guests, Spec, error) {
@@ -604,7 +917,7 @@ func (p *Plugin) machine(r *pluginpb.Resource) (driver.Guests, Spec, error) {
 
 func observe(g driver.Guest) Observed {
 	return Observed{EngineRef: g.EngineRef, Node: g.Node, Kind: g.Kind, Name: g.Name, Cores: g.Cores,
-		MemoryMB: g.MemoryMB, DiskGB: g.DiskGB, Running: g.Running, Addresses: g.Addresses}
+		MemoryMB: g.MemoryMB, DiskGB: g.DiskGB, Running: g.Running, Addresses: g.Addresses, CPULimit: g.CPULimit, Held: g.Holds}
 }
 
 // engineErr: a refusal or a missing guest will not change by trying again;

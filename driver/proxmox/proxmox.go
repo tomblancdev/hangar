@@ -21,18 +21,28 @@
 //	vlan            a VLAN tag on it                               (optional)
 //	vmids           the ids this driver may take, "11000-11099"    (required)
 //	full_clone      "true": full clones even beside the template
+//	shutdown_timeout how long a guest is asked to shut down before it is
+//	                made to, in seconds                            (default 60)
 //	ca_file         a CA bundle to verify the API's certificate
 //	fingerprint     or the certificate's SHA-256, pinned
 //	tls_server_name the name to verify, when it is not the endpoint's
 //
 // The credential is the token: `user@realm!name=secret`. What it must be
-// allowed to do, and nothing more, is written in docs/proxmox.md.
+// allowed to do, and nothing more, is written in docs/proxmox.md. The one
+// thing it may do outside its pools is read the power of the guests the
+// zone's reservations watch (VM.Audit on each, and nothing else there).
+//
+// The tags a guest carries are the contract with the node's hook
+// (cmd/hangar-hook), which acts on them when the brain cannot be reached:
+// hangar-id.<id>, the plugin's key.value tags (class, floor, beside,
+// admitted), and held.<key> for each reservation holding its room back.
 package proxmox
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -55,6 +65,9 @@ func init() { driver.Register(Name, Open) }
 // idTag is the tag that carries the core's id on a guest.
 const idTag = "hangar-id"
 
+// HeldTag is the key of a hold's tag: held.<reservation key>.
+const HeldTag = "held"
+
 // Driver is one Proxmox zone.
 type Driver struct {
 	c        *client
@@ -68,6 +81,8 @@ type Driver struct {
 	vlan     int
 	lo, hi   int
 	full     bool
+	shutdown int // seconds a shutdown is waited for before a stop
+	watch    []string
 	caps     []driver.Capability
 	fenceErr string // why fence.pool is not advertised, when it is not
 
@@ -81,7 +96,20 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	o := p.Options
 	d := &Driver{
 		zone: p.Zone, node: o["node"], pool: o["pool"], images: o["images_pool"], storage: o["storage"],
-		seeds: o["seed_storage"], bridge: o["bridge"], full: o["full_clone"] == "true",
+		seeds: o["seed_storage"], bridge: o["bridge"], full: o["full_clone"] == "true", shutdown: 60,
+	}
+	for _, ref := range p.Watch {
+		if n, err := strconv.Atoi(ref); err != nil || n < 100 {
+			return nil, fmt.Errorf("proxmox zone %s: a watched guest is named by its VMID, not %q", p.Zone, ref)
+		}
+		d.watch = append(d.watch, ref)
+	}
+	if v := o["shutdown_timeout"]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 3600 {
+			return nil, fmt.Errorf("proxmox zone %s: shutdown_timeout %q: 1 to 3600 seconds", p.Zone, v)
+		}
+		d.shutdown = n
 	}
 	var missing []string
 	for _, k := range []string{"node", "pool", "storage", "seed_storage", "bridge", "vmids"} {
@@ -119,7 +147,8 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	if err := c.call(ctx, http.MethodGet, "/version", nil, &ver); err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: %w", p.Zone, err)
 	}
-	d.caps = []driver.Capability{driver.KindContainer, driver.KindVM, driver.GuestTags, driver.ResizeLiveMemoryDown}
+	d.caps = []driver.Capability{driver.KindContainer, driver.KindVM, driver.GuestTags, driver.ResizeLiveMemoryDown,
+		driver.ResizeLiveCPUCap, driver.HookPreStart}
 	why, err := d.fence(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: reading what the token may do: %w", p.Zone, err)
@@ -138,8 +167,9 @@ func (d *Driver) Close() error                      { return nil }
 func (d *Driver) FenceReport() string { return d.fenceErr }
 
 // fence reads the token's own permissions and returns why it is NOT fenced
-// to its pools: a privilege on a guest path outside them, or one that could
-// widen its own rights.
+// to its pools: a privilege on a guest path outside them — but VM.Audit on a
+// guest the zone watches, which reads its power and nothing more — or one
+// that could widen its own rights.
 func (d *Driver) fence(ctx context.Context) (string, error) {
 	var perms map[string]map[string]int
 	if err := d.c.call(ctx, http.MethodGet, "/access/permissions", nil, &perms); err != nil {
@@ -166,6 +196,9 @@ func (d *Driver) fence(ctx context.Context) (string, error) {
 				}
 				if v, ok := strings.CutPrefix(path, "/vms/"); ok {
 					if id, err := strconv.Atoi(v); err == nil && members[id] {
+						continue
+					}
+					if priv == "VM.Audit" && slices.Contains(d.watch, v) {
 						continue
 					}
 				}
@@ -288,27 +321,46 @@ var tagPart = regexp.MustCompile(`^[a-z0-9_+-]+$`)
 var tagValue = regexp.MustCompile(`^[a-z0-9_+.-]+$`)
 
 // tags writes a guest's tags: the id's, then key.value for each of the
-// plugin's (a key has no dot; the value may).
-func tags(id string, m map[string]string) (string, error) {
+// plugin's (a key has no dot; the value may), then held.<key> per hold.
+func tags(id string, m map[string]string, holds []string) (string, error) {
 	out := []string{idTag + "." + id}
 	for k, v := range m {
-		if !tagPart.MatchString(k) || !tagValue.MatchString(v) {
-			return "", fmt.Errorf("%w: tag %s=%s: Proxmox tags hold a-z, 0-9, _ + - and a dot in the value", driver.ErrRefused, k, v)
+		if k == idTag || k == HeldTag || !tagPart.MatchString(k) || !tagValue.MatchString(v) {
+			return "", fmt.Errorf("%w: tag %s=%s: Proxmox tags hold a-z, 0-9, _ + - and a dot in the value (and %s, %s are the driver's)",
+				driver.ErrRefused, k, v, idTag, HeldTag)
 		}
 		out = append(out, k+"."+v)
 	}
+	for _, h := range holds {
+		if !tagPart.MatchString(h) {
+			return "", fmt.Errorf("%w: hold %q: a-z, 0-9, _ + -", driver.ErrRefused, h)
+		}
+		out = append(out, HeldTag+"."+h)
+	}
 	sort.Strings(out)
-	return strings.Join(out, ";"), nil
+	return strings.Join(slices.Compact(out), ";"), nil
 }
 
 func tagMap(s string) map[string]string {
 	m := map[string]string{}
 	for _, t := range tagList(s) {
-		if k, v, ok := strings.Cut(t, "."); ok && k != idTag {
+		if k, v, ok := strings.Cut(t, "."); ok && k != idTag && k != HeldTag {
 			m[k] = v
 		}
 	}
 	return m
+}
+
+// holdsOf reads the holds a guest's tags carry, sorted.
+func holdsOf(s string) []string {
+	var out []string
+	for _, t := range tagList(s) {
+		if v, ok := strings.CutPrefix(t, HeldTag+"."); ok {
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ---- Reading one guest ------------------------------------------------------
@@ -321,6 +373,7 @@ func (d *Driver) read(ctx context.Context, r resource, id string) (driver.Guest,
 	}
 	var st struct {
 		Status string `json:"status"`
+		Mem    int64  `json:"mem"`
 	}
 	if err := d.c.call(ctx, http.MethodGet, r.path()+"/status/current", nil, &st); err != nil {
 		return driver.Guest{}, d.engine(err)
@@ -328,7 +381,11 @@ func (d *Driver) read(ctx context.Context, r resource, id string) (driver.Guest,
 	g := driver.Guest{
 		ID: guestID(str(cfg["tags"])), EngineRef: fmt.Sprintf("%s/%s/%d", r.Node, r.Type, r.VMID),
 		Kind: r.kind(), Node: r.Node, Running: st.Status == "running", Tags: tagMap(str(cfg["tags"])),
-		Cores: num(cfg["cores"]), MemoryMB: memoryMB(cfg["memory"]),
+		Holds: holdsOf(str(cfg["tags"])), Cores: num(cfg["cores"]), MemoryMB: memoryMB(cfg["memory"]),
+		CPULimit: int(math.Ceil(fnum(cfg["cpulimit"]))),
+	}
+	if g.Running {
+		g.MemoryUsedMB = int((st.Mem + (1 << 20) - 1) >> 20)
 	}
 	if g.ID == "" {
 		g.ID = id // found by its marker, before its tags
@@ -412,6 +469,17 @@ func num(v any) int {
 		return int(x)
 	case string:
 		n, _ := strconv.Atoi(x)
+		return n
+	}
+	return 0
+}
+
+func fnum(v any) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case string:
+		n, _ := strconv.ParseFloat(x, 64)
 		return n
 	}
 	return 0
@@ -525,7 +593,7 @@ func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Gu
 	if s.Name == "" {
 		s.Name = s.ID
 	}
-	tagStr, err := tags(s.ID, s.Tags)
+	tagStr, err := tags(s.ID, s.Tags, s.Holds)
 	if err != nil {
 		return driver.Guest{}, err
 	}
@@ -558,6 +626,11 @@ func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Gu
 		err = d.configureVM(ctx, r, s, tagStr)
 	} else if r.Tags != tagStr {
 		err = d.c.call(ctx, http.MethodPut, r.path()+"/config", url.Values{"tags": {tagStr}}, nil)
+	}
+	if err == nil {
+		// capped before its first start: a machine born under a hold never
+		// runs a second uncapped
+		err = d.cpuLimit(ctx, r, s.CPULimit)
 	}
 	if err != nil {
 		return driver.Guest{}, d.engine(err)
@@ -812,7 +885,139 @@ func (d *Driver) power(ctx context.Context, r resource, on bool) error {
 	if on {
 		return d.c.run(ctx, http.MethodPost, r.path()+"/status/start", nil)
 	}
-	return d.c.run(ctx, http.MethodPost, r.path()+"/status/shutdown", url.Values{"timeout": {"60"}, "forceStop": {"1"}})
+	return d.c.run(ctx, http.MethodPost, r.path()+"/status/shutdown",
+		url.Values{"timeout": {strconv.Itoa(d.shutdown)}, "forceStop": {"1"}})
+}
+
+// cpuLimit writes a guest's cap (0 lifts it), unless it already reads so.
+func (d *Driver) cpuLimit(ctx context.Context, r resource, cores int) error {
+	var cfg map[string]any
+	if err := d.c.call(ctx, http.MethodGet, r.path()+"/config", nil, &cfg); err != nil {
+		return err
+	}
+	if int(math.Ceil(fnum(cfg["cpulimit"]))) == cores {
+		return nil
+	}
+	p := url.Values{"cpulimit": {strconv.Itoa(cores)}}
+	if cores == 0 {
+		p = url.Values{"delete": {"cpulimit"}}
+	}
+	if r.Type == "lxc" {
+		return d.c.call(ctx, http.MethodPut, r.path()+"/config", p, nil)
+	}
+	return d.c.run(ctx, http.MethodPost, r.path()+"/config", p)
+}
+
+// SetCPULimit caps a guest's CPU (cpulimit: live on both kinds — S2 read
+// the cgroup's cpu.max move at once).
+func (d *Driver) SetCPULimit(ctx context.Context, id string, cores int) (driver.Guest, error) {
+	if cores < 0 {
+		return driver.Guest{}, fmt.Errorf("%w: a cap of %d cores", driver.ErrRefused, cores)
+	}
+	r, err := d.find(ctx, id)
+	if err != nil {
+		return driver.Guest{}, d.engine(err)
+	}
+	if err := d.cpuLimit(ctx, r, cores); err != nil {
+		return driver.Guest{}, d.engine(err)
+	}
+	return d.read(ctx, r, id)
+}
+
+// Retag writes a guest's tags and holds anew; a tag change is live.
+func (d *Driver) Retag(ctx context.Context, id string, m map[string]string, holds []string) (driver.Guest, error) {
+	tagStr, err := tags(id, m, holds)
+	if err != nil {
+		return driver.Guest{}, err
+	}
+	r, err := d.find(ctx, id)
+	if err != nil {
+		return driver.Guest{}, d.engine(err)
+	}
+	var cfg map[string]any
+	if err := d.c.call(ctx, http.MethodGet, r.path()+"/config", nil, &cfg); err != nil {
+		return driver.Guest{}, d.engine(err)
+	}
+	if strings.Join(tagList(str(cfg["tags"])), ";") != tagStr {
+		p := url.Values{"tags": {tagStr}}
+		if r.Type == "lxc" {
+			err = d.c.call(ctx, http.MethodPut, r.path()+"/config", p, nil)
+		} else {
+			err = d.c.run(ctx, http.MethodPost, r.path()+"/config", p)
+		}
+		if err != nil {
+			return driver.Guest{}, d.engine(err)
+		}
+	}
+	return d.read(ctx, r, id)
+}
+
+// ---- The watcher facet ------------------------------------------------------
+
+// GuestRunning reads a watched guest's power, live. The token sees it through
+// VM.Audit on it alone (a guest it was not granted reads as not found).
+func (d *Driver) GuestRunning(ctx context.Context, ref string) (bool, error) {
+	if !slices.Contains(d.watch, ref) {
+		return false, fmt.Errorf("%w: guest %s is not one this zone watches", driver.ErrRefused, ref)
+	}
+	rs, err := d.resources(ctx)
+	if err != nil {
+		return false, d.engine(err)
+	}
+	for _, r := range rs {
+		if strconv.Itoa(r.VMID) == ref {
+			on, err := d.running(ctx, r)
+			return on, d.engine(err)
+		}
+	}
+	return false, fmt.Errorf("%w: guest %s is not visible to the token (VM.Audit on /vms/%s)", driver.ErrNotFound, ref, ref)
+}
+
+type nodeEntry struct {
+	Node   string `json:"node"`
+	Status string `json:"status"`
+}
+
+func (d *Driver) nodes(ctx context.Context) ([]nodeEntry, error) {
+	var ns []nodeEntry
+	err := d.c.call(ctx, http.MethodGet, "/cluster/resources", url.Values{"type": {"node"}}, &ns)
+	return ns, err
+}
+
+// NodeDown reads a node's state from the cluster's own list — any token sees
+// it, with no grant on the node. Proxmox says "offline" only when the
+// cluster's membership does (API2Tools.pm, extract_node_stats), "online"
+// while pvestatd's stats are fresh, and "unknown" otherwise — a lone node, or
+// one too busy to report: that cannot tell, and says so.
+func (d *Driver) NodeDown(ctx context.Context, node string) (bool, error) {
+	ns, err := d.nodes(ctx)
+	if err != nil {
+		return false, d.engine(err)
+	}
+	for _, n := range ns {
+		if n.Node != node {
+			continue
+		}
+		switch n.Status {
+		case "offline":
+			return true, nil
+		case "online":
+			return false, nil
+		}
+		return false, fmt.Errorf("node %s reads %q: the cluster cannot tell whether it is up", node, n.Status)
+	}
+	return false, fmt.Errorf("%w: the cluster has no node %s", driver.ErrNotFound, node)
+}
+
+// Awake: the zone's node answers a call the API hands to it — a node asleep
+// does not, whichever node the endpoint is. (Its state in the cluster's list
+// is no answer: "unknown" there is also a node too busy to report.)
+func (d *Driver) Awake(ctx context.Context) (bool, error) {
+	var v map[string]any
+	if err := d.c.call(ctx, http.MethodGet, "/nodes/"+url.PathEscape(d.node)+"/version", nil, &v); err != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (d *Driver) Reboot(ctx context.Context, id string) (driver.Guest, error) {
@@ -946,4 +1151,7 @@ func (d *Driver) engine(err error) error {
 	return err
 }
 
-var _ driver.Guests = (*Driver)(nil)
+var (
+	_ driver.Guests  = (*Driver)(nil)
+	_ driver.Watcher = (*Driver)(nil)
+)

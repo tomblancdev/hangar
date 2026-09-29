@@ -18,7 +18,8 @@ where this page and they disagree, they win.
 | The core: identity (OIDC + API tokens), tiers and limits, the registry, operations, reconcile, audit, the plugin host | **built** |
 | The plugin protocol and its SDK; the fake driver; the toy plugin | **built** |
 | The API (`/v1`), `/healthz`, `/metrics`, `/openapi.json` | **built** |
-| Zones' capacity: pools, classes, reservations, preemption, power | designed (§6) |
+| Zones' capacity: pools, classes, reservations, holds, the claim, waking; the Proxmox VE hook (`hangar-hook`) | **built** (§6) — proved on a throwaway Proxmox VE |
+| Idle machines put to sleep, awake hours counted against a tier, keep awake | designed (§6, power) |
 | The machines plugin (machines, key pairs); the Proxmox VE driver; references between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md)) |
 | The volumes and images plugins | designed (§7) |
 | The command line and the console generated from the schemas | designed (§2) |
@@ -211,10 +212,13 @@ credential (to prove the plugin received its own).
 **The guests facet** (`driver.Guests`: create, find, list, delete, power,
 reboot, resize — create idempotent on the core's id) carries a guest's name,
 image (the engine's own name for it, per kind), root disk, public keys, user
-data, tags; it reports its node and addresses. **`Traits(kind)`** says what a
+data, tags, holds and a CPU cap; it reports its node, addresses and what a
+running guest holds. **`Traits(kind)`** says what a
 guest of one kind takes (user data) and changes while it runs (cores, memory
 up, memory down) — finer than a flag, which speaks for the whole engine: on
 Proxmox a container changes everything live and a VM only grows its memory.
+**The watcher facet** (`driver.Watcher`) reads what a zone's reservations
+wait on: a watched guest's power, a node's state, whether the zone is awake.
 
 **The Proxmox VE driver is built** ([docs/proxmox.md](docs/proxmox.md)): one
 API token fenced to one pool, `fence.pool` advertised only when the token's
@@ -222,43 +226,109 @@ own permissions reach nothing else; containers from a template archive, VMs
 cloned from a template found by name and fed their user data on a NoCloud
 seed disc the driver writes and uploads; every long call waits for its task
 (a refused start is a `200` and a failed task). It advertises `kind.*`,
-`guest.tags`, `resize.live.memory_down` (containers, above what they hold)
-and `fence.pool`; `hook.pre_start` and the rest arrive with the sessions that
-use them. *(The Incus and AWS drivers are designed.)*
+`guest.tags`, `resize.live.memory_down` (containers, above what they hold),
+`resize.live.cpu_cap` (`cpulimit`, live on both kinds), `hook.pre_start` (its
+hook, `hangar-hook`, §6) and `fence.pool` — the one thing its token may do
+outside its pools is read the power of the guests the zone watches.
+*(The Incus and AWS drivers are designed.)*
 
-## 6. Zones, pools, classes, reservations, preemption **(designed)**
+## 6. Zones, pools, classes, reservations, preemption **(built)**
 
 **A zone** is where machines run: one engine connection, its nodes, one
 network (a bridge or vnet, an address range, a gateway, resolvers — the
-product's IPAM hands out addresses), and its capacity rules:
+product's IPAM hands out addresses, *designed*), and its capacity rules, in
+the zone's `room`:
 
-- **Usable capacity** = the zone's memory and threads minus what the
-  operator declares as not the product's (the host, its caches, other
-  guests).
+```yaml
+zones:
+  - name: lab
+    room:
+      memory_gb: 62          # what the product's resources may count on here
+      grace: 10m             # see "the claim"
+      reservations:
+        - {name: host,     memory_gb: 15}                          # always
+        - {name: priority, memory_gb: 32, while_running: "4100"}  # a guest of the operator's
+        - {name: failover, memory_gb: 10, while_down: node-b}      # a node's guests land here
+    wake:                    # a zone that sleeps
+      url: https://power.example.com/api/targets/node-c/wake
+      body: '{"wait": true}'
+      headers: {Authorization: {file: /run/secrets/wake}}
+```
+
 - **Reservations** — room kept for someone else, **with a condition**:
-  `always`, `while guest X runs`, `while node Y is down`. They are how a
-  zone shares hardware with things more important than it.
-- **Two pools follow**: **guaranteed** = usable minus every reservation, as
-  if all were active; **spot** = the room reservations hold while their
-  condition is false.
-- **Classes**: *guaranteed* (all in the guaranteed pool, never touched) ·
-  *spot* (all in the spot pool, stopped when a reservation needs the room) ·
-  *guaranteed + spot* (only where the driver has `resize.live.memory_down`:
-  a floor that stays, a top-up that goes — it shrinks instead of stopping).
-  **The class is written on the guest as a tag**, so a node-side hook can act
-  without the brain.
-- **Preemption, in one order**: stop spot machines → shrink floors'
-  top-ups → cap CPU to `cores_beside` → refuse. **A reservation's owner is
-  never delayed by a refusal of ours**: the make-room hook always lets the
-  priority guest start, and logs what it could not free.
-- **Admission, at every start**: the driver's pre-start hook (where the
-  engine has one) or the core (elsewhere) checks the machine fits its pool
-  *now* — whoever started it.
-- **Power**: a zone may sleep. It declares a `wake` action (a webhook or a
-  command) called before a start, and lets its own rule decide the sleep.
-  The core stops each machine idle for its `idle_after` (read from the
-  engine's own counters: CPU and network), and counts **awake hours**
-  against the owner's tier.
+  always (none written), `while_running: <guest>`, `while_down: <node>`.
+  They are how a zone shares hardware with things more important than it.
+- **Two pools follow**: **guaranteed** = the memory less every reservation,
+  as if all were in force — what can be *promised*; **spot** = the room the
+  conditional reservations keep while none of them is — what can be
+  *lent*. Unused guaranteed room is never lent: a promise never waits for
+  a borrower to leave. **When one conditional reservation is in force it
+  takes the whole spot pool back** — exact for a zone with one, erring on
+  the side of the one that needs the room with several (a finer split is a
+  flip trigger, not built).
+- **What a resource takes** is its plugin's to say, per plan: MiB booked in
+  the guaranteed pool while it lives, MiB borrowed from the spot pool while
+  it runs, whether it will run. **Admission** is in the same transaction as
+  the tier's limits, growth only: a promise beyond the guaranteed pool, or a
+  borrower beyond the spot pool, is refused (409 `room`) with the
+  arithmetic — « zone lab's spot pool holds 32 GB; 30 GB in use; this asks
+  for 4 GB more — ask for less, or when one stops ». **While the spot pool
+  is held, a resource runs on what it booked only**: a floor starts on its
+  floor, one with nothing booked does not start (« held for priority (while
+  guest 4100 runs): ask again when it ends, or for guaranteed room »).
+- **Classes** (the machines plugin's): *guaranteed* (all booked, never
+  stopped) · *spot* (all borrowed: stopped when the room is needed, started
+  again when it returns — unless `resume: false`) · *guaranteed + spot*
+  (only where a running guest of its kind gives memory back,
+  `resize.live.memory_down`: a floor booked, a top-up that goes — it shrinks
+  instead of stopping, never below what it holds, and says what it could
+  not give back). `cores_beside` caps the CPU of the ones that keep running.
+  **The class, floor, cap and admitted size are written on the guest as
+  tags**, so the engine's node can act without the brain.
+- **Holds.** While a conditional reservation is in force, the core writes
+  its key on every room-taking resource of the zone (`hold` in the protocol)
+  and the plugin brings each to what a hold means for it — in one order:
+  the tag first (a node reading it sees the hold before its effect), spot
+  stopped, floors shrunk, CPU capped; lifted in the reverse order. **A
+  reservation's owner is never delayed by a refusal of ours.**
+- **What a reservation waits on** is read by surveys (a plugin's `Survey`:
+  its driver reads the guest's power — the one thing its credential may
+  read outside its fence, and nothing more — or the node's state), at every
+  reconcile pass and at start.
+- **The claim — the guest's hook phones the brain first.** Before a
+  reservation's guest starts, its hook calls `POST /v1/zones/{zone}/claim`
+  (a token of the scope `room`, for a tier with `room: true`: it claims and
+  releases, and nothing else, not even read); the brain holds the zone
+  before it answers, and finishes even if the hook stopped waiting. After
+  the guest stops, `release` lifts the holds and starts the spot machines
+  meant to run. A claim stands for the zone's `grace` before its guest reads
+  running (the start's own time), past it only while it does — **a release
+  that never came** (the node lost its power) **ends there** — on a guest
+  read not running; one that cannot be read keeps it (a hiccup of the
+  engine's API is not a guest gone). **One room decision at a time per
+  zone**: a claim or a release, and a pass's survey and holds, never overlap
+  — a survey that once came mid-release took the release's own tags, not yet
+  taken off, for a node acting alone.
+- **The node alone.** When the brain cannot be reached (or refuses the
+  hook's token), the hook does on its node what the brain would, from the
+  tags alone, and never refuses its guest's start; after the stop it gives
+  back what it took. The brain, back, reads the guest's power: running, it
+  keeps the holds; the node's hold on a guest not yet running is **adopted**
+  as a claim for the grace.
+- **Admission on the node, whoever starts.** On an engine with
+  `hook.pre_start` the same hook, set on the images' templates and inherited
+  by every clone, refuses a start above the size admitted, a spot machine's
+  while a priority guest of the node has the room, a floor's above its
+  floor then — from the brain, the engine's console, or its command line.
+- **Waking.** A zone that sleeps declares a `wake` webhook; before anything
+  starts there (a create, a start), the core asks whether it is awake, calls
+  the webhook when it is not, and waits for it to answer (`timeout`). A
+  reconcile never wakes a zone: while it sleeps its resources are not
+  judged.
+- **Power — designed:** the core stops each machine idle for its
+  `idle_after` (read from the engine's own counters: CPU and network), and
+  counts **awake hours** against the owner's tier (a limit per month); a
+  machine can be kept awake, at that cost.
 
 ## 7. Every plugin — capabilities and limits **(designed)**
 
@@ -268,10 +338,11 @@ product's IPAM hands out addresses), and its capacity rules:
 things. The key pair type is **`keypair`** (a type's name has the shape of an
 id prefix); a key pair is **imported, never generated** (the brain would hold
 a private key). **Console** comes with the terminal in the console (it needs
-a stream through the core the protocol does not carry yet). **Awake hours,
-keep awake, `idle_after`, `floor` and the `guaranteed + spot` class** come
-with §6's zones; **GPU** and **`peers`** later. A machine holds its size
-while it exists, running or not.
+a stream through the core the protocol does not carry yet). **The classes,
+`floor_gb`, `cores_beside` and `resume`** are built with §6's room; **awake
+hours, keep awake and `idle_after`** come with §6's power; **GPU** and
+**`peers`** later. A machine holds its size against its tier while it
+exists, running or not; against its zone, as its class says (§6).
 
 | plugin | resources | actions | limit dimensions (per tier) | driver needs |
 |---|---|---|---|---|
@@ -301,7 +372,7 @@ operator sets.
 |---|---|---|
 | **1. The door** | OIDC sign-in (the operator's provider and its MFA); API tokens scoped (read / write) and expiring, never able to make tokens; the brain behind the operator's gateway (it speaks plain HTTP; TLS is the gateway's) | **built** |
 | **2. The core and its plugins** | limits per tier; every call audited; **each plugin its own process, started with an empty environment, with its own credential and nothing else**; mutual TLS on its socket; a program pinned by its SHA-256; the API never returns an engine credential | **built** — the empty environment and the one-credential rule are proved by tests that run a probe plugin and read what it received |
-| **3. The engine fence** | each driver's credential fenced to the product's own guests (`fence.pool`): on Proxmox a pool and a role — it cannot see or touch any other guest | **built** for Proxmox: the driver reads the token's own permissions and advertises `fence.pool` only when nothing outside its pools is reachable (root's token, the control, is refused with 390 reasons); the machines plugin requires it, so an unfenced zone is not one it acts on |
+| **3. The engine fence** | each driver's credential fenced to the product's own guests (`fence.pool`): on Proxmox a pool and a role — it cannot touch any other guest, and sees only the power of those a zone's reservations name | **built** for Proxmox: the driver reads the token's own permissions and advertises `fence.pool` only when nothing outside its pools is reachable but `VM.Audit` on a watched guest (root's token, the control, is refused with 416 reasons); the machines plugin requires it, so an unfenced zone is not one it acts on. The hook on the node needs no hypervisor credential at all: it is the node's own root, and holds only a `room` token toward the brain |
 | **4. The network** | a zone's network is the operator's: the product assumes a lane where machines reach only what the operator allows, and each machine is alone on it unless two share a `peers` group | designed |
 | **5. The machine** | untrusted users get **VMs** (their own kernel); containers are for trusted operators | designed (a tier's `kind` choice limit already enforces it) |
 

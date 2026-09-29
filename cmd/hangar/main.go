@@ -46,7 +46,7 @@ Usage:
   hangar serve   [--config FILE]          run the brain
   hangar check   [--config FILE]          start every plugin, check the config against
                                           what they declare, print it, stop (0 = sound)
-  hangar token create --subject SUB --name NAME [--groups a,b] [--ttl 24h] [--scopes read,write]
+  hangar token create --subject SUB --name NAME [--groups a,b] [--ttl 24h] [--scopes read,write|room]
                  [--config FILE]          make an API token in the registry; the secret
                                           is printed once, on stdout
   hangar token list   [--subject SUB] [--config FILE]
@@ -250,7 +250,7 @@ func token(args []string, out io.Writer) error {
 	name := fs.String("name", "", "what the token is for")
 	groups := fs.String("groups", "", "comma-separated: the groups the token acts with")
 	ttl := fs.Duration("ttl", 24*time.Hour, "how long it lives")
-	scopes := fs.String("scopes", "read,write", "read, or read,write")
+	scopes := fs.String("scopes", "read,write", "read; read,write; or room (a guest's hook: it claims and releases, nothing else)")
 	rest := args[1:]
 	var id string
 	if args[0] == "revoke" {

@@ -45,6 +45,11 @@ service PluginService {
   rpc Act(ActRequest) returns (ActResponse);
   // Desired (the registry) against actual (the engine): repaired or reported.
   rpc Reconcile(ReconcileRequest) returns (ReconcileResponse);
+  // What the engine says about a zone's room now: whether the conditions its
+  // reservations wait on are met, which of the plugin's resources carry a
+  // hold the core may not have placed, and whether the zone is awake. A
+  // plugin whose resources take no room leaves it unimplemented.
+  rpc Survey(SurveyRequest) returns (SurveyResponse);
 }
 
 // ---- Describe ---------------------------------------------------------------
@@ -92,8 +97,9 @@ message Action {
   string description = 2;
   // A JSON Schema of its params; empty = it takes none.
   bytes params_schema = 3;
-  // true = it can change what the resource holds (a resize): the core calls
-  // Plan first and admits the difference against the owner's limits.
+  // true = it can change what the resource holds (a resize) or the room it
+  // takes (a start, a stop): the core calls Plan first and admits the
+  // difference against the owner's limits and the zone's pools.
   bool changes_usage = 4;
   // Capability flags it needs on the zone; where they are missing the action
   // is not offered there.
@@ -139,6 +145,10 @@ message ZoneConfig {
   map<string, string> options = 4;
   // THIS plugin's credential for THIS zone. Never another plugin's.
   bytes credential = 5;
+  // Guests outside the plugin's fence that the zone's reservations name
+  // ("while guest X runs"): the driver may read their power, and nothing
+  // more. The engine's own names for them.
+  repeated string watch = 6;
 }
 
 message ConfigureResponse {
@@ -166,6 +176,13 @@ message Resource {
   // Last observed (JSON), as the plugin last reported it.
   bytes observed = 6;
   map<string, string> tags = 7;
+  // The hold the core places on the resource's borrowed room: "" = none;
+  // otherwise the key of the reservation that needs the room now (letters,
+  // digits, "-" and "_"). A plugin brings the engine to the held state in
+  // Create, Act and Reconcile — what that means is the plugin's (a machine
+  // borrowing all its memory stops; one with a floor shrinks to it) — and
+  // back when the hold is lifted.
+  string hold = 8;
 }
 
 message PlanRequest {
@@ -190,6 +207,21 @@ message PlanResponse {
   map<string, string> choices = 3;
   // Why the plugin refuses the request; empty = it does not.
   repeated Refusal refusals = 4;
+  // What the resource would take from its zone's room; absent = nothing
+  // (a key pair, a record).
+  Room room = 5;
+}
+
+// Room is what a resource takes from its zone's memory, the way the zone's
+// pools count it (ARCHITECTURE.md §6).
+message Room {
+  // MiB booked in the zone's guaranteed pool for as long as it exists.
+  int64 guaranteed_mb = 1;
+  // MiB borrowed from the zone's spot pool while it runs, given back when a
+  // reservation needs the room.
+  int64 spot_mb = 2;
+  // Whether it runs once the request is done (spot room is used only then).
+  bool running = 3;
 }
 
 message Refusal {
@@ -260,6 +292,45 @@ message ReconcileResponse {
   string detail = 2;
   bytes observed = 3;
   repeated Event events = 4;
+  // The desired spec, when the plugin moved it — a machine a hold stopped
+  // for good is no longer meant to run — with the room it now takes. Empty =
+  // unchanged.
+  bytes spec = 5;
+  Room room = 6;
+}
+
+message SurveyRequest {
+  string zone = 1;
+  // The conditions the zone's reservations wait on.
+  repeated Condition conditions = 2;
+}
+
+message Condition {
+  oneof what {
+    // A guest, by the engine's own name (one of the zone's watch list), runs.
+    string guest_running = 1;
+    // A node of the engine is down.
+    string node_down = 2;
+  }
+}
+
+message SurveyResponse {
+  // One per condition asked, in the same order.
+  repeated ConditionState conditions = 1;
+  // The plugin's resources whose engine objects carry a hold, by id: the key
+  // written on them (by the core through the plugin, or by the engine's own
+  // node acting alone when the core could not be reached).
+  map<string, string> holds = 2;
+  // Whether the zone's engine answers and its node is up (a zone that sleeps
+  // is not awake).
+  bool awake = 3;
+}
+
+message ConditionState {
+  bool met = 1;
+  // Why it could not be read; met is then false and the core keeps what it
+  // knew.
+  string error = 2;
 }
 
 message Event {
