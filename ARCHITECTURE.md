@@ -19,7 +19,8 @@ where this page and they disagree, they win.
 | The plugin protocol and its SDK; the fake driver; the toy plugin | **built** |
 | The API (`/v1`), `/healthz`, `/metrics`, `/openapi.json` | **built** |
 | Zones' capacity: pools, classes, reservations, preemption, power | designed (§6) |
-| The machines, volumes and images plugins; the Proxmox driver | designed (§7, §5) |
+| The machines plugin (machines, key pairs); the Proxmox VE driver; references between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md)) |
+| The volumes and images plugins | designed (§7) |
 | The command line and the console generated from the schemas | designed (§2) |
 | Names, ports, snapshots, object storage, databases; the Incus and AWS drivers | designed (§7) |
 
@@ -163,6 +164,17 @@ are absolute (« memory 8 », never « +2 »); (4) refusals are gRPC statuses �
 `INVALID_ARGUMENT` (never as written), `FAILED_PRECONDITION` (not in the
 engine's present state), `UNAVAILABLE` (the core retries).
 
+**References.** A spec's (or an action's params') top-level property that
+names other resources carries `"x-hangar-ref": "<type>"` in its schema — a
+string, or an array whose items are marked (the machines plugin's
+`key_pairs`). The core checks every id before the plugin is asked: a
+resource of that type, **the owner's own** (someone else's reads exactly
+like one that does not exist), in the same zone, ready. It records the link
+(`relations`: the field's name as its kind) and hands the plugin the
+resources themselves in `refs` with the create or the action — a plugin
+never reads the registry. A config enabling a type that names a type no
+plugin declares is refused at start. **(built)**
+
 **Adding a plugin = three things:** the plugin (built in, or a program of its
 own at a path, pinned by its SHA-256), one config block enabling it on zones,
 its credential per zone (from a file or an environment variable of the
@@ -197,9 +209,22 @@ capabilities (to prove what a zone without one refuses) and can demand a
 credential (to prove the plugin received its own).
 
 **The guests facet** (`driver.Guests`: create, find, list, delete, power,
-resize — create idempotent on the core's id) is what the fake and the toy
-plugin speak today; the machines plugin grows it with images, disks,
-networks and user data. *(The Proxmox, Incus and AWS drivers are designed.)*
+reboot, resize — create idempotent on the core's id) carries a guest's name,
+image (the engine's own name for it, per kind), root disk, public keys, user
+data, tags; it reports its node and addresses. **`Traits(kind)`** says what a
+guest of one kind takes (user data) and changes while it runs (cores, memory
+up, memory down) — finer than a flag, which speaks for the whole engine: on
+Proxmox a container changes everything live and a VM only grows its memory.
+
+**The Proxmox VE driver is built** ([docs/proxmox.md](docs/proxmox.md)): one
+API token fenced to one pool, `fence.pool` advertised only when the token's
+own permissions reach nothing else; containers from a template archive, VMs
+cloned from a template found by name and fed their user data on a NoCloud
+seed disc the driver writes and uploads; every long call waits for its task
+(a refused start is a `200` and a failed task). It advertises `kind.*`,
+`guest.tags`, `resize.live.memory_down` (containers, above what they hold)
+and `fence.pool`; `hook.pre_start` and the rest arrive with the sessions that
+use them. *(The Incus and AWS drivers are designed.)*
 
 ## 6. Zones, pools, classes, reservations, preemption **(designed)**
 
@@ -239,6 +264,15 @@ product's IPAM hands out addresses), and its capacity rules:
 
 ### The first three
 
+**The machines plugin is built**, as the row below says but for four
+things. The key pair type is **`keypair`** (a type's name has the shape of an
+id prefix); a key pair is **imported, never generated** (the brain would hold
+a private key). **Console** comes with the terminal in the console (it needs
+a stream through the core the protocol does not carry yet). **Awake hours,
+keep awake, `idle_after`, `floor` and the `guaranteed + spot` class** come
+with §6's zones; **GPU** and **`peers`** later. A machine holds its size
+while it exists, running or not.
+
 | plugin | resources | actions | limit dimensions (per tier) | driver needs |
 |---|---|---|---|---|
 | **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · console (serial / terminal) · delete · keep awake (costs awake hours) | count · vCPU · memory GB · awake hours a month · kinds allowed · classes allowed · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `hook.pre_start` or core admission |
@@ -267,7 +301,7 @@ operator sets.
 |---|---|---|
 | **1. The door** | OIDC sign-in (the operator's provider and its MFA); API tokens scoped (read / write) and expiring, never able to make tokens; the brain behind the operator's gateway (it speaks plain HTTP; TLS is the gateway's) | **built** |
 | **2. The core and its plugins** | limits per tier; every call audited; **each plugin its own process, started with an empty environment, with its own credential and nothing else**; mutual TLS on its socket; a program pinned by its SHA-256; the API never returns an engine credential | **built** — the empty environment and the one-credential rule are proved by tests that run a probe plugin and read what it received |
-| **3. The engine fence** | each driver's credential fenced to the product's own guests (`fence.pool`): on Proxmox a pool and a role — it cannot see or touch any other guest | designed |
+| **3. The engine fence** | each driver's credential fenced to the product's own guests (`fence.pool`): on Proxmox a pool and a role — it cannot see or touch any other guest | **built** for Proxmox: the driver reads the token's own permissions and advertises `fence.pool` only when nothing outside its pools is reachable (root's token, the control, is refused with 390 reasons); the machines plugin requires it, so an unfenced zone is not one it acts on |
 | **4. The network** | a zone's network is the operator's: the product assumes a lane where machines reach only what the operator allows, and each machine is alone on it unless two share a `peers` group | designed |
 | **5. The machine** | untrusted users get **VMs** (their own kernel); containers are for trusted operators | designed (a tier's `kind` choice limit already enforces it) |
 

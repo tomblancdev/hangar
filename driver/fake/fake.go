@@ -50,6 +50,9 @@ type Engine struct {
 type state struct {
 	Seq    int                      `json:"seq"`
 	Guests map[string]*driver.Guest `json:"guests"`
+	// Specs: what each guest was created with (its keys, user data, image),
+	// which a Guest does not report — kept so tests can read what arrived.
+	Specs map[string]driver.GuestSpec `json:"specs,omitempty"`
 }
 
 // Open opens a fake zone. The endpoint is empty (memory) or a file path.
@@ -177,11 +180,19 @@ func (e *Engine) CreateGuest(_ context.Context, s driver.GuestSpec) (driver.Gues
 		return driver.Guest{}, fmt.Errorf("%w: no kind %q", driver.ErrRefused, s.Kind)
 	}
 	e.state.Seq++
+	name := s.Name
+	if name == "" {
+		name = s.ID
+	}
 	g := &driver.Guest{
-		ID: s.ID, EngineRef: fmt.Sprintf("fake-%d", e.state.Seq), Kind: s.Kind,
-		Cores: s.Cores, MemoryMB: s.MemoryMB, Running: true, Tags: maps.Clone(s.Tags),
+		ID: s.ID, EngineRef: fmt.Sprintf("fake-%d", e.state.Seq), Kind: s.Kind, Name: name, Node: "fake",
+		Cores: s.Cores, MemoryMB: s.MemoryMB, DiskGB: s.DiskGB, Running: !s.Stopped, Tags: maps.Clone(s.Tags),
 	}
 	e.state.Guests[s.ID] = g
+	if e.state.Specs == nil {
+		e.state.Specs = map[string]driver.GuestSpec{}
+	}
+	e.state.Specs[s.ID] = s
 	return clone(g), e.save()
 }
 
@@ -219,6 +230,7 @@ func (e *Engine) DeleteGuest(_ context.Context, id string) error {
 		return err
 	}
 	delete(e.state.Guests, id)
+	delete(e.state.Specs, id)
 	return e.save()
 }
 
@@ -234,6 +246,28 @@ func (e *Engine) SetPower(_ context.Context, id string, on bool) (driver.Guest, 
 	}
 	g.Running = on
 	return clone(g), e.save()
+}
+
+func (e *Engine) Reboot(_ context.Context, id string) (driver.Guest, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.fail(); err != nil {
+		return driver.Guest{}, err
+	}
+	g, ok := e.state.Guests[id]
+	if !ok {
+		return driver.Guest{}, driver.ErrNotFound
+	}
+	if !g.Running {
+		return driver.Guest{}, fmt.Errorf("%w: a stopped guest does not reboot", driver.ErrRefused)
+	}
+	return clone(g), nil
+}
+
+// Traits: every kind takes user data and changes live, memory down only
+// where the zone's flags say so.
+func (e *Engine) Traits(string) driver.Traits {
+	return driver.Traits{UserData: true, LiveCores: true, LiveMemoryUp: true, LiveMemoryDown: e.has(driver.ResizeLiveMemoryDown)}
 }
 
 func (e *Engine) ResizeGuest(_ context.Context, id string, cores, memoryMB int) (driver.Guest, error) {
@@ -273,6 +307,15 @@ func (e *Engine) Tamper(id string, f func(*driver.Guest)) {
 		f(g)
 		_ = e.save()
 	}
+}
+
+// Spec returns what a guest was created with.
+func (e *Engine) Spec(id string) (driver.GuestSpec, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_ = e.load()
+	s, ok := e.state.Specs[id]
+	return s, ok
 }
 
 // FailNext makes the next call return err.

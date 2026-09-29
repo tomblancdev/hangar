@@ -227,6 +227,10 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 		return nil, nil, false, c.refused(ctx, p)
 	}
 
+	rels, p := c.references(ctx, who.Subject, in.Zone, t.Refs, in.Spec)
+	if p != nil {
+		return nil, nil, false, c.refused(ctx, p)
+	}
 	plan, p := c.plan(ctx, t, &pluginpb.PlanRequest{Type: t.Name, Zone: in.Zone, Spec: in.Spec})
 	if p != nil {
 		return nil, nil, false, c.refused(ctx, p)
@@ -260,6 +264,11 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 		}
 		if err := tx.InsertResource(r); err != nil {
 			return err
+		}
+		for _, rel := range rels {
+			if err := tx.InsertRelation(r.ID, rel[0], rel[1]); err != nil {
+				return err
+			}
 		}
 		return tx.InsertOperation(op)
 	})
@@ -533,6 +542,9 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 	if v := a.Validate(in.Params); len(v) > 0 {
 		p := problem(422, KindSchema, "the params do not fit %s: %s", a.Name, v[0].Reason)
 		p.Violations = v
+		return nil, nil, false, c.refused(ctx, p)
+	}
+	if _, p := c.references(ctx, r.Owner, r.Zone, a.Refs, in.Params); p != nil {
 		return nil, nil, false, c.refused(ctx, p)
 	}
 	change := registry.Change{State: registry.Updating, IfState: registry.Ready}
@@ -894,15 +906,33 @@ func (c *Core) call(ctx context.Context, p *plugins.Plugin, op *registry.Operati
 	}
 	cctx, cancel := context.WithTimeout(ctx, c.CallTimeout)
 	defer cancel()
+	var refs []plugins.Ref
+	if t := c.host.Type(r.Type); t != nil {
+		refs = t.Refs
+		if op.Kind == registry.OpAction {
+			refs = nil
+			if a := t.Action(op.Action); a != nil {
+				refs = a.Refs
+			}
+		}
+	}
 	switch op.Kind {
 	case registry.OpCreate:
-		resp, err := client.Create(cctx, &pluginpb.CreateRequest{Resource: toProto(r)})
+		rs, err := c.loadRefs(ctx, refs, r.Spec)
+		if err != nil {
+			return outcome{}, err
+		}
+		resp, err := client.Create(cctx, &pluginpb.CreateRequest{Resource: toProto(r), Refs: rs})
 		return outcome{observed: resp.GetObserved(), events: resp.GetEvents()}, err
 	case registry.OpDelete:
 		resp, err := client.Delete(cctx, &pluginpb.DeleteRequest{Resource: toProto(r)})
 		return outcome{events: resp.GetEvents()}, err
 	default:
-		resp, err := client.Act(cctx, &pluginpb.ActRequest{Resource: toProto(r), Action: op.Action, Params: op.Params})
+		rs, err := c.loadRefs(ctx, refs, op.Params)
+		if err != nil {
+			return outcome{}, err
+		}
+		resp, err := client.Act(cctx, &pluginpb.ActRequest{Resource: toProto(r), Action: op.Action, Params: op.Params, Refs: rs})
 		return outcome{spec: resp.GetSpec(), observed: resp.GetObserved(), result: resp.GetResult(), events: resp.GetEvents()}, err
 	}
 }
@@ -986,6 +1016,90 @@ func (c *Core) events(r *registry.Resource, evs []*pluginpb.Event) {
 		c.audit.Write(audit.Event{Action: "event", Actor: "plugin:" + r.Plugin, Resource: r.ID, Type: r.Type, Zone: r.Zone,
 			Result: ev.GetName(), Detail: ev.GetMessage(), Fields: ev.GetFields()})
 	}
+}
+
+// ---- References ---------------------------------------------------------
+
+// refIDs reads the ids a reference field holds.
+func refIDs(ref plugins.Ref, doc json.RawMessage) []string {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(doc, &fields) != nil {
+		return nil
+	}
+	raw := fields[ref.Field]
+	if len(raw) == 0 {
+		return nil
+	}
+	if ref.Many {
+		var ids []string
+		_ = json.Unmarshal(raw, &ids)
+		return ids
+	}
+	var id string
+	_ = json.Unmarshal(raw, &id)
+	if id == "" {
+		return nil
+	}
+	return []string{id}
+}
+
+// references checks the ids a spec or an action's params name: each must be
+// a resource of the declared type, the owner's own, in the same zone, and
+// ready. One the caller may not see is refused in the same words as one
+// that does not exist. It returns the (field, id) pairs to record.
+func (c *Core) references(ctx context.Context, owner, zone string, refs []plugins.Ref, doc json.RawMessage) ([][2]string, *Problem) {
+	var out [][2]string
+	var bad []plugins.Violation
+	for _, ref := range refs {
+		for i, id := range refIDs(ref, doc) {
+			field := "/" + ref.Field
+			if ref.Many {
+				field += fmt.Sprintf("/%d", i)
+			}
+			r, err := c.store.Resource(ctx, id)
+			if err != nil && !errors.Is(err, registry.ErrNotFound) {
+				return nil, problem(500, KindInternal, "the registry cannot read %s", id)
+			}
+			switch {
+			case r == nil || r.Owner != owner || r.Type != ref.Type || r.State == registry.Deleted:
+				bad = append(bad, plugins.Violation{Field: field, Reason: fmt.Sprintf("you have no %s %s", ref.Type, id)})
+			case r.Zone != zone:
+				bad = append(bad, plugins.Violation{Field: field, Reason: fmt.Sprintf("%s is in zone %s, not %s", id, r.Zone, zone)})
+			case r.State != registry.Ready:
+				bad = append(bad, plugins.Violation{Field: field, Reason: fmt.Sprintf("%s is %s", id, r.State)})
+			default:
+				out = append(out, [2]string{ref.Field, id})
+			}
+		}
+	}
+	if len(bad) > 0 {
+		p := problem(422, KindSchema, "%s: %s", bad[0].Field, bad[0].Reason)
+		p.Violations = bad
+		return nil, p
+	}
+	return out, nil
+}
+
+// loadRefs reads the resources a spec or params name, as the registry holds
+// them now — for a call the core makes, admitted earlier, perhaps before a
+// restart.
+func (c *Core) loadRefs(ctx context.Context, refs []plugins.Ref, doc json.RawMessage) ([]*pluginpb.Resource, error) {
+	var out []*pluginpb.Resource
+	seen := map[string]bool{}
+	for _, ref := range refs {
+		for _, id := range refIDs(ref, doc) {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			r, err := c.store.Resource(ctx, id)
+			if err != nil {
+				return nil, status.Errorf(codes.Unavailable, "the registry cannot read %s: %v", id, err)
+			}
+			out = append(out, toProto(r))
+		}
+	}
+	return out, nil
 }
 
 func toProto(r *registry.Resource) *pluginpb.Resource {

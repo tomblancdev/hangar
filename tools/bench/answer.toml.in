@@ -1,0 +1,21 @@
+# The throwaway Proxmox VE the bench installs. bench.sh fills the two @…@
+# values per bench (a random root password nobody types, the bench's own ssh
+# key) and never writes the filled file into the repository.
+[global]
+keyboard = "en-us"
+country = "us"
+fqdn = "pve-bench.example.com"
+mailto = "root@example.com"
+timezone = "UTC"
+root-password = "@ROOT_PASSWORD@"
+root-ssh-keys = ["@SSH_KEY@"]
+reboot-mode = "power-off"
+
+[network]
+source = "from-dhcp"
+
+[disk-setup]
+filesystem = "zfs"
+zfs.raid = "raid0"
+zfs.arc-max = 256
+disk-list = ["vda"]

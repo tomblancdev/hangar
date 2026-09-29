@@ -289,6 +289,31 @@ func (t *Tx) InsertResource(r *Resource) error {
 	return t.setUsage(r.ID, r.Usage)
 }
 
+// InsertRelation records that one resource refers to another, under the
+// name of the field that does ("key_pairs").
+func (t *Tx) InsertRelation(from, kind, to string) error {
+	_, err := t.q.ExecContext(t.ctx, `INSERT OR IGNORE INTO relations (from_id, kind, to_id) VALUES (?, ?, ?)`, from, kind, to)
+	return err
+}
+
+// Relations lists what a resource refers to, as (kind, id) pairs.
+func (s *Store) Relations(ctx context.Context, from string) ([][2]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, to_id FROM relations WHERE from_id = ? ORDER BY kind, to_id`, from)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out [][2]string
+	for rows.Next() {
+		var k, to string
+		if err := rows.Scan(&k, &to); err != nil {
+			return nil, err
+		}
+		out = append(out, [2]string{k, to})
+	}
+	return out, rows.Err()
+}
+
 func (t *Tx) setUsage(id string, usage map[string]int64) error {
 	if _, err := t.q.ExecContext(t.ctx, `DELETE FROM usage WHERE resource_id = ?`, id); err != nil {
 		return err

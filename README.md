@@ -17,12 +17,15 @@ ids (`m-0123456789abcdef0`), types, images, user data, tags, client tokens,
 on-demand and spot — for a home lab, a club, a small office. It is not a
 hypervisor (it drives yours) and not an EC2 clone.
 
-> **Status: the skeleton.** The core is built and proved end to end on a fake
-> engine — identity, tiers and limits, the registry, operations, reconcile,
-> the audit, the plugin host, the API. The plugins that make real machines
-> (machines, volumes, images on Proxmox) are designed and come next. No
-> release is cut yet. [ARCHITECTURE.md](ARCHITECTURE.md) says what is built
-> and what is designed, section by section.
+> **Status: the first machines.** The core is built and proved end to end —
+> identity, tiers and limits, the registry, operations, reconcile, the audit,
+> the plugin host, the API. **The machines plugin and the Proxmox VE driver
+> are built**, proved on a throwaway Proxmox VE the repo installs itself
+> ([`tools/bench`](tools/bench/), [docs/proxmox.md](docs/proxmox.md)):
+> containers and VMs made, resized live, stopped and deleted through the API.
+> Volumes, images, zones' capacity and the doors come next. No release is cut
+> yet. [ARCHITECTURE.md](ARCHITECTURE.md) says what is built and what is
+> designed, section by section.
 
 ## How it fits together
 
@@ -92,6 +95,8 @@ resource, the result and, for a refusal, why.
 
 ```sh
 go test ./...              # the whole suite, the binary's end-to-end run included
+sh tools/bench/bench.sh up # a throwaway Proxmox VE in a VM (podman + /dev/kvm), then:
+eval "$(sh tools/bench/bench.sh env)" && go test ./driver/proxmox/ ./cmd/hangar/ -run Bench -v
 sh tools/no-environment.sh # this repo describes nowhere: RFC documentation reserves only
 sh tools/protogen.sh       # regenerate the plugin protocol's Go code (tools pinned in tools/go.mod)
 ```

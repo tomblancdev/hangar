@@ -97,8 +97,21 @@ type Type struct {
 	// Requires: the plugin's flags and the type's own.
 	Requires []string
 	Actions  []*Action
+	// Refs: the spec's fields that name other resources.
+	Refs []Ref
 
 	schema *jsonschema.Schema
+}
+
+// Ref is a field of a spec, or of an action's params, that names other
+// resources by id: a top-level property its schema marks
+// "x-hangar-ref": "<type>" — a string, or an array whose items are marked.
+// The core resolves each id before the plugin is asked (the owner's own, in
+// the same zone, ready) and hands the plugin the resources themselves.
+type Ref struct {
+	Field string `json:"field"`
+	Type  string `json:"type"`
+	Many  bool   `json:"many"`
 }
 
 // Action is an action a type declared.
@@ -108,6 +121,7 @@ type Action struct {
 	ParamsSchema json.RawMessage
 	ChangesUsage bool
 	Requires     []string
+	Refs         []Ref
 
 	params *jsonschema.Schema
 }
@@ -150,7 +164,59 @@ func Start(ctx context.Context, cfg *config.Config, opt Options, log *slog.Logge
 		h.plugins[p.Name] = p
 		h.order = append(h.order, p.Name)
 	}
+	if err := h.checkRefs(); err != nil {
+		h.Close()
+		return nil, err
+	}
 	return h, nil
+}
+
+// checkRefs refuses a reference to a type no plugin declares.
+func (h *Host) checkRefs() error {
+	var errs []error
+	for _, t := range h.Types() {
+		for _, r := range t.Refs {
+			if h.types[r.Type] == nil {
+				errs = append(errs, fmt.Errorf("type %s: field %s names type %s, which no enabled plugin declares", t.Name, r.Field, r.Type))
+			}
+		}
+		for _, a := range t.Actions {
+			for _, r := range a.Refs {
+				if h.types[r.Type] == nil {
+					errs = append(errs, fmt.Errorf("type %s, action %s: field %s names type %s, which no enabled plugin declares", t.Name, a.Name, r.Field, r.Type))
+				}
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// refsOf reads the fields a schema marks as references.
+func refsOf(raw []byte) ([]Ref, error) {
+	var doc struct {
+		Properties map[string]struct {
+			Ref   string `json:"x-hangar-ref"`
+			Items *struct {
+				Ref string `json:"x-hangar-ref"`
+			} `json:"items"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	var out []Ref
+	for field, p := range doc.Properties {
+		switch {
+		case p.Ref != "" && p.Items != nil && p.Items.Ref != "":
+			return nil, fmt.Errorf("field %s: x-hangar-ref on the field or on its items, not both", field)
+		case p.Ref != "":
+			out = append(out, Ref{Field: field, Type: p.Ref})
+		case p.Items != nil && p.Items.Ref != "":
+			out = append(out, Ref{Field: field, Type: p.Items.Ref, Many: true})
+		}
+	}
+	slices.SortFunc(out, func(a, b Ref) int { return strings.Compare(a.Field, b.Field) })
+	return out, nil
 }
 
 func (h *Host) start(ctx context.Context, cfg *config.Config, opt Options, pc config.Plugin) (*Plugin, error) {
@@ -399,6 +465,8 @@ func compileType(plugin string, d *pluginpb.DescribeResponse, rt *pluginpb.Resou
 	s, err := compileSchema("type/"+t.Name, rt.GetSchema())
 	if err != nil {
 		errs = append(errs, fmt.Errorf("schema: %w", err))
+	} else if t.Refs, err = refsOf(rt.GetSchema()); err != nil {
+		errs = append(errs, fmt.Errorf("schema: %w", err))
 	}
 	t.schema = s
 	seen := map[string]bool{}
@@ -424,6 +492,8 @@ func compileType(plugin string, d *pluginpb.DescribeResponse, rt *pluginpb.Resou
 		if len(a.GetParamsSchema()) > 0 {
 			ps, err := compileSchema("type/"+t.Name+"/"+a.GetName(), a.GetParamsSchema())
 			if err != nil {
+				errs = append(errs, fmt.Errorf("action %s: params schema: %w", a.GetName(), err))
+			} else if act.Refs, err = refsOf(a.GetParamsSchema()); err != nil {
 				errs = append(errs, fmt.Errorf("action %s: params schema: %w", a.GetName(), err))
 			}
 			act.params = ps

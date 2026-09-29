@@ -28,6 +28,7 @@ import (
 	"github.com/tomblancdev/hangar/internal/plugins"
 	"github.com/tomblancdev/hangar/internal/registry"
 	"github.com/tomblancdev/hangar/internal/testoidc"
+	"github.com/tomblancdev/hangar/plugins/machines"
 	"github.com/tomblancdev/hangar/plugins/toy"
 	"github.com/tomblancdev/hangar/sdk"
 )
@@ -35,8 +36,13 @@ import (
 // The test binary is also the toy plugin's process: the core starts it as
 // "<test> hangar-test-plugin toy", exactly as it starts "hangar plugin toy".
 func TestMain(m *testing.M) {
-	if len(os.Args) == 3 && os.Args[1] == "hangar-test-plugin" && os.Args[2] == "toy" {
-		sdk.Serve(toy.New())
+	if len(os.Args) == 3 && os.Args[1] == "hangar-test-plugin" {
+		switch os.Args[2] {
+		case "toy":
+			sdk.Serve(toy.New())
+		case "machines":
+			sdk.Serve(machines.New())
+		}
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -98,7 +104,11 @@ reconcile:
   every: 1h
 `
 
-func newStack(t *testing.T) *stack {
+func newStack(t *testing.T) *stack { t.Helper(); return newStackWith(t, stackConfig, "toy") }
+
+// newStackWith runs the brain on another config (%[1]s the data directory,
+// %[2]s the identity provider, %[3]s this test binary, the plugins' program).
+func newStackWith(t *testing.T, cfgText string, enabled ...string) *stack {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "h") // short: the plugin's socket lives under it
 	if err != nil {
@@ -106,7 +116,7 @@ func newStack(t *testing.T) *stack {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	s := &stack{t: t, iss: testoidc.New(t), engine: dir + "/zone-z.json", logs: &syncBuf{}}
-	s.cfg, err = config.Parse(fmt.Appendf(nil, stackConfig, dir, s.iss.URL, os.Args[0]))
+	s.cfg, err = config.Parse(fmt.Appendf(nil, cfgText, dir, s.iss.URL, os.Args[0]))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +128,7 @@ func newStack(t *testing.T) *stack {
 	if s.host, err = plugins.Start(ctx, s.cfg, plugins.Options{DataDir: dir, Logs: io.Discard}, log); err != nil {
 		t.Fatal(err)
 	}
-	if err := limits.Check(s.cfg.Tiers, s.host.Dimensions(), []string{"toy"}); err != nil {
+	if err := limits.Check(s.cfg.Tiers, s.host.Dimensions(), enabled); err != nil {
 		t.Fatal(err)
 	}
 	m := metrics.New()

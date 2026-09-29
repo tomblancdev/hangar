@@ -1154,7 +1154,11 @@ type CreateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The id is minted by the core before the call: write it on the engine
 	// object, and find it again by it (rule 1).
-	Resource      *Resource `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	Resource *Resource `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	// The resources the spec refers to — every field its schema marks with
+	// "x-hangar-ref" — as the registry holds them. The core checked each is
+	// the owner's own, in the same zone, and ready when it was asked for.
+	Refs          []*Resource `protobuf:"bytes,2,rep,name=refs,proto3" json:"refs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1192,6 +1196,13 @@ func (*CreateRequest) Descriptor() ([]byte, []int) {
 func (x *CreateRequest) GetResource() *Resource {
 	if x != nil {
 		return x.Resource
+	}
+	return nil
+}
+
+func (x *CreateRequest) GetRefs() []*Resource {
+	if x != nil {
+		return x.Refs
 	}
 	return nil
 }
@@ -1337,10 +1348,13 @@ func (x *DeleteResponse) GetEvents() []*Event {
 }
 
 type ActRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Resource      *Resource              `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
-	Action        string                 `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
-	Params        []byte                 `protobuf:"bytes,3,opt,name=params,proto3" json:"params,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Resource *Resource              `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	Action   string                 `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
+	Params   []byte                 `protobuf:"bytes,3,opt,name=params,proto3" json:"params,omitempty"`
+	// The resources the params refer to ("x-hangar-ref"), checked as a
+	// create's are.
+	Refs          []*Resource `protobuf:"bytes,4,rep,name=refs,proto3" json:"refs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1392,6 +1406,13 @@ func (x *ActRequest) GetAction() string {
 func (x *ActRequest) GetParams() []byte {
 	if x != nil {
 		return x.Params
+	}
+	return nil
+}
+
+func (x *ActRequest) GetRefs() []*Resource {
+	if x != nil {
+		return x.Refs
 	}
 	return nil
 }
@@ -1735,21 +1756,23 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"7\n" +
 	"\aRefusal\x12\x14\n" +
 	"\x05field\x18\x01 \x01(\tR\x05field\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"G\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"w\n" +
 	"\rCreateRequest\x126\n" +
-	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\"]\n" +
+	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\x12.\n" +
+	"\x04refs\x18\x02 \x03(\v2\x1a.hangar.plugin.v1.ResourceR\x04refs\"]\n" +
 	"\x0eCreateResponse\x12\x1a\n" +
 	"\bobserved\x18\x01 \x01(\fR\bobserved\x12/\n" +
 	"\x06events\x18\x02 \x03(\v2\x17.hangar.plugin.v1.EventR\x06events\"G\n" +
 	"\rDeleteRequest\x126\n" +
 	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\"A\n" +
 	"\x0eDeleteResponse\x12/\n" +
-	"\x06events\x18\x01 \x03(\v2\x17.hangar.plugin.v1.EventR\x06events\"t\n" +
+	"\x06events\x18\x01 \x03(\v2\x17.hangar.plugin.v1.EventR\x06events\"\xa4\x01\n" +
 	"\n" +
 	"ActRequest\x126\n" +
 	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\x12\x16\n" +
 	"\x06action\x18\x02 \x01(\tR\x06action\x12\x16\n" +
-	"\x06params\x18\x03 \x01(\fR\x06params\"\x86\x01\n" +
+	"\x06params\x18\x03 \x01(\fR\x06params\x12.\n" +
+	"\x04refs\x18\x04 \x03(\v2\x1a.hangar.plugin.v1.ResourceR\x04refs\"\x86\x01\n" +
 	"\vActResponse\x12\x12\n" +
 	"\x04spec\x18\x01 \x01(\fR\x04spec\x12\x1a\n" +
 	"\bobserved\x18\x02 \x01(\fR\bobserved\x12\x16\n" +
@@ -1849,34 +1872,36 @@ var file_hangar_plugin_v1_plugin_proto_depIdxs = []int32{
 	28, // 11: hangar.plugin.v1.PlanResponse.choices:type_name -> hangar.plugin.v1.PlanResponse.ChoicesEntry
 	15, // 12: hangar.plugin.v1.PlanResponse.refusals:type_name -> hangar.plugin.v1.Refusal
 	12, // 13: hangar.plugin.v1.CreateRequest.resource:type_name -> hangar.plugin.v1.Resource
-	24, // 14: hangar.plugin.v1.CreateResponse.events:type_name -> hangar.plugin.v1.Event
-	12, // 15: hangar.plugin.v1.DeleteRequest.resource:type_name -> hangar.plugin.v1.Resource
-	24, // 16: hangar.plugin.v1.DeleteResponse.events:type_name -> hangar.plugin.v1.Event
-	12, // 17: hangar.plugin.v1.ActRequest.resource:type_name -> hangar.plugin.v1.Resource
-	24, // 18: hangar.plugin.v1.ActResponse.events:type_name -> hangar.plugin.v1.Event
-	12, // 19: hangar.plugin.v1.ReconcileRequest.resource:type_name -> hangar.plugin.v1.Resource
-	1,  // 20: hangar.plugin.v1.ReconcileResponse.drift:type_name -> hangar.plugin.v1.Drift
-	24, // 21: hangar.plugin.v1.ReconcileResponse.events:type_name -> hangar.plugin.v1.Event
-	29, // 22: hangar.plugin.v1.Event.fields:type_name -> hangar.plugin.v1.Event.FieldsEntry
-	2,  // 23: hangar.plugin.v1.PluginService.Describe:input_type -> hangar.plugin.v1.DescribeRequest
-	8,  // 24: hangar.plugin.v1.PluginService.Configure:input_type -> hangar.plugin.v1.ConfigureRequest
-	13, // 25: hangar.plugin.v1.PluginService.Plan:input_type -> hangar.plugin.v1.PlanRequest
-	16, // 26: hangar.plugin.v1.PluginService.Create:input_type -> hangar.plugin.v1.CreateRequest
-	18, // 27: hangar.plugin.v1.PluginService.Delete:input_type -> hangar.plugin.v1.DeleteRequest
-	20, // 28: hangar.plugin.v1.PluginService.Act:input_type -> hangar.plugin.v1.ActRequest
-	22, // 29: hangar.plugin.v1.PluginService.Reconcile:input_type -> hangar.plugin.v1.ReconcileRequest
-	3,  // 30: hangar.plugin.v1.PluginService.Describe:output_type -> hangar.plugin.v1.DescribeResponse
-	10, // 31: hangar.plugin.v1.PluginService.Configure:output_type -> hangar.plugin.v1.ConfigureResponse
-	14, // 32: hangar.plugin.v1.PluginService.Plan:output_type -> hangar.plugin.v1.PlanResponse
-	17, // 33: hangar.plugin.v1.PluginService.Create:output_type -> hangar.plugin.v1.CreateResponse
-	19, // 34: hangar.plugin.v1.PluginService.Delete:output_type -> hangar.plugin.v1.DeleteResponse
-	21, // 35: hangar.plugin.v1.PluginService.Act:output_type -> hangar.plugin.v1.ActResponse
-	23, // 36: hangar.plugin.v1.PluginService.Reconcile:output_type -> hangar.plugin.v1.ReconcileResponse
-	30, // [30:37] is the sub-list for method output_type
-	23, // [23:30] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	12, // 14: hangar.plugin.v1.CreateRequest.refs:type_name -> hangar.plugin.v1.Resource
+	24, // 15: hangar.plugin.v1.CreateResponse.events:type_name -> hangar.plugin.v1.Event
+	12, // 16: hangar.plugin.v1.DeleteRequest.resource:type_name -> hangar.plugin.v1.Resource
+	24, // 17: hangar.plugin.v1.DeleteResponse.events:type_name -> hangar.plugin.v1.Event
+	12, // 18: hangar.plugin.v1.ActRequest.resource:type_name -> hangar.plugin.v1.Resource
+	12, // 19: hangar.plugin.v1.ActRequest.refs:type_name -> hangar.plugin.v1.Resource
+	24, // 20: hangar.plugin.v1.ActResponse.events:type_name -> hangar.plugin.v1.Event
+	12, // 21: hangar.plugin.v1.ReconcileRequest.resource:type_name -> hangar.plugin.v1.Resource
+	1,  // 22: hangar.plugin.v1.ReconcileResponse.drift:type_name -> hangar.plugin.v1.Drift
+	24, // 23: hangar.plugin.v1.ReconcileResponse.events:type_name -> hangar.plugin.v1.Event
+	29, // 24: hangar.plugin.v1.Event.fields:type_name -> hangar.plugin.v1.Event.FieldsEntry
+	2,  // 25: hangar.plugin.v1.PluginService.Describe:input_type -> hangar.plugin.v1.DescribeRequest
+	8,  // 26: hangar.plugin.v1.PluginService.Configure:input_type -> hangar.plugin.v1.ConfigureRequest
+	13, // 27: hangar.plugin.v1.PluginService.Plan:input_type -> hangar.plugin.v1.PlanRequest
+	16, // 28: hangar.plugin.v1.PluginService.Create:input_type -> hangar.plugin.v1.CreateRequest
+	18, // 29: hangar.plugin.v1.PluginService.Delete:input_type -> hangar.plugin.v1.DeleteRequest
+	20, // 30: hangar.plugin.v1.PluginService.Act:input_type -> hangar.plugin.v1.ActRequest
+	22, // 31: hangar.plugin.v1.PluginService.Reconcile:input_type -> hangar.plugin.v1.ReconcileRequest
+	3,  // 32: hangar.plugin.v1.PluginService.Describe:output_type -> hangar.plugin.v1.DescribeResponse
+	10, // 33: hangar.plugin.v1.PluginService.Configure:output_type -> hangar.plugin.v1.ConfigureResponse
+	14, // 34: hangar.plugin.v1.PluginService.Plan:output_type -> hangar.plugin.v1.PlanResponse
+	17, // 35: hangar.plugin.v1.PluginService.Create:output_type -> hangar.plugin.v1.CreateResponse
+	19, // 36: hangar.plugin.v1.PluginService.Delete:output_type -> hangar.plugin.v1.DeleteResponse
+	21, // 37: hangar.plugin.v1.PluginService.Act:output_type -> hangar.plugin.v1.ActResponse
+	23, // 38: hangar.plugin.v1.PluginService.Reconcile:output_type -> hangar.plugin.v1.ReconcileResponse
+	32, // [32:39] is the sub-list for method output_type
+	25, // [25:32] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_hangar_plugin_v1_plugin_proto_init() }

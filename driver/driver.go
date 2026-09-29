@@ -147,19 +147,50 @@ type Guests interface {
 	Guests(ctx context.Context) ([]Guest, error)
 	// DeleteGuest removes it; a guest already gone is not an error.
 	DeleteGuest(ctx context.Context, id string) error
+	// SetPower starts it, or stops it the way a person would (the guest is
+	// asked to shut down, and made to after a while).
 	SetPower(ctx context.Context, id string, on bool) (Guest, error)
-	// ResizeGuest sets cores and memory. A running guest's memory goes down
-	// only where the engine has resize.live.memory_down (else ErrRefused).
+	// Reboot restarts a running guest.
+	Reboot(ctx context.Context, id string) (Guest, error)
+	// ResizeGuest sets cores and memory. What a RUNNING guest can change is
+	// what Traits says for its kind; anything else is ErrRefused.
 	ResizeGuest(ctx context.Context, id string, cores, memoryMB int) (Guest, error)
+	// Traits says what a guest of this kind can take on this engine.
+	Traits(kind string) Traits
+}
+
+// Traits is what a guest of one kind can take on one engine — finer than a
+// capability flag, which speaks for the whole engine.
+type Traits struct {
+	// UserData: its first boot runs user data (cloud-init).
+	UserData bool `json:"user_data"`
+	// What a RUNNING guest can change without being stopped.
+	LiveCores      bool `json:"live_cores"`
+	LiveMemoryUp   bool `json:"live_memory_up"`
+	LiveMemoryDown bool `json:"live_memory_down"`
 }
 
 // GuestSpec is what a guest is created with.
 type GuestSpec struct {
-	ID       string // the core's resource id, written on the guest
-	Kind     string // "container" or "vm"
+	ID   string // the core's resource id, written on the guest
+	Kind string // "container" or "vm"
+	// Name is its host name; the id when empty.
+	Name     string
 	Cores    int
 	MemoryMB int
+	// DiskGB is its root disk; 0 = the image's own size.
+	DiskGB int
+	// Image is the engine's own name for what the guest starts from, as the
+	// operator declared it for this kind (a template, an archive, an AMI).
+	// Empty = a blank guest, where the engine has such a thing.
+	Image string
+	// SSHKeys are public keys, in OpenSSH's one-line form, the guest lets in.
+	SSHKeys []string
+	// UserData is handed to its first boot, where Traits says it takes any.
+	UserData []byte
 	Tags     map[string]string
+	// Stopped: create it without starting it.
+	Stopped bool
 }
 
 // Guest is a guest as the engine reports it.
@@ -167,8 +198,12 @@ type Guest struct {
 	ID        string            `json:"id"`
 	EngineRef string            `json:"engine_ref"` // the engine's own name for it
 	Kind      string            `json:"kind"`
+	Name      string            `json:"name,omitempty"`
+	Node      string            `json:"node,omitempty"`
 	Cores     int               `json:"cores"`
 	MemoryMB  int               `json:"memory_mb"`
+	DiskGB    int               `json:"disk_gb,omitempty"`
 	Running   bool              `json:"running"`
+	Addresses []string          `json:"addresses,omitempty"`
 	Tags      map[string]string `json:"tags,omitempty"`
 }

@@ -202,6 +202,10 @@ message CreateRequest {
   // The id is minted by the core before the call: write it on the engine
   // object, and find it again by it (rule 1).
   Resource resource = 1;
+  // The resources the spec refers to — every field its schema marks with
+  // "x-hangar-ref" — as the registry holds them. The core checked each is
+  // the owner's own, in the same zone, and ready when it was asked for.
+  repeated Resource refs = 2;
 }
 
 message CreateResponse {
@@ -221,6 +225,9 @@ message ActRequest {
   Resource resource = 1;
   string action = 2;
   bytes params = 3;
+  // The resources the params refer to ("x-hangar-ref"), checked as a
+  // create's are.
+  repeated Resource refs = 4;
 }
 
 message ActResponse {

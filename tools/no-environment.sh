@@ -78,7 +78,7 @@ scan "$files" "a MAC address that is not documentation (RFC 7042: 00:00:5E:00:53
 # ---- names ---------------------------------------------------------------
 # Dependencies a build or a reader genuinely reaches for are named here, once.
 # Anything else is somebody's domain.
-dep='(([a-z0-9-]+\.)*(example\.(com|net|org)|github\.com|githubusercontent\.com|google\.com|ghcr\.io|docker\.io|golang\.org|go\.dev|gopkg\.in|w3\.org|opensource\.org|flathub\.org|freedesktop\.org|kernel\.org|ietf\.org|rfc-editor\.org|schema\.org|openapis\.org|htmx\.org|alpinelinux\.org|json-schema\.org|modernc\.org|buf\.build|gonum\.org|connectrpc\.com|pluginrpc\.com|go\.uber\.org)|[a-z0-9-]+\.example|localhost)'
+dep='(([a-z0-9-]+\.)*(example\.(com|net|org)|github\.com|githubusercontent\.com|google\.com|ghcr\.io|docker\.io|golang\.org|go\.dev|gopkg\.in|w3\.org|opensource\.org|flathub\.org|freedesktop\.org|kernel\.org|ietf\.org|rfc-editor\.org|schema\.org|openapis\.org|htmx\.org|alpinelinux\.org|json-schema\.org|modernc\.org|buf\.build|gonum\.org|connectrpc\.com|pluginrpc\.com|go\.uber\.org|proxmox\.com|debian\.org|openssh\.com)|[a-z0-9-]+\.example|localhost)'
 scan "$files" "a URL to somewhere real (documentation uses example.com — RFC 2606)" \
 	'https?://[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}' \
 	"https?://$dep"
