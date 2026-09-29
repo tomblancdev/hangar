@@ -108,10 +108,25 @@ type Type struct {
 // "x-hangar-ref": "<type>" — a string, or an array whose items are marked.
 // The core resolves each id before the plugin is asked (the owner's own, in
 // the same zone, ready) and hands the plugin the resources themselves.
+//
+// A spec's reference the schema also marks "x-hangar-attached": true is an
+// attachment: the resource lives inside the one it names on the engine (a
+// volume plugged into a machine), and neither is deleted while it is.
 type Ref struct {
-	Field string `json:"field"`
-	Type  string `json:"type"`
-	Many  bool   `json:"many"`
+	Field    string `json:"field"`
+	Type     string `json:"type"`
+	Many     bool   `json:"many"`
+	Attached bool   `json:"attached,omitempty"`
+}
+
+// Ref returns the type's reference of a field, or nil.
+func (t *Type) Ref(field string) *Ref {
+	for i := range t.Refs {
+		if t.Refs[i].Field == field {
+			return &t.Refs[i]
+		}
+	}
+	return nil
 }
 
 // Action is an action a type declared.
@@ -195,8 +210,9 @@ func (h *Host) checkRefs() error {
 func refsOf(raw []byte) ([]Ref, error) {
 	var doc struct {
 		Properties map[string]struct {
-			Ref   string `json:"x-hangar-ref"`
-			Items *struct {
+			Ref      string `json:"x-hangar-ref"`
+			Attached bool   `json:"x-hangar-attached"`
+			Items    *struct {
 				Ref string `json:"x-hangar-ref"`
 			} `json:"items"`
 		} `json:"properties"`
@@ -209,10 +225,12 @@ func refsOf(raw []byte) ([]Ref, error) {
 		switch {
 		case p.Ref != "" && p.Items != nil && p.Items.Ref != "":
 			return nil, fmt.Errorf("field %s: x-hangar-ref on the field or on its items, not both", field)
+		case p.Attached && p.Ref == "" && (p.Items == nil || p.Items.Ref == ""):
+			return nil, fmt.Errorf("field %s: x-hangar-attached marks a reference, and it names none", field)
 		case p.Ref != "":
-			out = append(out, Ref{Field: field, Type: p.Ref})
+			out = append(out, Ref{Field: field, Type: p.Ref, Attached: p.Attached})
 		case p.Items != nil && p.Items.Ref != "":
-			out = append(out, Ref{Field: field, Type: p.Items.Ref, Many: true})
+			out = append(out, Ref{Field: field, Type: p.Items.Ref, Many: true, Attached: p.Attached})
 		}
 	}
 	slices.SortFunc(out, func(a, b Ref) int { return strings.Compare(a.Field, b.Field) })

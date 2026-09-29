@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -148,7 +149,9 @@ type Guests interface {
 	Guest(ctx context.Context, id string) (Guest, error)
 	// Guests lists every guest the driver's fence lets it see.
 	Guests(ctx context.Context) ([]Guest, error)
-	// DeleteGuest removes it; a guest already gone is not an error.
+	// DeleteGuest removes it; a guest already gone is not an error. A guest
+	// that holds volumes (the Volumes facet) is ErrRefused: deleting it would
+	// take their data with it.
 	DeleteGuest(ctx context.Context, id string) error
 	// SetPower starts it, or stops it the way a person would (the guest is
 	// asked to shut down, and made to after a while).
@@ -241,4 +244,93 @@ type Guest struct {
 	// MemoryUsedMB: what a running guest holds now, where the engine says
 	// (a limit written below it is refused); 0 = unknown or stopped.
 	MemoryUsedMB int `json:"memory_used_mb,omitempty"`
+}
+
+// ---- The volumes facet ------------------------------------------------------
+
+// A volume's content, fixed at its birth: a disk its VM formats itself, or a
+// directory its container mounts at a path. An engine keeps them apart.
+const (
+	ContentBlock      = "block"
+	ContentFilesystem = "filesystem"
+)
+
+// Volumes is the facet of a driver whose disks outlive their guest. A volume
+// is made, placed on a guest or parked, grown and deleted — idempotent on the
+// core's id, like a guest. Where the engine keeps no disk without a guest,
+// the driver parks one on a stopped « shelf » guest of its owner, which it
+// makes, finds and never starts; a plugin never sees a shelf.
+type Volumes interface {
+	// CreateVolume makes a volume where spec.At says: on a guest, or parked.
+	// A second call finds the volume the first one made.
+	CreateVolume(ctx context.Context, spec VolumeSpec) (Volume, error)
+	// Volume finds a volume by the id the core minted for it.
+	Volume(ctx context.Context, id string) (Volume, error)
+	// PlaceVolume puts a volume where at says — on a guest (by the core's
+	// id), from its shelf or from another guest, or back on its owner's
+	// shelf (at.Guest "") — keeping its data, its size and its backup flag.
+	// What a running guest cannot let go of, or take, is ErrRefused, in
+	// words; so is a guest of the other content's kind.
+	PlaceVolume(ctx context.Context, id string, at Place) (Volume, error)
+	// ResizeVolume grows it to sizeGB; a volume never shrinks (ErrRefused).
+	ResizeVolume(ctx context.Context, id string, sizeGB int) (Volume, error)
+	// SetVolumeBackup says whether the engine's backups take it.
+	SetVolumeBackup(ctx context.Context, id string, backup bool) (Volume, error)
+	// DeleteVolume destroys a parked volume. One on a guest is ErrRefused;
+	// one already gone is not an error.
+	DeleteVolume(ctx context.Context, id string) error
+	// CanPark says why this zone cannot keep a volume of that content on no
+	// guest (nil: it can).
+	CanPark(content string) error
+}
+
+// Place is where a volume goes.
+type Place struct {
+	// Guest: the core's id of the guest it is plugged into; "" = parked.
+	Guest string
+	// Mount: a filesystem volume's path in its container.
+	Mount string
+	// Owner: whose shelf it parks on — an opaque key, the same for every
+	// volume of one owner; a volume in transit may rest there too.
+	Owner string
+}
+
+// VolumeSpec is what a volume is created with.
+type VolumeSpec struct {
+	ID      string // the core's resource id, written where the engine keeps it
+	Content string // ContentBlock or ContentFilesystem
+	SizeGB  int
+	Backup  bool
+	At      Place
+}
+
+// Volume is a volume as the engine reports it.
+type Volume struct {
+	ID string `json:"id"`
+	// EngineRef: the engine's own name for it now — it may change as the
+	// volume moves (on Proxmox VE a disk is named after its guest).
+	EngineRef string `json:"engine_ref"`
+	Content   string `json:"content"`
+	SizeGB    int    `json:"size_gb"`
+	Backup    bool   `json:"backup"`
+	// Guest: the core's id of the guest it is plugged into; "" = parked.
+	Guest string `json:"guest,omitempty"`
+	Mount string `json:"mount,omitempty"`
+	// Device: where it is plugged on the guest (or on its shelf).
+	Device string `json:"device,omitempty"`
+	Node   string `json:"node,omitempty"`
+	// InGuest: how its guest finds it — a block volume's stable device path,
+	// a filesystem volume's mount.
+	InGuest string `json:"in_guest,omitempty"`
+}
+
+// SerialOf is the serial number a block volume shows its guest: the id
+// without its dash (vol-0123… → vol0123…), 20 characters at most — AWS's own
+// form for its volumes, and all a disk's serial holds.
+func SerialOf(id string) string {
+	s := strings.ReplaceAll(id, "-", "")
+	if len(s) > 20 {
+		s = s[:20]
+	}
+	return s
 }

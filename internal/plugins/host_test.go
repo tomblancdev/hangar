@@ -240,3 +240,23 @@ func TestADeadPluginIsStartedAgain(t *testing.T) {
 		t.Fatalf("up %v, zone %+v", p.Up(), p.Zones["z"])
 	}
 }
+
+// A reference is read from the schema: a field, or its items, marked
+// x-hangar-ref; x-hangar-attached makes it an attachment, and marks nothing
+// else.
+func TestReferencesAreReadFromTheSchema(t *testing.T) {
+	refs, err := refsOf([]byte(`{"properties": {
+		"machine": {"type": "string", "x-hangar-ref": "machine", "x-hangar-attached": true},
+		"keys":    {"type": "array", "items": {"type": "string", "x-hangar-ref": "keypair"}},
+		"name":    {"type": "string"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Ref{{Field: "keys", Type: "keypair", Many: true}, {Field: "machine", Type: "machine", Attached: true}}
+	if len(refs) != 2 || refs[0] != want[0] || refs[1] != want[1] {
+		t.Fatalf("read %+v", refs)
+	}
+	if _, err := refsOf([]byte(`{"properties": {"name": {"type": "string", "x-hangar-attached": true}}}`)); err == nil {
+		t.Fatal("x-hangar-attached on a field that names nothing was accepted")
+	}
+}

@@ -299,6 +299,12 @@ paths:
     delete:
       tags: [resources]
       summary: Ask for a resource to go.
+      description: |
+        Refused (409 `attached`) while the resource is attached to another,
+        or another is attached to it (a schema's `x-hangar-attached`): on the
+        engine one lives inside the other, and the delete would take it
+        along — "m-… has vol-… attached: detach it first — it keeps its
+        data".
       parameters:
         - { name: client_token, in: query, schema: { $ref: "#/components/schemas/ClientToken" } }
       responses:
@@ -694,7 +700,7 @@ components:
         detail: { type: string, examples: ["2 of 2 toy.boxes used; this asks for 1 more"] }
         kind:
           type: string
-          enum: [sign-in, no-tier, scope, not-found, bad-request, zone, unavailable-here, schema, plugin-refused, limit, room, busy, conflict, engine, plugin-down, internal]
+          enum: [sign-in, no-tier, scope, not-found, bad-request, zone, unavailable-here, schema, plugin-refused, limit, room, busy, conflict, attached, engine, plugin-down, internal]
         violations:
           type: array
           description: For `schema` and `plugin-refused` — each field that does not fit.

@@ -165,7 +165,7 @@ up)
 	[ -f "$dir/disk.qcow2" ] || overlay
 	boot disk.qcow2
 	bench_ssh sh -s <"$here/setup.sh"
-	for t in hangar-token wide-token; do
+	for t in hangar-token volumes-token wide-token; do
 		(umask 077 && bench_ssh cat "/root/$t" >"$dir/$t.tmp") && mv "$dir/$t.tmp" "$dir/${t%-token}.token"
 	done
 	say "up: https://127.0.0.1:$port — sh tools/bench/bench.sh env"
@@ -176,6 +176,7 @@ env)
 export HANGAR_BENCH_URL=https://127.0.0.1:$port
 export HANGAR_BENCH_CA_FILE=$dir/pve-root-ca.pem
 export HANGAR_BENCH_TOKEN_FILE=$dir/hangar.token
+export HANGAR_BENCH_VOLUMES_TOKEN_FILE=$dir/volumes.token
 export HANGAR_BENCH_WIDE_TOKEN_FILE=$dir/wide.token
 export HANGAR_BENCH_SSH_KEY=$dir/ssh_ed25519
 export HANGAR_BENCH_SSH_PORT=$sshport
@@ -196,7 +197,7 @@ reset)
 destroy)
 	halt
 	rm -f "$dir/disk.qcow2" "$dir/base.qcow2" "$dir/installed.qcow2" "$dir/install.qcow2" \
-		"$dir/hangar.token" "$dir/wide.token" "$dir/pve-root-ca.pem" "$dir/console.log"
+		"$dir/hangar.token" "$dir/volumes.token" "$dir/wide.token" "$dir/pve-root-ca.pem" "$dir/console.log"
 	say "destroyed; the downloads stay in $dir"
 	;;
 *)

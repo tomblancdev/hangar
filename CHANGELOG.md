@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased — les volumes
+
+Disks that belong to their owner rather than to a machine — proved on the
+repo's throwaway Proxmox VE, through the binary's API, with both plugins
+running, each on its own token.
+
+- **The volumes plugin** (`volumes`): `volume` (`vol-…`) — a size, a content
+  fixed at birth (`block`: a disk its VM formats itself; `filesystem`: a
+  directory its container mounts at a path), a backup flag, and the machine
+  it is plugged into, or none (parked). Actions: `attach`, `detach`, `move`
+  (to another machine of the same owner), `resize` (it only grows),
+  `set_backup`. Limits: `volumes.count`, `volumes.size_gb`, and
+  **`volumes.backup_gb`** — backups are a size budget: a tier that names none
+  backs up nothing.
+- **Attachments** (`"x-hangar-attached": true` beside `x-hangar-ref`): the
+  resource lives inside the one it names on the engine; **neither end is
+  deleted while it is** (409 `attached`, naming what to detach). A lost
+  resource binds nothing.
+- **Relations follow the spec**: added from an action's planned spec at its
+  admission, set anew from the spec as it ends (and when reconcile moves a
+  spec). **A plan sees what the request names** (`refs` in `PlanRequest`),
+  so a disk for a container is refused before anything is admitted.
+- **The drivers' volumes facet** (`driver.Volumes`), on the fake engine and
+  on Proxmox VE (`volume.move_between_guests`): a volume is always a line of
+  some guest's config — a machine's, or a **shelf**'s (a stopped guest per
+  owner and kind the driver makes and never starts; containers' from the
+  zone's new `shelf_archive`), so a parked volume keeps its backup. Which
+  disk is which volume is written in the guest's description, target first
+  and source last, so a move cut anywhere is found and finished (a disk is
+  renamed after each guest it moves to). A block volume shows its guest the
+  serial `vol0123…` (AWS's form). Read on the bench: a disk leaves a running
+  VM only unplugged, its options dropped — so it rests on its shelf, where
+  they are written back, and reaches the next VM hot-plugged with them; a
+  running container lets go of none (refused, in words); a shelf container
+  is made without a host name (pve-container counts it as network).
+- **A guest holding a volume refuses its delete** in both drivers, under the
+  core's own refusal.
+- Two processes pick guest ids from one range: a create whose id was just
+  taken takes the next.
+- **The bench** gains the volumes plugin's user, role and token
+  (`HANGAR_BENCH_VOLUMES_TOKEN_FILE`), and its command runs one package at
+  a time (`go test -p 1`): two packages' tests drive the bench's one
+  priority guest.
+
 ## Unreleased — la place
 
 A zone's room: what can be promised, what is only lent, and the guests that

@@ -325,9 +325,55 @@ func (t *Tx) InsertRelation(from, kind, to string) error {
 	return err
 }
 
+// SetRelations writes what a resource refers to anew: its references follow
+// its spec (a volume attached, then detached, names a machine, then none).
+func (t *Tx) SetRelations(from string, rels [][2]string) error {
+	if _, err := t.q.ExecContext(t.ctx, `DELETE FROM relations WHERE from_id = ?`, from); err != nil {
+		return err
+	}
+	for _, r := range rels {
+		if err := t.InsertRelation(from, r[0], r[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Relations lists what a resource refers to, as (kind, id) pairs.
+func (t *Tx) Relations(from string) ([][2]string, error) { return relationsOf(t.ctx, t.q, from) }
+
 // Relations lists what a resource refers to, as (kind, id) pairs.
 func (s *Store) Relations(ctx context.Context, from string) ([][2]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT kind, to_id FROM relations WHERE from_id = ? ORDER BY kind, to_id`, from)
+	return relationsOf(ctx, s.db, from)
+}
+
+// Referrer is a resource that refers to another.
+type Referrer struct {
+	ID, Kind, Type, State string
+}
+
+// Referrers lists the resources that refer to one, under which field, with
+// their type and state.
+func (t *Tx) Referrers(to string) ([]Referrer, error) {
+	rows, err := t.q.QueryContext(t.ctx, `SELECT r.id, l.kind, r.type, r.state FROM relations l JOIN resources r ON r.id = l.from_id
+		WHERE l.to_id = ? ORDER BY r.id, l.kind`, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Referrer
+	for rows.Next() {
+		var r Referrer
+		if err := rows.Scan(&r.ID, &r.Kind, &r.Type, &r.State); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func relationsOf(ctx context.Context, q querier, from string) ([][2]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT kind, to_id FROM relations WHERE from_id = ? ORDER BY kind, to_id`, from)
 	if err != nil {
 		return nil, err
 	}

@@ -97,9 +97,10 @@ message Action {
   string description = 2;
   // A JSON Schema of its params; empty = it takes none.
   bytes params_schema = 3;
-  // true = it can change what the resource holds (a resize) or the room it
-  // takes (a start, a stop): the core calls Plan first and admits the
-  // difference against the owner's limits and the zone's pools.
+  // true = it can change what the resource holds (a resize), the room it
+  // takes (a start, a stop) or what its spec names (an attach): the core
+  // calls Plan first, admits the difference against the owner's limits and
+  // the zone's pools, and writes the planned spec's references.
   bool changes_usage = 4;
   // Capability flags it needs on the zone; where they are missing the action
   // is not offered there.
@@ -196,6 +197,11 @@ message PlanRequest {
   bytes params = 5;
   // For an action: the resource as the registry holds it.
   Resource current = 6;
+  // The resources the spec (or the action's params) names — every field its
+  // schema marks "x-hangar-ref" — as the registry holds them, checked as a
+  // create's are: a plan can refuse what does not fit them (a disk for a
+  // container) before anything is admitted.
+  repeated Resource refs = 7;
 }
 
 message PlanResponse {

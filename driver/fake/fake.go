@@ -8,6 +8,10 @@
 // the file, or in-process with Forget, Tamper, FailNext), which is what
 // reconcile is for.
 //
+// Volumes live in the same file ("volumes"): each on a guest, or parked with
+// no guest at all (the fake needs no shelf); a running container lets go of
+// none, as on Proxmox VE, and a guest holding one is not deleted.
+//
 // The file also holds what a zone's reservations wait on: "watched" (the
 // power of guests outside the fence, by name), "nodes_down", and "asleep" —
 // a zone that sleeps answers no guest call until the file says otherwise, as
@@ -68,6 +72,8 @@ type state struct {
 	Asleep bool `json:"asleep,omitempty"`
 	// WatchFails: the watched guests' power cannot be read (an API hiccup).
 	WatchFails bool `json:"watch_fails,omitempty"`
+	// Volumes, by the core's id.
+	Volumes map[string]*driver.Volume `json:"volumes,omitempty"`
 }
 
 // errAsleep is what a sleeping zone answers: an engine that cannot be reached
@@ -259,6 +265,9 @@ func (e *Engine) DeleteGuest(_ context.Context, id string) error {
 	if err := e.fail(); err != nil {
 		return err
 	}
+	if held := e.volumesOn(id); len(held) > 0 {
+		return fmt.Errorf("%w: it holds %s: detach them first — they keep their data", driver.ErrRefused, strings.Join(held, ", "))
+	}
 	delete(e.state.Guests, id)
 	delete(e.state.Specs, id)
 	return e.save()
@@ -446,4 +455,5 @@ func clone(g *driver.Guest) driver.Guest {
 var (
 	_ driver.Guests  = (*Engine)(nil)
 	_ driver.Watcher = (*Engine)(nil)
+	_ driver.Volumes = (*Engine)(nil)
 )

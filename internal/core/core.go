@@ -131,6 +131,7 @@ const (
 	KindRoom        = "room"
 	KindBusy        = "busy"
 	KindConflict    = "conflict"
+	KindAttached    = "attached"
 	KindEngine      = "engine"
 	KindDown        = "plugin-down"
 	KindInternal    = "internal"
@@ -239,7 +240,11 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 	if p != nil {
 		return nil, nil, false, c.refused(ctx, p)
 	}
-	plan, p := c.plan(ctx, t, &pluginpb.PlanRequest{Type: t.Name, Zone: in.Zone, Spec: in.Spec})
+	refs, err := c.loadRefs(ctx, t.Refs, in.Spec)
+	if err != nil {
+		return nil, nil, false, problem(500, KindInternal, "%v", err)
+	}
+	plan, p := c.plan(ctx, t, &pluginpb.PlanRequest{Type: t.Name, Zone: in.Zone, Spec: in.Spec, Refs: refs})
 	if p != nil {
 		return nil, nil, false, c.refused(ctx, p)
 	}
@@ -255,6 +260,7 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 	}
 	var refusals []limits.Refusal
 	var noRoom *room.Refusal
+	var moved string
 	c.admit.Lock()
 	err = c.store.Tx(ctx, func(tx *registry.Tx) error {
 		if in.ClientToken != "" {
@@ -279,6 +285,14 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 			}
 			return err
 		}
+		// what it is attached to is still there to hold it: a delete of it
+		// may have begun since the references were read
+		if moved, err = stillReady(tx, t, nil, rels); err != nil || moved != "" {
+			if err == nil {
+				err = errRefMoved
+			}
+			return err
+		}
 		if err := tx.InsertResource(r); err != nil {
 			return err
 		}
@@ -295,6 +309,8 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 		return nil, nil, false, c.refused(ctx, limitProblem(refusals))
 	case errors.Is(err, errNoRoom):
 		return nil, nil, false, c.refused(ctx, roomProblem(noRoom))
+	case errors.Is(err, errRefMoved):
+		return nil, nil, false, c.refused(ctx, problem(409, KindBusy, "%s changed while you asked: try again", moved))
 	case errors.Is(err, errReplayRace):
 		// the same token arrived twice at once; the other one won
 		op, r, p := c.replay(ctx, who, in.ClientToken, hash)
@@ -314,6 +330,8 @@ var (
 	errRefused    = errors.New("refused")
 	errNoRoom     = errors.New("no room")
 	errReplayRace = errors.New("client token raced")
+	errRefMoved   = errors.New("a reference moved")
+	errAttached   = errors.New("attached")
 )
 
 func limitProblem(rs []limits.Refusal) *Problem {
@@ -475,7 +493,7 @@ func (c *Core) Delete(ctx context.Context, who *Caller, id, clientToken string) 
 	if p := c.needWrite(ctx, who); p != nil {
 		return nil, nil, false, p
 	}
-	r, _, p := c.resourceFor(ctx, who, id)
+	r, t, p := c.resourceFor(ctx, who, id)
 	if p != nil {
 		return nil, nil, false, p
 	}
@@ -495,12 +513,23 @@ func (c *Core) Delete(ctx context.Context, who *Caller, id, clientToken string) 
 		ID: ids.New(ids.Operation), Owner: who.Subject, ResourceID: r.ID, Kind: registry.OpDelete,
 		Params: json.RawMessage(`{"from_state":"` + r.State + `"}`), ClientToken: clientToken, RequestHash: hash,
 	}
+	var attached *Problem
 	err := c.store.Tx(ctx, func(tx *registry.Tx) error {
+		var err error
+		if attached, err = c.attachments(tx, r, t); err != nil || attached != nil {
+			if err == nil {
+				err = errAttached
+			}
+			return err
+		}
 		if err := tx.Update(r.ID, registry.Change{State: registry.Deleting, IfState: r.State}); err != nil {
 			return err
 		}
 		return tx.InsertOperation(op)
 	})
+	if errors.Is(err, errAttached) {
+		return nil, nil, false, c.refused(ctx, attached)
+	}
 	if errors.Is(err, registry.ErrMoved) {
 		return nil, nil, false, c.refused(ctx, problem(409, KindBusy, "%s changed while you asked: try again", r.ID))
 	}
@@ -570,7 +599,11 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 	change := registry.Change{State: registry.Updating, IfState: registry.Ready}
 	var plan *pluginpb.PlanResponse
 	if a.ChangesUsage {
-		plan, p = c.plan(ctx, t, &pluginpb.PlanRequest{Type: t.Name, Zone: r.Zone, Action: a.Name, Params: in.Params, Current: toProto(r)})
+		refs, err := c.loadRefs(ctx, a.Refs, in.Params)
+		if err != nil {
+			return nil, nil, false, problem(500, KindInternal, "%v", err)
+		}
+		plan, p = c.plan(ctx, t, &pluginpb.PlanRequest{Type: t.Name, Zone: r.Zone, Action: a.Name, Params: in.Params, Current: toProto(r), Refs: refs})
 		if p != nil {
 			return nil, nil, false, c.refused(ctx, p)
 		}
@@ -588,6 +621,7 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 	}
 	var refusals []limits.Refusal
 	var noRoom *room.Refusal
+	var moved string
 	c.admit.Lock()
 	err := c.store.Tx(ctx, func(tx *registry.Tx) error {
 		if plan != nil {
@@ -612,6 +646,25 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 			if after != (registry.Room{}) || r.Room != (registry.Room{}) {
 				change.Room, change.Hold = &after, &hold
 			}
+			// what the planned spec names is written now, beside what it named:
+			// a machine a volume is on its way to, or on its way from, is not
+			// deleted under it; the end of the operation keeps what is so
+			now, err := tx.Relations(r.ID)
+			if err != nil {
+				return err
+			}
+			planned := specRelations(t, change.Spec)
+			if moved, err = stillReady(tx, t, now, planned); err != nil || moved != "" {
+				if err == nil {
+					err = errRefMoved
+				}
+				return err
+			}
+			for _, rel := range planned {
+				if err := tx.InsertRelation(r.ID, rel[0], rel[1]); err != nil {
+					return err
+				}
+			}
 		}
 		if err := tx.Update(r.ID, change); err != nil {
 			return err
@@ -624,6 +677,8 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 		return nil, nil, false, c.refused(ctx, limitProblem(refusals))
 	case errors.Is(err, errNoRoom):
 		return nil, nil, false, c.refused(ctx, roomProblem(noRoom))
+	case errors.Is(err, errRefMoved):
+		return nil, nil, false, c.refused(ctx, problem(409, KindBusy, "%s changed while you asked: try again", moved))
 	case errors.Is(err, registry.ErrMoved):
 		return nil, nil, false, c.refused(ctx, problem(409, KindBusy, "%s changed while you asked: try again", r.ID))
 	case err != nil:
@@ -1060,6 +1115,11 @@ func (c *Core) finish(op *registry.Operation, r *registry.Resource, out *outcome
 			if err := tx.Update(r.ID, change); err != nil {
 				return err
 			}
+			if op.Kind != registry.OpDelete {
+				if err := c.followSpec(tx, r); err != nil {
+					return err
+				}
+			}
 		}
 		var result json.RawMessage
 		if out != nil {
@@ -1153,6 +1213,110 @@ func (c *Core) references(ctx context.Context, owner, zone string, refs []plugin
 		return nil, p
 	}
 	return out, nil
+}
+
+// specRelations are the (field, id) pairs a spec names, by its type's
+// references.
+func specRelations(t *plugins.Type, spec json.RawMessage) [][2]string {
+	var out [][2]string
+	if t == nil {
+		return nil
+	}
+	for _, ref := range t.Refs {
+		for _, id := range refIDs(ref, spec) {
+			out = append(out, [2]string{ref.Field, id})
+		}
+	}
+	return out
+}
+
+// followSpec writes a resource's relations anew from its spec as stored:
+// what it names now, and nothing it named before.
+func (c *Core) followSpec(tx *registry.Tx, r *registry.Resource) error {
+	t := c.host.Type(r.Type)
+	if t == nil {
+		return nil
+	}
+	now, err := tx.Resource(r.ID)
+	if err != nil {
+		return err
+	}
+	return tx.SetRelations(r.ID, specRelations(t, now.Spec))
+}
+
+// holding: the states in which an attachment binds both of its ends. A
+// resource lost, failed or deleted binds nothing — else a machine its engine
+// lost could never be let go of, nor what was attached to it.
+func holding(state string) bool {
+	switch state {
+	case registry.Creating, registry.Ready, registry.Updating, registry.Deleting:
+		return true
+	}
+	return false
+}
+
+// stillReady: every resource a planned spec is newly attached to is still
+// ready, read inside the admission's transaction (a delete of it may have
+// begun since its reference was checked). It returns the first that is not.
+func stillReady(tx *registry.Tx, t *plugins.Type, now, planned [][2]string) (string, error) {
+	for _, rel := range planned {
+		if ref := t.Ref(rel[0]); ref == nil || !ref.Attached || slices.Contains(now, rel) {
+			continue
+		}
+		to, err := tx.Resource(rel[1])
+		if err != nil {
+			return "", err
+		}
+		if to.State != registry.Ready {
+			return to.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// attachments refuses a delete while the resource is attached to another,
+// or another is attached to it: on the engine one lives inside the other,
+// and the delete would take it along.
+func (c *Core) attachments(tx *registry.Tx, r *registry.Resource, t *plugins.Type) (*Problem, error) {
+	if !holding(r.State) {
+		return nil, nil
+	}
+	rels, err := tx.Relations(r.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, rel := range rels {
+		if ref := t.Ref(rel[0]); ref == nil || !ref.Attached {
+			continue
+		}
+		to, err := tx.Resource(rel[1])
+		if err != nil && !errors.Is(err, registry.ErrNotFound) {
+			return nil, err
+		}
+		if to != nil && holding(to.State) {
+			return problem(409, KindAttached, "%s is attached to %s: detach it first", r.ID, to.ID), nil
+		}
+	}
+	froms, err := tx.Referrers(r.ID)
+	if err != nil {
+		return nil, err
+	}
+	var on []string
+	for _, f := range froms {
+		ft := c.host.Type(f.Type)
+		if ft == nil || !holding(f.State) || slices.Contains(on, f.ID) {
+			continue
+		}
+		if ref := ft.Ref(f.Kind); ref != nil && ref.Attached {
+			on = append(on, f.ID)
+		}
+	}
+	if len(on) > 0 {
+		return problem(409, KindAttached, "%s has %s attached: detach %s first — %s its data",
+			r.ID, strings.Join(on, ", "), map[bool]string{true: "it", false: "them"}[len(on) == 1],
+			map[bool]string{true: "it keeps", false: "they keep"}[len(on) == 1]), nil
+	}
+	return nil, nil
 }
 
 // loadRefs reads the resources a spec or params name, as the registry holds
@@ -1307,7 +1471,12 @@ func (c *Core) reconcileLocked(ctx context.Context, r *registry.Resource) (strin
 	default:
 		return verdict, resp.GetDetail()
 	}
-	err = c.store.Tx(ctx, func(tx *registry.Tx) error { return tx.Update(r.ID, change) })
+	err = c.store.Tx(ctx, func(tx *registry.Tx) error {
+		if err := tx.Update(r.ID, change); err != nil || len(change.Spec) == 0 {
+			return err
+		}
+		return c.followSpec(tx, r)
+	})
 	if errors.Is(err, registry.ErrMoved) {
 		return "skipped", "it changed while it was looked at"
 	}

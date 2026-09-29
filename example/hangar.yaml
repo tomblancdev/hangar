@@ -51,13 +51,16 @@ tiers:
       machines.key_pairs: 2
       machines.kind: [vm]      # untrusted people get VMs: their own kernel
       machines.class: [spot]
+      volumes.count: 2
+      volumes.size_gb: 20
+      volumes.backup_gb: 5     # backups are a size: a tier that names none backs up nothing
 
 zones:
   - name: playground
     driver: fake
     endpoint: ./data/playground.json   # the fake engine's state: edit it to make it drift
     options:
-      capabilities: kind.container,kind.vm,guest.tags,resize.live.cpu_cap,fence.pool
+      capabilities: kind.container,kind.vm,guest.tags,resize.live.cpu_cap,fence.pool,volume.move_between_guests
     # room:                    # count the zone's memory in two pools (ARCHITECTURE.md §6)
     #   memory_gb: 16          #   what its resources may count on
     #   reservations:          #   room kept for others: always, or on a condition
@@ -81,6 +84,9 @@ plugins:
         debian-13: {vm: debian-13, container: "local:vztmpl/debian-13-standard.tar.zst"}
       types:                   # aliases beside AWS's names (t3.micro … r5.2xlarge)
         dev: {cores: 4, memory_gb: 8}
+  - name: volumes              # disks of their own: attach, detach, move, grow
+    builtin: volumes
+    zones: [playground]
 
 reconcile:
   every: 30s

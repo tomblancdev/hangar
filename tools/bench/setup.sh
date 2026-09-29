@@ -9,6 +9,9 @@
 #      Debian's cloud image, in pool hangar-images
 #   4. the fence: pool hangar, a role that acts only there, a read-and-clone
 #      role on the images, one user and its API token (privilege-separated)
+#      for the machines plugin — and a narrower one for the volumes plugin:
+#      disks and its own shelf guests in the same pool, no network, no seed
+#      store, no watched guest
 #   5. a priority guest: VM 100, the operator's own, outside the pools — the
 #      guest a zone keeps room for while it runs; the token may read its
 #      power (VM.Audit on it) and nothing else there. The hook itself
@@ -16,7 +19,8 @@
 #      it in place, on this guest and on the VM template.
 #
 # The token's secret is written to /root/hangar-token (0600) as
-# `user@realm!name=secret`, for bench.sh to copy out; it is never printed.
+# `user@realm!name=secret`, for bench.sh to copy out; it is never printed —
+# the volumes plugin's to /root/volumes-token, the same way.
 # So is a second one, /root/wide-token: root's, unfenced — the tests'
 # control that the driver tells a fenced token from one that is not.
 # Idempotent: a step already done is skipped — bench.sh runs it at every
@@ -112,6 +116,11 @@ pveum role add HangarTemplates --privs Datastore.Audit 2>/dev/null || pveum role
 seeds=Datastore.Allocate,Datastore.AllocateTemplate,Datastore.Audit
 pveum role add HangarSeeds --privs "$seeds" 2>/dev/null || pveum role modify HangarSeeds --privs "$seeds"
 pveum role add HangarWatch --privs VM.Audit 2>/dev/null || pveum role modify HangarWatch --privs VM.Audit
+# the volumes plugin: a volume's disk on a machine of the pool (Config.Disk),
+# the line that says whose it is (Config.Options: the description), and the
+# stopped « shelf » guests that keep a volume no machine holds (Allocate)
+vprivs="VM.Allocate,VM.Audit,VM.Config.Disk,VM.Config.Options,Datastore.AllocateSpace,Datastore.Audit,Pool.Audit"
+pveum role add HangarVolumes --privs "$vprivs" 2>/dev/null || pveum role modify HangarVolumes --privs "$vprivs"
 if ! qm config 100 >/dev/null 2>&1; then
 	say "VM 100, a priority guest (no disk: it only has to start and stop)"
 	qm create 100 --name priority --memory 512 --cores 1 --net0 virtio,bridge=hbnet >/dev/null
@@ -135,6 +144,22 @@ for who in "--users hangar-machines@pve" "--tokens hangar-machines@pve!bench"; d
 		pveum acl modify /storage/hangar-seeds --roles HangarSeeds $who
 		pveum acl modify /sdn/zones/hbench/hbnet --roles PVESDNUser $who
 		pveum acl modify /vms/100 --roles HangarWatch $who # its power, read: the zone's reservation waits on it
+	}
+done
+pveum user add hangar-volumes@pve --comment "hangar's volumes plugin" 2>/dev/null || true
+if [ ! -s /root/volumes-token ]; then
+	pveum user token remove hangar-volumes@pve bench 2>/dev/null || true
+	secret=$(pveum user token add hangar-volumes@pve bench --privsep 1 --output-format json |
+		sed -n 's/.*"value":"\([^"]*\)".*/\1/p')
+	[ -n "$secret" ] || { say "the volumes token was not made"; exit 1; }
+	(umask 077 && printf 'hangar-volumes@pve!bench=%s\n' "$secret" >/root/volumes-token)
+fi
+for who in "--users hangar-volumes@pve" "--tokens hangar-volumes@pve!bench"; do
+	# shellcheck disable=SC2086 # two words on purpose
+	{
+		pveum acl modify /pool/hangar --roles HangarVolumes $who
+		pveum acl modify /storage/local-zfs --roles PVEDatastoreUser $who
+		pveum acl modify /storage/local --roles HangarTemplates $who # a container shelf's archive
 	}
 done
 # A control for the fence: a token that reaches everything (root's, not

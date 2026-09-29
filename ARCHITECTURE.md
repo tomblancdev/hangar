@@ -21,7 +21,8 @@ where this page and they disagree, they win.
 | Zones' capacity: pools, classes, reservations, holds, the claim, waking; the Proxmox VE hook (`hangar-hook`) | **built** (§6) — proved on a throwaway Proxmox VE |
 | Idle machines put to sleep, awake hours counted against a tier, keep awake | designed (§6, power) |
 | The machines plugin (machines, key pairs); the Proxmox VE driver; references between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md)) |
-| The volumes and images plugins | designed (§7) |
+| The volumes plugin (volumes, parked on a shelf where the engine keeps no disk without a guest); attachments between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
+| The images plugin | designed (§7) |
 | The command line and the console generated from the schemas | designed (§2) |
 | Names, ports, snapshots, object storage, databases; the Incus and AWS drivers | designed (§7) |
 
@@ -172,9 +173,23 @@ string, or an array whose items are marked (the machines plugin's
 resource of that type, **the owner's own** (someone else's reads exactly
 like one that does not exist), in the same zone, ready. It records the link
 (`relations`: the field's name as its kind) and hands the plugin the
-resources themselves in `refs` with the create or the action — a plugin
-never reads the registry. A config enabling a type that names a type no
-plugin declares is refused at start. **(built)**
+resources themselves in `refs` with the plan, the create or the action — a
+plugin never reads the registry, and its plan can refuse what does not fit
+what is named (a disk for a container) before anything is admitted. A config
+enabling a type that names a type no plugin declares is refused at start.
+**Relations follow the spec**: written at the create's admission, added
+from an action's planned spec at its admission, and set anew from the spec
+as it ends — what the resource names now, nothing it named before.
+**(built)**
+
+**Attachments.** A reference whose schema also carries `"x-hangar-attached":
+true` is an attachment: on the engine, the resource lives inside the one it
+names (a volume plugged into a machine). **Neither end is deleted while it
+is** — 409 `attached`, « m-… has vol-… attached: detach it first — it keeps
+its data » — because the engine would take the attached one's data along. A
+lost resource binds nothing (else a machine the engine lost could never be
+let go of). The drivers keep the same rule underneath: a guest holding a
+volume refuses its delete. **(built)**
 
 **Adding a plugin = three things:** the plugin (built in, or a program of its
 own at a path, pinned by its SHA-256), one config block enabling it on zones,
@@ -194,7 +209,7 @@ advertise the documented flags.
 | `kind.vm` | yes (QEMU) | yes | yes (EC2) | yes |
 | `resize.live.memory_down` | **containers only** | containers | no | yes |
 | `resize.live.cpu_cap` | yes (VM `cpulimit`, CT `cores`/`cpulimit`) | yes | no | yes |
-| `volume.move_between_guests` | yes (`target-vmid`) | yes | yes (EBS) | yes |
+| `volume.move_between_guests` | yes (`target-vmid`, both guests on one node) | yes | yes (EBS) | yes |
 | `guest.suspend_to_disk` | VMs without a passed-through device | yes | hibernate | yes |
 | `guest.tags` | yes | yes (config keys) | yes | yes |
 | `hook.pre_start` | yes (hookscript; **a failing one aborts the start**) | no (the core admits instead) | no | yes |
@@ -219,6 +234,13 @@ up, memory down) — finer than a flag, which speaks for the whole engine: on
 Proxmox a container changes everything live and a VM only grows its memory.
 **The watcher facet** (`driver.Watcher`) reads what a zone's reservations
 wait on: a watched guest's power, a node's state, whether the zone is awake.
+**The volumes facet** (`driver.Volumes`: create, find, place, resize, set
+backup, delete — idempotent on the core's id) makes a volume on a guest or
+parked, and places it on another guest or back parked, keeping its data,
+size and backup flag; a block volume shows its guest the serial
+`vol0123…` (the id without its dash, AWS's form). Where the engine keeps no
+disk without a guest the driver parks one on a stopped **shelf** guest of
+its owner — the plugin never sees a shelf; `CanPark` says where it cannot.
 
 **The Proxmox VE driver is built** ([docs/proxmox.md](docs/proxmox.md)): one
 API token fenced to one pool, `fence.pool` advertised only when the token's
@@ -228,8 +250,13 @@ seed disc the driver writes and uploads; every long call waits for its task
 (a refused start is a `200` and a failed task). It advertises `kind.*`,
 `guest.tags`, `resize.live.memory_down` (containers, above what they hold),
 `resize.live.cpu_cap` (`cpulimit`, live on both kinds), `hook.pre_start` (its
-hook, `hangar-hook`, §6) and `fence.pool` — the one thing its token may do
-outside its pools is read the power of the guests the zone watches.
+hook, `hangar-hook`, §6), `volume.move_between_guests` (the volumes facet: a
+guest's description says which disk is which volume, since a disk is renamed
+after each guest it moves to; a volume leaving a running VM rests on its
+shelf, where its options are written back; one leaving a running container
+is refused — [docs/proxmox.md](docs/proxmox.md#volumes)) and `fence.pool` —
+the one thing its token may do outside its pools is read the power of the
+guests the zone watches.
 *(The Incus and AWS drivers are designed.)*
 
 ## 6. Zones, pools, classes, reservations, preemption **(built)**
@@ -330,7 +357,7 @@ zones:
   counts **awake hours** against the owner's tier (a limit per month); a
   machine can be kept awake, at that cost.
 
-## 7. Every plugin — capabilities and limits **(designed)**
+## 7. Every plugin — capabilities and limits (the first two **built**)
 
 ### The first three
 
@@ -344,10 +371,22 @@ hours, keep awake and `idle_after`** come with §6's power; **GPU** and
 **`peers`** later. A machine holds its size against its tier while it
 exists, running or not; against its zone, as its class says (§6).
 
+**The volumes plugin is built**, as its row says. A volume's **content** is
+fixed at birth: `block` (a disk its VM formats itself) or `filesystem` (a
+directory its container mounts at `mount`) — filesystem when a mount is
+given. It names its machine (`machine`, an attachment, §4); a volume on none
+is **parked**, and a filesystem volume keeps its last path for its next
+attach. **Backups are a size budget**: `volumes.backup_gb` counts the sizes
+of the volumes the engine's backups take — a tier that names no budget backs
+up nothing, and no one fills the backup store. A running container lets go
+of no volume (stop it first); a running VM does, live. Every action is
+planned (the refusals come back before anything is admitted, with the
+numbers), and its spec written at its admission.
+
 | plugin | resources | actions | limit dimensions (per tier) | driver needs |
 |---|---|---|---|---|
 | **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · console (serial / terminal) · delete · keep awake (costs awake hours) | count · vCPU · memory GB · awake hours a month · kinds allowed · classes allowed · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `hook.pre_start` or core admission |
-| **volumes** | **`vol-…`**: size, zone, backup yes/no, attached machine + device, tags | create · attach · detach · **move** (to another machine of the same owner) · resize (grow) · delete | count · total GB · backup allowed | `volume.move_between_guests`; where the engine keeps no disk without a guest, an unattached volume parks on a stopped **« shelf » guest** of its owner |
+| **volumes** | **`vol-…`**: size, content (block / filesystem), backup yes/no, the machine it is attached to and its path there, tags | create · attach · detach · **move** (to another machine of the same owner) · resize (grow) · set_backup · delete | count · total GB · **backed-up GB** | `volume.move_between_guests`, `fence.pool`; where the engine keeps no disk without a guest, an unattached volume parks on a stopped **« shelf » guest** of its owner |
 | **images** | **`img-…`**: name, family, version, visibility (operator / private / shared with a group), the recipe it came from | list · **bake** (operator: from a recipe) · **save** (a user: from their own stopped machine) · share · retire | own images count · own images GB | a template/clone path per driver (Proxmox: `qm template` + linked or full clones; container templates) |
 
 **Recipes** (for `bake`): a base cloud image + cloud-init or a provisioning
@@ -391,6 +430,8 @@ directly, and each credential must stay fenced.
 | `POST /v1/resources` with the type in the body (not `/v1/{type}`) | one collection, listed and filtered the same way it is created in; the type is data the catalogue serves |
 | One binary that runs its built-in plugins as separate processes | one image, one build — and the walls between plugins unchanged |
 | API tokens made on the brain's host by `hangar token create` | a first operator can start without an identity provider, and a lost provider is not a lost brain |
+| A resource attached to another stops the delete of either (409 `attached`), rather than going with it or being parked by the core | nothing is lost by surprise: on the engine the volume is inside the machine, and a delete would take its data |
+| Backups counted as a size per tier (`volumes.backup_gb`), not a yes or no | the backup store is finite: one person allowed backups could fill it |
 
 **Set aside:** an EC2 API clone (nothing maintained speaks it for the engines
 this targets — OpenStack's EC2 layer, CloudStack's `ec2stack`, Eucalyptus and

@@ -21,6 +21,9 @@
 //	vlan            a VLAN tag on it                               (optional)
 //	vmids           the ids this driver may take, "11000-11099"    (required)
 //	full_clone      "true": full clones even beside the template
+//	shelf_archive   a container archive to make volumes' container shelves
+//	                from (volumes.go); without one, a filesystem volume
+//	                lives on a container only
 //	shutdown_timeout how long a guest is asked to shut down before it is
 //	                made to, in seconds                            (default 60)
 //	ca_file         a CA bundle to verify the API's certificate
@@ -87,6 +90,9 @@ type Driver struct {
 	fenceErr string // why fence.pool is not advertised, when it is not
 
 	mu sync.Mutex // one create at a time: a VMID is picked, then taken
+	// volumes: one volume change at a time (a free key is picked, then taken)
+	vmu          sync.Mutex
+	shelfArchive string
 }
 
 // Open opens a zone: it checks the options, reaches the API with the token,
@@ -97,6 +103,7 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	d := &Driver{
 		zone: p.Zone, node: o["node"], pool: o["pool"], images: o["images_pool"], storage: o["storage"],
 		seeds: o["seed_storage"], bridge: o["bridge"], full: o["full_clone"] == "true", shutdown: 60,
+		shelfArchive: o["shelf_archive"],
 	}
 	for _, ref := range p.Watch {
 		if n, err := strconv.Atoi(ref); err != nil || n < 100 {
@@ -148,7 +155,7 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 		return nil, fmt.Errorf("proxmox zone %s: %w", p.Zone, err)
 	}
 	d.caps = []driver.Capability{driver.KindContainer, driver.KindVM, driver.GuestTags, driver.ResizeLiveMemoryDown,
-		driver.ResizeLiveCPUCap, driver.HookPreStart}
+		driver.ResizeLiveCPUCap, driver.HookPreStart, driver.VolumeMoveBetweenGuests}
 	why, err := d.fence(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: reading what the token may do: %w", p.Zone, err)
@@ -828,6 +835,12 @@ func (d *Driver) DeleteGuest(ctx context.Context, id string) error {
 	if err != nil {
 		return d.engine(err)
 	}
+	// its disks go with it: one that is a volume (volumes.go) keeps it here
+	if held, err := d.heldBy(ctx, r); err != nil {
+		return d.engine(err)
+	} else if len(held) > 0 {
+		return fmt.Errorf("%w: it holds %s: detach them first — they keep their data", driver.ErrRefused, strings.Join(held, ", "))
+	}
 	// /cluster/resources is pvestatd's view, seconds behind: decide on the live one
 	if on, err := d.running(ctx, r); err != nil {
 		return d.engine(err)
@@ -1154,4 +1167,5 @@ func (d *Driver) engine(err error) error {
 var (
 	_ driver.Guests  = (*Driver)(nil)
 	_ driver.Watcher = (*Driver)(nil)
+	_ driver.Volumes = (*Driver)(nil)
 )

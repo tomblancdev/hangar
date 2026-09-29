@@ -20,6 +20,7 @@ there.
 | a **storage of its own for seed discs**: a `dir` storage with content `iso` only (`hangar-seeds`) | a VM's first boot reads its user data from a small disc the driver uploads — see below |
 | a bridge or an SDN vnet for the guests, and a VMID range nobody else uses | the zone's `bridge`, `vlan` and `vmids` options |
 | a user and its **privilege-separated API token** | the plugin's one credential, `user@realm!name=secret` |
+| for the volumes plugin: **its own** user and token, narrower (below), and the zone's `shelf_archive` — a container archive | its credential; a container's volume parked on no machine rests on a stopped container made from that archive — see [Volumes](#volumes) |
 | **the hook** (`hangar-hook`, a build of this repo) on a storage with content `snippets`, set as root on each VM template of the images pool and on each guest a zone keeps room for | the node's hand: it makes room when a priority guest starts, and admits every start of a machine — see [The hook](#the-hook) |
 
 ## The least the token needs
@@ -33,6 +34,20 @@ there.
 | `/storage/<seed storage>` | `Datastore.Allocate`, `Datastore.AllocateTemplate`, `Datastore.Audit` | uploading a VM's seed disc takes `AllocateTemplate`; **deleting it takes `Datastore.Allocate`**, which on a shared storage would reach every ISO, template and backup there — hence a storage that holds seed discs and nothing else |
 | `/sdn/zones/<zone>/<vnet>` (with SDN) | `SDN.Use` | attaching guests to the vnet |
 | `/vms/<guest>` of each guest a zone's reservation waits on (`while_running`) | **`VM.Audit` and nothing else** | reading its power, to know when the room is in force. The fence accepts exactly this outside the pools — on the guests the zone names, and no other privilege there; anything more and the zone is not fenced. The token still cannot start, stop or change it (read live: `VM.PowerMgmt` refused) |
+
+**The volumes plugin's token** — its own, narrower: disks, and the shelves
+it makes, in the same pool; nothing of a guest's power, network or seed:
+
+| path | privileges | why |
+|---|---|---|
+| `/pool/<machines pool>` | `VM.Allocate`, `VM.Audit`, `VM.Config.Disk`, `VM.Config.Options`, `Datastore.AllocateSpace`, `Datastore.Audit`, `Pool.Audit` | a volume's disk on a machine of the pool (`Config.Disk`, on both guests of a move — `target-vmid` asks it of each), the description line that says which disk is which volume (`Config.Options`), the shelves (`Allocate`) |
+| `/storage/<disks>` | `Datastore.AllocateSpace`, `Datastore.Audit` | the volumes themselves |
+| `/storage/<where the archives are>` | `Datastore.Audit` | a container shelf is made from the zone's `shelf_archive` |
+
+A shelf container is made **without a host name**: pve-container counts
+`hostname` as network (`VM.Config.Network`, read live and in
+`check_ct_modify_config_perm`), which this token does not hold and a shelf
+does not need.
 
 Give the same ACLs to the user and to its token (a separated token has the
 intersection of both). Nothing on `/`, `/vms` or `/nodes`: the driver reads
@@ -94,7 +109,58 @@ set a container's feature flags other than `nesting`; pass a device through.
   its cores and a shrink wait for a stop. Addresses are read through the
   QEMU guest agent when the image runs one.
 - **Delete** stops the guest, destroys it with `purge` and its unreferenced
-  disks, then deletes its seed disc.
+  disks, then deletes its seed disc — **unless it holds a volume**: then it
+  is refused, naming them (the core refuses it first; this is the engine's
+  own guard).
+
+## Volumes
+
+Proxmox VE keeps **no disk without a guest**: a disk is a line of a guest's
+config, named after that guest (`vm-<vmid>-disk-N`, `subvol-<vmid>-disk-N`),
+and **renamed when it moves** to another (`target-vmid`, qemu-server's
+`move_disk` and pve-container's `move_volume`). So:
+
+- **A volume is always a line of some guest's config** — a machine's, or a
+  **shelf**'s: a guest of the pool the driver makes for one owner and one
+  kind (named after a hash of the owner), never starts, and never tags
+  `hangar-id` — no plugin and no hook takes it for a machine. A **VM shelf**
+  has no disk of its own and takes block volumes; a **container shelf** is
+  made from the zone's `shelf_archive` (1 GB, about 300 MB used for a Debian
+  archive) and takes filesystem volumes. A stopped guest's disks and mount
+  points go into vzdump's backups by their own `backup` flag, so **a parked
+  volume keeps its backup**.
+- **Which line is which volume** is written in that guest's description, one
+  line each: `hangar volume <id> <key> <volid>` — the volid `-` while a move
+  that will name it is on its way. A move writes the target's line first and
+  takes the source's off after; a cut anywhere leaves the volume findable
+  (by its volid wherever it went in its guest, else by a waiting line's key)
+  and the next placement finishes it. (`qm config` and `pct config` print the
+  description url-encoded; the API gives it as written.)
+- **A block volume shows its guest the serial `vol0123…`** — the id without
+  its dash, AWS's own form, all a drive's 20-byte serial holds:
+  `/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_vol0123…`. Read in QEMU's
+  monitor (`qom-get … serial`) on a hot-plugged disk.
+- **A disk moves with its options only from a stopped guest.** Read on a
+  throwaway, then in the source: a running VM lets go of a disk only by
+  unplugging it (it becomes `unusedN`, its options dropped — the backup flag
+  and the serial with them); a running container lets go of none (*cannot
+  move in-use volume while the source CT is running*), and a container's
+  unused volume reaches another only as unused. So **a volume leaving a
+  running VM rests on its shelf**, its options written back there, and goes
+  on from there — into a running VM hot-plugged with them; **one leaving a
+  running container is refused**, in words. Into a running container it is
+  hot-mounted (init untouched); a container's path travels on its line, so
+  it is set where the volume is stopped, before the move.
+- **Both guests of a move are on one node** (Proxmox's rule for
+  `target-vmid`); a zone's guests all are.
+- **Grow** is live on both kinds (`resize`); **shrink** never. **The backup
+  flag** changes at once on a VM (a change Proxmox would leave pending is
+  taken back and said), and only while stopped on a container (a mount
+  point's options wait for its next stop — read on a throwaway).
+- **Delete** is of a parked volume only: its line on the shelf deleted
+  (it becomes `unusedN`), then the unused disk (destroyed).
+- The two plugins pick guest ids from one range, each in its own process: a
+  create that finds its id taken (*already exists*) takes the next.
 
 ## The hook
 
@@ -164,6 +230,7 @@ zones:
       vlan: "30"                   # optional
       vmids: 11000-11099
       shutdown_timeout: "60"       # seconds a guest is asked before it is made to stop
+      shelf_archive: local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst   # container shelves (volumes)
       ca_file: /etc/hangar/pve-root-ca.pem   # or fingerprint: <sha256 of the API's certificate>
     room:
       memory_gb: 62
@@ -181,6 +248,11 @@ plugins:
         debian-13:
           vm: debian-13                                          # a template's name in images_pool
           container: local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst
+  - name: volumes
+    builtin: volumes
+    zones: [lab]
+    credentials:
+      lab: {file: /run/secrets/pve-volumes-token}  # its own, narrower token
 ```
 
 ## The bench
@@ -193,7 +265,10 @@ The driver's tests and the binary's end-to-end test run against it:
 ```sh
 sh tools/bench/bench.sh up
 eval "$(sh tools/bench/bench.sh env)"
-go test ./driver/proxmox/ ./cmd/hangar/ -run Bench -v
+go test -p 1 ./driver/proxmox/ ./cmd/hangar/ -run Bench -v
 ```
 
-CI does not run them: they need a hypervisor.
+`-p 1`: one package at a time — both packages' tests drive the bench's one
+priority guest (VM 100), and go test runs packages side by side unless told
+not to (read: the watcher test started VM 100 while the room test was about
+to). CI does not run them: they need a hypervisor.
