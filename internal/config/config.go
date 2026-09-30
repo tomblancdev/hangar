@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/tomblancdev/hangar/internal/cron"
 )
 
 // Config is the whole file.
@@ -32,6 +34,8 @@ type Config struct {
 	Zones     []Zone    `yaml:"zones"`
 	Plugins   []Plugin  `yaml:"plugins"`
 	Reconcile Reconcile `yaml:"reconcile"`
+	// Schedules: requests the brain makes by itself, on a clock.
+	Schedules []Schedule `yaml:"schedules"`
 }
 
 // Identity is how a caller proves who they are.
@@ -226,6 +230,59 @@ func (s Secret) Read() ([]byte, error) {
 	return nil, nil
 }
 
+// Schedule is a create the brain asks for by itself, on a clock, in the name
+// of the one it names and within their tier — a recipe baked again every
+// week (AWS Image Builder's pipeline, a Kubernetes CronJob). What it made is
+// tagged hangar:schedule=<name>; "@<name>" in a reference names the newest
+// of them that is usable; once newer ones are usable, the older ones beyond
+// Keep are retired, then deleted once nothing names them.
+type Schedule struct {
+	Name string `yaml:"name"`
+	// Cron: when — minute hour day-of-month month day-of-week.
+	Cron string `yaml:"cron"`
+	// TimeZone the cron is read in (default UTC).
+	TimeZone string `yaml:"time_zone"`
+	// As: whose name the brain asks in — a subject, and the groups that give
+	// it its tier. What it makes is theirs, and counts against their limits.
+	As Principal `yaml:"as"`
+	// Create: what it asks for, as a create through the API says it.
+	Create Create `yaml:"create"`
+	// Keep: how many of the newest usable ones stay as they are (default 2).
+	Keep int `yaml:"keep"`
+	// Retire: the action an older usable one is given first (an image's
+	// retire: no machine is born from it any more); empty = none. An older
+	// one is deleted once nothing names it.
+	Retire string `yaml:"retire"`
+
+	// Line and Location: the cron, read.
+	Line     cron.Line      `yaml:"-"`
+	Location *time.Location `yaml:"-"`
+}
+
+// Principal is whom the brain acts for.
+type Principal struct {
+	Subject string   `yaml:"subject"`
+	Groups  []string `yaml:"groups"`
+}
+
+// Create is a create request, as the API's body says it.
+type Create struct {
+	Type string            `yaml:"type"`
+	Zone string            `yaml:"zone"`
+	Spec map[string]any    `yaml:"spec"`
+	Tags map[string]string `yaml:"tags"`
+}
+
+// Schedule returns the named schedule.
+func (c *Config) Schedule(name string) (*Schedule, bool) {
+	for i := range c.Schedules {
+		if c.Schedules[i].Name == name {
+			return &c.Schedules[i], true
+		}
+	}
+	return nil, false
+}
+
 // Reconcile paces the loop that compares the registry with the engines.
 type Reconcile struct {
 	Every time.Duration `yaml:"every"`
@@ -277,6 +334,15 @@ func (c *Config) defaults() {
 	}
 	if c.Reconcile.Every == 0 {
 		c.Reconcile.Every = time.Minute
+	}
+	for i := range c.Schedules {
+		sc := &c.Schedules[i]
+		if sc.TimeZone == "" {
+			sc.TimeZone = "UTC"
+		}
+		if sc.Keep == 0 {
+			sc.Keep = 2
+		}
 	}
 	for i := range c.Zones {
 		z := &c.Zones[i]
@@ -446,7 +512,62 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+	c.validateSchedules(zones, bad)
 	return errors.Join(errs...)
+}
+
+func (c *Config) validateSchedules(zones map[string]bool, bad func(string, ...any)) {
+	names := map[string]bool{}
+	for i := range c.Schedules {
+		sc := &c.Schedules[i]
+		if !nameRe.MatchString(sc.Name) {
+			bad("schedules[%d]: name %q: lowercase letters, digits, - and _", i, sc.Name)
+		}
+		if names[sc.Name] {
+			bad("schedules: %q twice", sc.Name)
+		}
+		names[sc.Name] = true
+		var err error
+		if sc.Line, err = cron.Parse(sc.Cron); err != nil {
+			bad("schedule %s: %v", sc.Name, err)
+		}
+		if sc.Location, err = time.LoadLocation(sc.TimeZone); err != nil {
+			bad("schedule %s: time_zone %q: %v", sc.Name, sc.TimeZone, err)
+		}
+		if sc.As.Subject == "" || len(sc.As.Groups) == 0 {
+			bad("schedule %s: as: the subject it asks in the name of, and the groups that give it its tier", sc.Name)
+		} else if t := c.tierFor(sc.As.Groups); t == nil {
+			bad("schedule %s: none of the groups %s is in a tier", sc.Name, strings.Join(sc.As.Groups, ", "))
+		} else if !slices.Contains(t.Zones, "*") && !slices.Contains(t.Zones, sc.Create.Zone) {
+			bad("schedule %s: tier %s is not open to zone %s", sc.Name, t.Name, sc.Create.Zone)
+		}
+		if sc.Create.Type == "" {
+			bad("schedule %s: create.type: what it asks for", sc.Name)
+		}
+		if !zones[sc.Create.Zone] {
+			bad("schedule %s: create.zone %q is not declared", sc.Name, sc.Create.Zone)
+		}
+		for k := range sc.Create.Tags {
+			if strings.HasPrefix(strings.ToLower(k), "hangar") {
+				bad("schedule %s: tag %s: keys starting with hangar are the core's", sc.Name, k)
+			}
+		}
+		if sc.Keep < 1 {
+			bad("schedule %s: keep: at least 1 — the newest usable one stays", sc.Name)
+		}
+	}
+}
+
+// tierFor is the first tier, in the file's order, one of the groups reaches.
+func (c *Config) tierFor(groups []string) *Tier {
+	for i := range c.Tiers {
+		for _, g := range c.Tiers[i].Groups {
+			if slices.Contains(groups, g) {
+				return &c.Tiers[i]
+			}
+		}
+	}
+	return nil
 }
 
 // Zone returns the named zone.

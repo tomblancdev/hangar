@@ -23,7 +23,7 @@ where this page and they disagree, they win.
 | The machines plugin (machines, key pairs); the Proxmox VE driver; references between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md)) |
 | The volumes plugin (volumes, parked on a shelf where the engine keeps no disk without a guest); attachments between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
 | The images plugin (baked from a recipe, saved from a stopped machine, shared, retired); resources shared with others | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
-| Recipes baked again on a schedule | designed (§7) |
+| Schedules: a create on the brain's own clock, in the name of the one it names — a recipe baked again every week; `@<schedule>` names the newest usable one; the older ones let go of (§3, §4, §7) | **built** — proved on a throwaway Proxmox VE |
 | The command line and the console generated from the schemas | designed (§2) |
 | Names, ports, snapshots, object storage, databases; the Incus and AWS drivers | designed (§7) |
 
@@ -108,6 +108,7 @@ neither door exists yet; the API they will read does.)*
 | **The API** | REST + JSON, OpenAPI 3.1, spec first; **client tokens** on every create, delete and action (AWS's `ClientToken`: a retry returns the first operation, a reused token for another request is refused); long actions return an **operation** to poll or wait on; every refusal an RFC 9457 problem | `net/http` |
 | **Operations + reconcile** | an operation is written before the plugin is called and ended after; one the brain died during is **run again at the next start** (plugins are idempotent on the resource id); a loop compares every settled resource with its engine: in sync, **repaired**, **drifted** (reported) or **lost** (and found again) | the core |
 | **Zones** | a zone = an engine connection (driver, endpoint, options); a plugin is enabled per zone and reports what its driver can do there (§5) | data |
+| **Schedules** | a create the brain asks for by itself, on a cron line in a time zone, **in the name of the subject and groups the operator's file names — within that tier's limits**, as a person would; what it makes is tagged `hangar:schedule=<name>`. **One at a time** (a run while the last is still being made is skipped, as a Kubernetes CronJob's `Forbid`); a run the brain missed comes **once**, late; a new schedule waits for its first time; each run's client token is its own, so a brain that died between the ask and writing it down gets the first answer again. **What it keeps:** the `keep` newest usable ones (default 2) stay as they are; an older usable one is given the schedule's `retire` action — only once newer ones are usable, never before —, and one that is not usable (retired, failed) is deleted once a newer one is usable and **nothing names it any more** (AWS Image Builder's lifecycle: deprecate, then delete; the engine's own refusal the net under it). What could not be let go of is tried again at the next run. `hangar_schedule_runs_total{schedule,result}` and an audit line per run and per letting-go | `internal/cron` (five fields, names, steps; Vixie's day rule; a skipped hour comes an hour late, a doubled one once) |
 | **Audit** | one structured line per API call — who, through which credential, which resource, the result, why refused — plus one per operation's end, per plugin event, per reconcile finding; JSON on stdout, `"kind":"audit"` | `log/slog` |
 | **Plugin host** | starts each plugin as its own process with an **empty environment**, a socket directory of its own and mutual TLS; refuses a declaration that collides with another plugin's or names a capability no driver documents; a program at a path can be pinned by its SHA-256; a plugin whose process dies is started again, and must describe itself exactly as before | HashiCorp `go-plugin` (gRPC — the model of Terraform's providers) |
 
@@ -182,6 +183,28 @@ enabling a type that names a type no plugin declares is refused at start.
 from an action's planned spec at its admission, and set anew from the spec
 as it ends — what the resource names now, nothing it named before.
 **(built)**
+
+**The latest: `@<schedule>`.** A reference may be written `@<schedule>`: the
+core writes it as the id of the **newest usable resource that schedule
+made** which the owner may name, before anything reads the spec — AWS's
+`resolve:ssm:`, Google Cloud's image families. The latest is the publisher's
+pointer, **never a search by name** that anyone could answer with a
+look-alike (the « whoAMI » confusion: a client asking for the newest image
+*named* `debian-13-*` gets an attacker's). The request keeps the id: a
+machine says what it was born from, and never moves under it. An image
+retired by hand drops out of it: the latest is then the one before. The
+audit line says what it stood for (`resolved`). **(built)**
+
+**Usability.** A resource can exist and not be usable yet — an image being
+baked (AWS: `pending`, then `available`). **The plugin says so** with every
+create, action and reconcile: why a new request may not name it, in one word
+(`pending`, `waiting`, `failed`, `retired`), and whether it is still being
+made; absent = usable. The core refuses a reference to one that is not, in
+that word, and shows it (`unusable`, `pending`). A state re-read at every
+reconcile, not an event a restart could lose. **A plugin may say a resource
+holds less than it was admitted for** (a bake that failed holds nothing, as a
+create that did not happen): the core keeps the smaller amount per
+dimension — growth is admitted, never reported. **(built)**
 
 **Attachments.** A reference whose schema also carries `"x-hangar-attached":
 true` is an attachment: on the engine, the resource lives inside the one it
@@ -409,7 +432,7 @@ hours, keep awake and `idle_after`** come with §6's power; **GPU** and
 **`peers`** later. A machine holds its size against its tier while it
 exists, running or not; against its zone, as its class says (§6).
 
-**The images plugin is built**, as its row says, but for the schedule. An
+**The images plugin is built**, as its row says. An
 image (`img-…`) is **baked** from a recipe of the operator's, or **saved**
 from a stopped machine of its owner's — its system disk alone, never its
 volumes (an image may be shared: no one's data goes with it). A machine is
@@ -426,7 +449,8 @@ failure. **A bake that fails on its own is never retried blindly**, as the
 clouds do (AWS Batch retries a job whose host was reclaimed, never one whose
 script failed): `rebake` runs it again, from the recipe as it is then. A
 builder that keeps stopping before it finishes, unasked, fails its bake at
-the third time. **An image is private at birth**; `share` opens it (§4,
+the third time. **A failed bake holds nothing** (not its owner's count, not
+its size), as a create that did not happen; a rebake is admitted anew. **An image is private at birth**; `share` opens it (§4,
 shares); `retire` stops new machines being born from it — those born from it
 run on. **A delete is refused by the engine while machines born from it still
 share its disk** (Proxmox VE's linked clones), naming them: retire it
@@ -457,11 +481,30 @@ an image of the product's included, so recipes layer), a disk size, the
 builder's cores, memory and time to finish, and its first boot — a
 `#cloud-config` or a `#!` script — to which the driver adds its own last step
 (the disk made ready to be cloned). An operator writes their own (their
-agent, their monitoring). **Designed: rebuilt on a schedule the operator
-sets, per recipe** — some baked again by themselves (a new version shared as
-the last, the older ones beyond a count retired: AWS Image Builder's
-pipeline and lifecycle policy), others never unless asked; the brain asks in
-the name of the operator the schedule names, within their tier.
+agent, their monitoring).
+
+**Baked again by themselves, per recipe** — a core schedule (§3) naming
+the recipe; a recipe no schedule names is baked only when asked. The
+operator's file:
+
+```yaml
+schedules:
+  - name: debian-13               # "@debian-13" names the newest usable one
+    cron: "0 3 * * sun"           # minute hour day-of-month month day-of-week
+    time_zone: Europe/Paris       # default UTC
+    as: {subject: recipes, groups: [image-makers]}   # whose name, whose tier
+    create: {type: image, zone: lab, spec: {recipe: debian-13, shared_with: ["*"]}}
+    keep: 2                       # the newest usable ones, as they are
+    retire: retire                # then retired; deleted once no machine is born from them
+```
+
+Every Sunday a new image, shared with everyone; a machine asks for
+`image_id: "@debian-13"` and is born from the newest; once two newer are
+usable, the older ones are retired and, when no machine is born from them
+any more, deleted — a failed bake too, once a newer one works. Size the
+schedule's tier for `keep`, plus the retired ones machines are still born
+from, plus the one baking: over it, a run is refused with the numbers and
+the audit says so.
 
 ### The next ones (each its own design, then its own release)
 
@@ -505,6 +548,11 @@ directly, and each credential must stay fenced.
 | An interrupted bake starts over by itself; one that failed on its own waits for `rebake` | an interruption says nothing of the recipe; a failure would fail again the same way (the clouds' rule for spot interruptions) |
 | An image carries its owner's system disk only; a machine with a volume plugged in is not saved | an image may be shared: no one's data may go with it |
 | A person shares only with groups they are in, or with everyone as their tier allows | a share is a publication: nobody reaches people they do not belong with |
+| Schedules are the core's (any type's create on a clock), in the operator's file, in the name of a subject and groups it names | a recipe baked every week and a volume snapshotted every night are one mechanism; the brain asks as a person would, within a tier |
+| The latest is `@<schedule>`, resolved by the core to what that schedule made; the request keeps the id | the publisher's pointer, never a name anyone could take first; every client gets it alike; a machine never moves under its user |
+| A schedule keeps its `keep` newest usable ones; older ones are retired, then deleted once nothing names them — and only once newer ones are usable | a way back stays; the store stops growing; a failed week never costs the last good image |
+| Whether a resource is usable is its plugin's say, re-read at every reconcile | the core knows no plugin's states; an event would be lost by a restart |
+| A failed bake holds nothing | a failure streak would otherwise fill a tier, and a schedule jam behind its own failures |
 
 **Set aside:** an EC2 API clone (nothing maintained speaks it for the engines
 this targets — OpenStack's EC2 layer, CloudStack's `ec2stack`, Eucalyptus and

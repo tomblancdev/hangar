@@ -39,10 +39,45 @@ func TestMigrationsRunOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if v, _ := s.Version(context.Background()); v != 3 {
+		if v, _ := s.Version(context.Background()); v != 4 {
 			t.Fatalf("schema version %d", v)
 		}
 		_ = s.Close()
+	}
+}
+
+// A resource's usability is the plugin's say, written and read back; a
+// schedule's clock survives the brain.
+func TestUsabilityAndSchedules(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	put(t, s, "img-00000000000000001", "ops", Ready, nil, nil)
+	r, _ := s.Resource(ctx, "img-00000000000000001")
+	if r.Unusable != "" || r.Pending {
+		t.Fatalf("usable unless a plugin says otherwise: %+v", r)
+	}
+	if err := s.Tx(ctx, func(tx *Tx) error {
+		return tx.Update(r.ID, Change{Usability: &Usability{Unusable: "pending", Pending: true}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ = s.Resource(ctx, r.ID); r.Unusable != "pending" || !r.Pending {
+		t.Fatalf("pending: %+v", r)
+	}
+	if _, err := s.Schedule(ctx, "weekly"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a schedule never seen: %v", err)
+	}
+	since := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
+	run := since.Add(time.Hour)
+	if err := s.PutSchedule(ctx, &ScheduleState{Name: "weekly", Since: since}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutSchedule(ctx, &ScheduleState{Name: "weekly", Since: run, LastRun: &run, LastResult: "asked", LastResource: r.ID}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.Schedule(ctx, "weekly")
+	if err != nil || !st.Since.Equal(run) || st.LastRun == nil || !st.LastRun.Equal(run) || st.LastResult != "asked" || st.LastResource != r.ID {
+		t.Fatalf("%+v %v", st, err)
 	}
 }
 

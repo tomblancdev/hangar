@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased — les recettes qui se refont
+
+Recipes baked again by themselves — proved on the fake engine by a clock
+the test turns, and on the repo's throwaway Proxmox VE through the binary.
+
+- **Schedules** in the core (`schedules:` in the config): a create on a cron
+  line (five fields, names, steps; in a time zone, default UTC), **in the
+  name of a subject and groups the file names, within that tier's limits**.
+  What a schedule makes is tagged `hangar:schedule=<name>`. One at a time: a
+  run while the last is still being made is skipped; a run the brain missed
+  comes once; a new schedule waits for its first time; a run's client token
+  is its own. **What it keeps:** its `keep` newest usable ones (default 2);
+  an older usable one is given its `retire` action — only once newer ones
+  are usable —, and one that is not usable is deleted once a newer one is
+  usable and nothing names it any more. `hangar_schedule_runs_total`, an
+  audit line per run and per letting-go, and `hangar check` prints each
+  schedule's next run.
+- **`@<schedule>`** in any reference: the newest usable resource that
+  schedule made which the owner may name — the publisher's pointer, never a
+  search by name. The request keeps the id; the audit says what it stood for.
+- **Usability**, the plugin's say (`Usability` in `CreateResponse`,
+  `ActResponse`, `ReconcileResponse`): why a new request may not name a
+  resource (`pending`, `waiting`, `failed`, `retired`) and whether it is
+  still being made. The core refuses a reference to one that is not usable,
+  in that word, and shows it (`unusable`, `pending`). Registry schema 4.
+- **A plugin may report that a resource holds less** (`ReconcileResponse.usage`):
+  the core keeps the smaller amount — **a failed bake holds nothing**, and a
+  rebake is admitted anew. A failure streak no longer fills a tier.
+- The fake engine: `builders_fail` in its file makes every bake fail.
+- **The Proxmox VE driver, under a listing a pvestatd pass behind:** a
+  machine's create addresses its new guest by the VMID it took (it was looked
+  up, and a machine asked for a second after a bake began was not found by
+  its own create — and left behind, holding its image's disk); a delete that
+  finds nothing looks once more after that pass; a VMID another plugin took
+  at the same moment is passed over for the next. `tools/bench`: 6 GB by
+  default (4 GB hung under a builder, a machine and an import at once).
+
 ## Unreleased — les images
 
 System disks machines are born from — proved on the repo's throwaway Proxmox

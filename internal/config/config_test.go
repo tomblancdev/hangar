@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTheExampleIsSound(t *testing.T) {
@@ -53,6 +54,49 @@ func TestRefusals(t *testing.T) {
 	}
 	if _, err := Parse([]byte(base)); err != nil {
 		t.Fatalf("the base is sound: %v", err)
+	}
+}
+
+const scheduled = base + `schedules:
+  - name: weekly
+    cron: "0 3 * * sun"
+    time_zone: Europe/Paris
+    as: {subject: recipes, groups: [g]}
+    create: {type: box, zone: z, spec: {kind: small}}
+`
+
+func TestSchedules(t *testing.T) {
+	c, err := Parse([]byte(scheduled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc, ok := c.Schedule("weekly")
+	if !ok || sc.Keep != 2 || sc.Location.String() != "Europe/Paris" || sc.Create.Spec["kind"] != "small" {
+		t.Fatalf("%+v", sc)
+	}
+	if n := sc.Line.Next(time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC), sc.Location); !n.Equal(time.Date(2026, 10, 4, 1, 0, 0, 0, time.UTC)) {
+		t.Fatalf("Sunday 03:00 in Paris is 01:00 UTC: %s", n)
+	}
+	utc, _ := Parse([]byte(strings.Replace(scheduled, "    time_zone: Europe/Paris\n", "", 1)))
+	if s, _ := utc.Schedule("weekly"); s == nil || s.TimeZone != "UTC" {
+		t.Fatal("UTC by default")
+	}
+	for name, doc := range map[string]string{
+		"a cron that never comes":        strings.Replace(scheduled, "0 3 * * sun", "0 0 30 2 *", 1),
+		"a cron of four fields":          strings.Replace(scheduled, "0 3 * * sun", "0 3 * *", 1),
+		"a time zone nobody has":         strings.Replace(scheduled, "Europe/Paris", "Europe/Nowhere", 1),
+		"no subject":                     strings.Replace(scheduled, "subject: recipes, ", "", 1),
+		"groups in no tier":              strings.Replace(scheduled, "groups: [g]}", "groups: [nobody]}", 1),
+		"a zone its tier is not open to": strings.Replace(strings.Replace(scheduled, "zone: z, spec", "zone: y, spec", 1), "  - name: z\n", "  - name: z\n    driver: fake\n  - name: y\n", 1),
+		"an undeclared zone":             strings.Replace(scheduled, "zone: z, spec", "zone: nowhere, spec", 1),
+		"no type":                        strings.Replace(scheduled, "type: box, ", "", 1),
+		"a tag of the core's":            strings.Replace(scheduled, "spec: {kind: small}}", "spec: {kind: small}, tags: {hangar:schedule: x}}", 1),
+		"keep below 1":                   scheduled + "    keep: -1\n",
+		"two of one name":                scheduled + "  - name: weekly\n    cron: \"* * * * *\"\n    as: {subject: r, groups: [g]}\n    create: {type: box, zone: z}\n",
+	} {
+		if _, err := Parse([]byte(doc)); err == nil || !strings.Contains(err.Error(), "schedule") {
+			t.Errorf("%s: want the schedule refused, got %v", name, err)
+		}
 	}
 }
 

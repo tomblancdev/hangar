@@ -75,7 +75,12 @@ type Resource struct {
 	// SharedWith: the groups its owner opened it to ("*" = everyone), as its
 	// spec says; empty = its owner's alone.
 	SharedWith []string `json:"shared_with,omitempty"`
-	Drift      string   `json:"drift,omitempty"`
+	// Unusable: why a new request may not name it, in its plugin's word
+	// ("pending", "failed", "retired"); empty = it may. Pending: it is still
+	// being made, and may become usable by itself.
+	Unusable string `json:"unusable,omitempty"`
+	Pending  bool   `json:"pending,omitempty"`
+	Drift    string `json:"drift,omitempty"`
 	// Room: what it takes from its zone's pools.
 	Room Room `json:"room"`
 	// Hold: the key of the reservation holding its borrowed room back since
@@ -306,10 +311,11 @@ func (t *Tx) InsertResource(r *Resource) error {
 	}
 	_, err := t.q.ExecContext(t.ctx, `INSERT INTO resources
 		(id, type, plugin, owner, zone, state, spec, observed, choices, room_guaranteed, room_spot, running, hold, hold_since,
-		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 unusable, pending, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.Type, r.Plugin, r.Owner, r.Zone, r.State, rawOr(r.Spec, "{}"), rawOr(r.Observed, "{}"),
-		mustJSON(nonNilS(r.Choices)), r.Room.GuaranteedMB, r.Room.SpotMB, r.Room.Running, r.Hold, since, ts(t.now), ts(t.now))
+		mustJSON(nonNilS(r.Choices)), r.Room.GuaranteedMB, r.Room.SpotMB, r.Room.Running, r.Hold, since,
+		r.Unusable, r.Pending, ts(t.now), ts(t.now))
 	if err != nil {
 		return err
 	}
@@ -428,12 +434,21 @@ type Change struct {
 	Choices  map[string]string
 	Drift    *string
 	Room     *Room
+	// Usability: the plugin's say on whether a new request may name it.
+	Usability *Usability
 	// Hold: the reservation's key now holding its room ("" lifts it); the
 	// time it began is kept while the key stays the same.
 	Hold *string
 	// IfState: apply only while the resource is still in this state
 	// (ErrMoved otherwise).
 	IfState string
+}
+
+// Usability is a plugin's say on a resource: why a new request may not name
+// it ("" = it may), and whether it is still being made.
+type Usability struct {
+	Unusable string
+	Pending  bool
 }
 
 // Update applies a change to a resource.
@@ -469,6 +484,10 @@ func (t *Tx) update(id string, c Change) error {
 	if c.Room != nil {
 		sets = append(sets, "room_guaranteed = ?", "room_spot = ?", "running = ?")
 		args = append(args, c.Room.GuaranteedMB, c.Room.SpotMB, c.Room.Running)
+	}
+	if c.Usability != nil {
+		sets = append(sets, "unusable = ?", "pending = ?")
+		args = append(args, c.Usability.Unusable, c.Usability.Pending)
 	}
 	if c.Hold != nil {
 		var since any
@@ -509,7 +528,7 @@ func (s *Store) Resource(ctx context.Context, id string) (*Resource, error) {
 }
 
 const resourceCols = `seq, id, type, plugin, owner, zone, state, spec, observed, choices, drift,
-	room_guaranteed, room_spot, running, hold, hold_since, created_at, updated_at, deleted_at`
+	room_guaranteed, room_spot, running, hold, hold_since, unusable, pending, created_at, updated_at, deleted_at`
 
 func scanResource(sc interface{ Scan(...any) error }) (*Resource, int64, error) {
 	var r Resource
@@ -517,7 +536,8 @@ func scanResource(sc interface{ Scan(...any) error }) (*Resource, int64, error) 
 	var spec, observed, choices, created, updated string
 	var deleted, since sql.NullString
 	if err := sc.Scan(&seq, &r.ID, &r.Type, &r.Plugin, &r.Owner, &r.Zone, &r.State, &spec, &observed, &choices,
-		&r.Drift, &r.Room.GuaranteedMB, &r.Room.SpotMB, &r.Room.Running, &r.Hold, &since, &created, &updated, &deleted); err != nil {
+		&r.Drift, &r.Room.GuaranteedMB, &r.Room.SpotMB, &r.Room.Running, &r.Hold, &since, &r.Unusable, &r.Pending,
+		&created, &updated, &deleted); err != nil {
 		return nil, 0, err
 	}
 	r.Spec, r.Observed = json.RawMessage(spec), json.RawMessage(observed)
@@ -985,4 +1005,49 @@ func nonNilS(m map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return m
+}
+
+// ---- Schedules --------------------------------------------------------------
+
+// ScheduleState is where one schedule of the operator's stands.
+type ScheduleState struct {
+	Name string `json:"name"`
+	// Since: the time its next run is counted from.
+	Since   time.Time  `json:"since"`
+	LastRun *time.Time `json:"last_run,omitempty"`
+	// LastResult: asked, skipped or refused; LastDetail says why.
+	LastResult   string `json:"last_result,omitempty"`
+	LastDetail   string `json:"last_detail,omitempty"`
+	LastResource string `json:"last_resource,omitempty"`
+}
+
+// Schedule reads a schedule's state; ErrNotFound the first time.
+func (s *Store) Schedule(ctx context.Context, name string) (*ScheduleState, error) {
+	var st ScheduleState
+	var since string
+	var last sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT name, since, last_run, last_result, last_detail, last_resource FROM schedules WHERE name = ?`, name).
+		Scan(&st.Name, &since, &last, &st.LastResult, &st.LastDetail, &st.LastResource)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	st.Since, st.LastRun = parseTS(since), parseNullTS(last)
+	return &st, nil
+}
+
+// PutSchedule writes a schedule's state whole.
+func (s *Store) PutSchedule(ctx context.Context, st *ScheduleState) error {
+	var last any
+	if st.LastRun != nil {
+		last = ts(*st.LastRun)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO schedules (name, since, last_run, last_result, last_detail, last_resource)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (name) DO UPDATE SET since = excluded.since, last_run = excluded.last_run, last_result = excluded.last_result,
+		  last_detail = excluded.last_detail, last_resource = excluded.last_resource`,
+		st.Name, ts(st.Since), last, st.LastResult, st.LastDetail, st.LastResource)
+	return err
 }

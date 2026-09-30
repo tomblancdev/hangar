@@ -97,7 +97,15 @@ set a container's feature flags other than `nesting`; pass a device through.
   unless it asked not to.
 - **VMIDs** are the lowest free in the zone's range, the cluster asked about
   each candidate (`/cluster/nextid?vmid=`), since the fence hides guests
-  that hold some.
+  that hold some. Two plugins on a zone pick at the same moment (a bake's
+  builder beside a machine): the one refused with « already exists » takes
+  the next.
+- **A guest just made is addressed by the VMID it took**, never looked up:
+  `/cluster/resources` may not list it for a pvestatd pass (read on the bench
+  — a machine asked for a second after a bake began was not found by its own
+  create, and left behind); **a delete that finds nothing looks once more**
+  after that pass, before it calls the guest gone — the core clears a create
+  that failed half-way at once.
 - **Every long call waits for its task.** Proxmox answers a start with
   `200` and a task id at once; a pre-start hook that refuses fails the
   *task*. The driver reads the task's end and returns the refusal with the
@@ -245,6 +253,12 @@ the product bakes or saves carries none — unless the machine it was saved
 from had one — and its clones are admitted by the brain alone. Where the
 node's own admission matters, set the hook on the images pool's templates as
 root after each bake (a job of the node's).
+
+**Baked again by a schedule** (ARCHITECTURE.md §3): the brain retires an
+older image once newer ones are usable, and deletes it only once no machine
+names it — the refusal above (a template with linked clones is not deleted)
+stays the net under that rule, and a delete it refuses is asked again at the
+schedule's next run.
 
 ## The hook
 

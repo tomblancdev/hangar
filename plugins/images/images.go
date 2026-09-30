@@ -413,6 +413,24 @@ func room(s Spec, o Observed) *pluginpb.Room {
 	return &pluginpb.Room{SpotMb: int64(withDefaults(s.From.Recipe).MemoryMB), Running: true}
 }
 
+// usability: whether a machine may be born from it now, in the word the
+// doors show — AWS's pending, available, failed; retired is Google's
+// deprecated. Still being made = pending.
+func usability(s Spec, o Observed) *pluginpb.Usability {
+	switch {
+	case s.Retired:
+		return &pluginpb.Usability{Unusable: "retired"}
+	case baking(s, o) && o.State == driver.ImageWaiting:
+		return &pluginpb.Usability{Unusable: driver.ImageWaiting, Pending: true}
+	case baking(s, o):
+		// a rebake reads its last attempt's failure until its builder starts
+		return &pluginpb.Usability{Unusable: driver.ImagePending, Pending: true}
+	case o.State == driver.ImageFailed:
+		return &pluginpb.Usability{Unusable: driver.ImageFailed}
+	}
+	return nil
+}
+
 func usage(s Spec) map[string]int64 {
 	return map[string]int64{"images.count": 1, "images.size_gb": int64(s.SizeGB)}
 }
@@ -659,7 +677,8 @@ func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*plug
 	if err != nil {
 		return nil, engineErr(err)
 	}
-	return &pluginpb.CreateResponse{Observed: sdk.JSON(p.observe(got, Observed{})), Events: []*pluginpb.Event{ev}}, nil
+	o := p.observe(got, Observed{})
+	return &pluginpb.CreateResponse{Observed: sdk.JSON(o), Events: []*pluginpb.Event{ev}, Usability: usability(s, o)}, nil
 }
 
 func (p *Plugin) Delete(ctx context.Context, req *pluginpb.DeleteRequest) (*pluginpb.DeleteResponse, error) {
@@ -701,7 +720,7 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 	default:
 		return nil, sdk.Refuse("no action %q on an image", req.GetAction())
 	}
-	return &pluginpb.ActResponse{Spec: sdk.JSON(s), Observed: sdk.JSON(o), Events: []*pluginpb.Event{ev}}, nil
+	return &pluginpb.ActResponse{Spec: sdk.JSON(s), Observed: sdk.JSON(o), Events: []*pluginpb.Event{ev}, Usability: usability(s, o)}, nil
 }
 
 // Reconcile moves a bake forward — a step each pass: its builder started,
@@ -770,6 +789,12 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 			}
 		}
 		resp.Observed = sdk.JSON(o)
+	}
+	resp.Usability = usability(s, o)
+	if o.State == driver.ImageFailed && o.Attempt == s.Attempt {
+		// a bake that failed holds nothing, as a create that did not happen:
+		// no failure eats its owner's images; a rebake is admitted anew
+		resp.Usage = &pluginpb.Usage{}
 	}
 	// what it takes from its zone follows where its bake stands
 	want := room(s, o)

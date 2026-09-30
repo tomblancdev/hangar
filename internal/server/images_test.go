@@ -155,7 +155,10 @@ func TestAnImagesLife(t *testing.T) {
 	if r.str("spec", "from", "recipe") != "debian" || r.str("spec", "size_gb") != "10" || r.str("spec", "attempt") != "1" {
 		t.Fatalf("its recipe is written in it: %v", r.body["spec"])
 	}
-	refused(machine2(s, root, img), 422, "is pending: a machine is born from an available image")
+	refused(machine2(s, root, img), 422, img+" is pending")
+	if r.str("unusable") != "pending" || r.str("pending") != "true" {
+		t.Fatalf("the brain is told it is still being made: %v", r.body)
+	}
 	s.core.ReconcileOnce(ctx)
 	r = get(root, img)
 	if r.str("observed", "state") != "available" || r.str("room", "spot_mb") != "0" || r.str("room", "running") != "false" {
@@ -328,6 +331,9 @@ func TestABakeGivesWayAndARecipeFails(t *testing.T) {
 	if r.str("observed", "state") != "failed" || !strings.Contains(r.str("observed", "detail"), fake.FailBake) || r.str("room", "spot_mb") != "0" {
 		t.Fatalf("a failed bake says why and gives its room back: %v", r.body)
 	}
+	if u, _ := r.body["usage"].(map[string]any); len(u) != 0 || r.str("unusable") != "failed" {
+		t.Fatalf("a failed bake holds nothing, and no machine is born from it: %v", r.body)
+	}
 	s.core.ReconcileOnce(ctx)
 	if r = get(bad); r.str("observed", "state") != "failed" || r.str("observed", "attempt") != "1" {
 		t.Fatalf("a failed bake is not retried by itself: %v", r.body)
@@ -342,6 +348,9 @@ func TestABakeGivesWayAndARecipeFails(t *testing.T) {
 	}
 	if r = get(bad); r.str("observed", "state") != "pending" || r.str("spec", "attempt") != "2" || r.str("room", "spot_mb") != "2048" {
 		t.Fatalf("baked again: attempt 2, pending, its room borrowed: %v", r.body)
+	}
+	if r.str("usage", "images.count") != "1" || r.str("usage", "images.size_gb") != "4" {
+		t.Fatalf("baked again, it is admitted anew: %v", r.body["usage"])
 	}
 	s.core.ReconcileOnce(ctx)
 	if r = get(bad); r.str("observed", "state") != "failed" || r.str("observed", "attempt") != "2" {

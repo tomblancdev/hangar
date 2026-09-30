@@ -84,7 +84,8 @@ type Driver struct {
 	vlan     int
 	lo, hi   int
 	full     bool
-	shutdown int // seconds a shutdown is waited for before a stop
+	shutdown int           // seconds a shutdown is waited for before a stop
+	listLag  time.Duration // pvestatd's pass: how late /cluster/resources may list a new guest
 	watch    []string
 	caps     []driver.Capability
 	fenceErr string // why fence.pool is not advertised, when it is not
@@ -102,7 +103,7 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	o := p.Options
 	d := &Driver{
 		zone: p.Zone, node: o["node"], pool: o["pool"], images: o["images_pool"], storage: o["storage"],
-		seeds: o["seed_storage"], bridge: o["bridge"], full: o["full_clone"] == "true", shutdown: 60,
+		seeds: o["seed_storage"], bridge: o["bridge"], full: o["full_clone"] == "true", shutdown: 60, listLag: 10 * time.Second,
 		shelfArchive: o["shelf_archive"],
 	}
 	for _, ref := range p.Watch {
@@ -608,24 +609,30 @@ func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Gu
 	switch {
 	case err == nil: // a retry: finish what the first call began
 	case errors.Is(err, driver.ErrNotFound):
-		vmid, err := d.freeVMID(ctx)
+		typ := "qemu"
+		if s.Kind == "container" {
+			typ = "lxc"
+		}
+		// another plugin on the zone may take the same free id at the same
+		// moment (a bake's builder): the next one then
+		var made int
+		err = d.withFreeVMID(ctx, func(vmid int) error {
+			made = vmid
+			switch s.Kind {
+			case "container":
+				return d.createContainer(ctx, vmid, s)
+			case "vm":
+				return d.cloneVM(ctx, vmid, s)
+			}
+			return fmt.Errorf("%w: no kind %q", driver.ErrRefused, s.Kind)
+		})
 		if err != nil {
 			return driver.Guest{}, d.engine(err)
 		}
-		switch s.Kind {
-		case "container":
-			err = d.createContainer(ctx, vmid, s)
-		case "vm":
-			err = d.cloneVM(ctx, vmid, s)
-		default:
-			err = fmt.Errorf("%w: no kind %q", driver.ErrRefused, s.Kind)
-		}
-		if err != nil {
-			return driver.Guest{}, d.engine(err)
-		}
-		if r, err = d.find(ctx, s.ID); err != nil {
-			return driver.Guest{}, d.engine(err)
-		}
+		// the guest is the id just taken: /cluster/resources may not list it
+		// yet (read on the bench — a machine asked for a second after a bake
+		// began was not found by its own create, and left behind)
+		r = resource{VMID: made, Node: d.node, Type: typ, Pool: d.pool, Name: s.Name}
 	default:
 		return driver.Guest{}, d.engine(err)
 	}
@@ -848,6 +855,17 @@ func (d *Driver) seedExists(ctx context.Context, volid string) (bool, error) {
 
 func (d *Driver) DeleteGuest(ctx context.Context, id string) error {
 	r, err := d.find(ctx, id)
+	if errors.Is(err, driver.ErrNotFound) {
+		// a guest made a moment ago may not be listed yet — the core clears a
+		// create that failed half-way at once: looked for again after
+		// pvestatd's pass, before it is called gone
+		select {
+		case <-time.After(d.listLag):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		r, err = d.find(ctx, id)
+	}
 	if errors.Is(err, driver.ErrNotFound) {
 		return d.deleteSeed(ctx, id)
 	}

@@ -27,6 +27,15 @@ info:
     (`/v1/zones/{zone}/claim`, `/release`): the zone's borrowed room is then
     held, and each resource brought to what its hold means for it.
 
+    **References and the latest.** A spec's field that names another
+    resource (its schema marks it `x-hangar-ref`) takes an id — or
+    `@<schedule>`: the newest usable resource that schedule of the
+    operator's made which you may name (a machine born from "the latest
+    image"). The request keeps the id it stood for: a machine says what it
+    was born from and never moves under it. A resource its plugin says is
+    not usable yet (`unusable`: pending, failed, retired) is refused where
+    it is named (422 `schema`).
+
     **Retries.** Every create, delete and action takes a `client_token`
     (AWS's ClientToken): the same token with the same request returns the
     first operation (200) instead of starting a second; with a different
@@ -585,6 +594,12 @@ components:
             Someone in one of them sees it and names it in their own
             requests; only its owner (or an operator) changes or deletes it
             (403 `shared`).
+        unusable:
+          type: string
+          description: |
+            Why a new request may not name it, in its plugin's word
+            (`pending`, `waiting`, `failed`, `retired`); absent = it may.
+        pending: { type: boolean, description: Still being made — it may become usable by itself. }
         drift: { type: string, description: What reconcile found when not in sync. }
         room:
           type: object
@@ -635,7 +650,9 @@ components:
           type: object
           maxProperties: 50
           additionalProperties: { type: string, maxLength: 256 }
-          description: Keys starting with `hangar` are the core's.
+          description: |
+            Keys starting with `hangar` are the core's — `hangar:schedule`
+            names the schedule that made a resource.
         client_token: { $ref: "#/components/schemas/ClientToken" }
     ActRequest:
       type: object

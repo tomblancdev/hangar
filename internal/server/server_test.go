@@ -116,6 +116,13 @@ func newStack(t *testing.T) *stack { t.Helper(); return newStackWith(t, stackCon
 // %[2]s the identity provider, %[3]s this test binary, the plugins' program).
 func newStackWith(t *testing.T, cfgText string, enabled ...string) *stack {
 	t.Helper()
+	return newStackClock(t, cfgText, nil, enabled...)
+}
+
+// newStackClock is a stack whose schedules run on the clock now, turned by
+// the test alone (ScheduleOnce), never by the brain's own ticker.
+func newStackClock(t *testing.T, cfgText string, now func() time.Time, enabled ...string) *stack {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "h") // short: the plugin's socket lives under it
 	if err != nil {
 		t.Fatal(err)
@@ -137,10 +144,16 @@ func newStackWith(t *testing.T, cfgText string, enabled ...string) *stack {
 	if err := limits.Check(s.cfg.Tiers, s.host.Dimensions(), enabled); err != nil {
 		t.Fatal(err)
 	}
+	if err := core.CheckSchedules(s.cfg, s.host); err != nil {
+		t.Fatal(err)
+	}
 	m := metrics.New()
 	a := audit.New(log)
 	s.core = core.New(ctx, s.cfg, s.store, s.host, a, log, m)
 	s.core.Retry = nil
+	if now != nil {
+		s.core.Now, s.core.ScheduleEvery = now, 0
+	}
 	srv, err := New(s.cfg, s.core, identity.New(s.cfg.Identity, s.store, nil), s.store, s.host, a, m, log, "test")
 	if err != nil {
 		t.Fatal(err)

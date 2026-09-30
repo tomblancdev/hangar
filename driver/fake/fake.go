@@ -82,6 +82,9 @@ type state struct {
 	Volumes map[string]*driver.Volume `json:"volumes,omitempty"`
 	// Images, and their bakes, by the core's id.
 	Images map[string]*fakeImage `json:"images,omitempty"`
+	// BuildersFail: every builder's first boot reports errors, whatever its
+	// recipe (a package mirror down that day).
+	BuildersFail bool `json:"builders_fail,omitempty"`
 }
 
 // errAsleep is what a sleeping zone answers: an engine that cannot be reached

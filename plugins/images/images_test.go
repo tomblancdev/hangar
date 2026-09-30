@@ -59,3 +59,30 @@ func TestSharesAreNormalized(t *testing.T) {
 		t.Error("a group name with a leading space")
 	}
 }
+
+// Whether a machine may be born from an image, as the brain is told it: a
+// bake not over is pending (or waiting), a failed one failed — until it is
+// baked again —, a retired one retired, anything else usable.
+func TestUsability(t *testing.T) {
+	baked := Spec{Recipe: "debian", Attempt: 1}
+	for _, tc := range []struct {
+		s       Spec
+		o       Observed
+		word    string
+		pending bool
+	}{
+		{baked, Observed{State: "pending", Attempt: 1}, "pending", true},
+		{baked, Observed{State: "waiting", Attempt: 1}, "waiting", true},
+		{baked, Observed{}, "pending", true},
+		{baked, Observed{State: "available", Attempt: 1}, "", false},
+		{baked, Observed{State: "failed", Attempt: 1}, "failed", false},
+		{Spec{Recipe: "debian", Attempt: 2}, Observed{State: "failed", Attempt: 1}, "pending", true}, // rebaked
+		{Spec{Recipe: "debian", Attempt: 1, Retired: true}, Observed{State: "available", Attempt: 1}, "retired", false},
+		{Spec{Machine: "m-1"}, Observed{State: "available"}, "", false},
+	} {
+		u := usability(tc.s, tc.o)
+		if u.GetUnusable() != tc.word || u.GetPending() != tc.pending {
+			t.Errorf("%+v %+v: %q pending=%v, want %q pending=%v", tc.s, tc.o, u.GetUnusable(), u.GetPending(), tc.word, tc.pending)
+		}
+	}
+}

@@ -139,6 +139,10 @@ func startPlugins(ctx context.Context, cfg *config.Config, log *slog.Logger, log
 		host.Close()
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	if err := core.CheckSchedules(cfg, host); err != nil {
+		host.Close()
+		return nil, fmt.Errorf("config: %w", err)
+	}
 	return host, nil
 }
 
@@ -234,10 +238,17 @@ func check(args []string, out io.Writer) error {
 	for _, t := range cfg.Tiers {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%v\n", t.Name, strings.Join(t.Groups, " "), strings.Join(t.Zones, " "), t.Operator)
 	}
+	if len(cfg.Schedules) > 0 {
+		fmt.Fprintln(w, "\nSCHEDULE\tCRON\tMAKES\tAS\tKEEP\tNEXT")
+		for _, sc := range cfg.Schedules {
+			fmt.Fprintf(w, "%s\t%s (%s)\t%s in %s\t%s\t%d\t%s\n", sc.Name, sc.Line, sc.TimeZone, sc.Create.Type, sc.Create.Zone,
+				sc.As.Subject, sc.Keep, sc.Line.Next(time.Now(), sc.Location).Format(time.RFC3339))
+		}
+	}
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "\nsound: every plugin started, every limit names a declared dimension")
+	fmt.Fprintln(out, "\nsound: every plugin started, every limit names a declared dimension, every schedule makes a declared type")
 	return nil
 }
 

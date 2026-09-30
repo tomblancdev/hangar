@@ -22,7 +22,9 @@
 # the disks, the bench's ssh key, its root password and the plugin's token —
 # the last two 0600 and never printed. The first `up` downloads about 2.3 GB.
 #
-# Sizes: HANGAR_BENCH_MEMORY (MiB, default 4096), HANGAR_BENCH_CPUS (default 4).
+# Sizes: HANGAR_BENCH_MEMORY (MiB, default 6144), HANGAR_BENCH_CPUS (default 4).
+# Proxmox VE idles at 1.6 GB: at 4096 a builder, a machine and a cloud
+# image's import at once left the bench hung, its API and ssh silent.
 set -eu
 
 case "${1:-}" in
@@ -36,7 +38,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 dir=${HANGAR_BENCH_DIR:-$HOME/.cache/hangar-bench}
 port=${HANGAR_BENCH_PORT:-18006}
 sshport=${HANGAR_BENCH_SSH_PORT:-18022}
-mem=${HANGAR_BENCH_MEMORY:-4096}
+mem=${HANGAR_BENCH_MEMORY:-6144}
 cpus=${HANGAR_BENCH_CPUS:-4}
 image=localhost/hangar-bench:latest
 name=hangar-bench

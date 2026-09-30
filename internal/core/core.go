@@ -64,6 +64,13 @@ type Core struct {
 	waiters map[string]*waiter
 
 	room roomState // the zones' reservations: what is in force, and why
+
+	// Now is the schedules' clock (tests move it); ScheduleEvery, how often
+	// they are looked at.
+	Now           func() time.Time
+	ScheduleEvery time.Duration
+	schedMu       sync.Mutex
+	tried         map[string]map[string]bool // schedule -> what it asked to let go of since its last run
 }
 
 type waiter struct {
@@ -77,6 +84,7 @@ func New(life context.Context, cfg *config.Config, store *registry.Store, host *
 	m.Counter("hangar_requests_refused_total", "Requests refused, by reason.", "reason")
 	m.Counter("hangar_operations_total", "Operations finished, by kind and result.", "kind", "result")
 	m.Counter("hangar_reconcile_total", "Reconcile verdicts, by type and verdict.", "type", "verdict")
+	m.Counter("hangar_schedule_runs_total", "Schedules' runs, by schedule and result (asked, skipped, refused, failed).", "schedule", "result")
 	return &Core{
 		cfg: cfg, store: store, host: host, audit: a, log: log, metrics: m,
 		Retry:       []time.Duration{time.Second, 4 * time.Second, 15 * time.Second},
@@ -84,6 +92,10 @@ func New(life context.Context, cfg *config.Config, store *registry.Store, host *
 		life:        life,
 		slots:       make(chan struct{}, 8),
 		waiters:     map[string]*waiter{},
+
+		Now:           time.Now,
+		ScheduleEvery: 30 * time.Second,
+		tried:         map[string]map[string]bool{},
 	}
 }
 
@@ -242,6 +254,12 @@ type CreateInput struct {
 // Create asks for a new resource. replayed=true: the client token was used
 // before for this very request, and its operation is returned as it stands.
 func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in CreateInput) (op *registry.Operation, r *registry.Resource, replayed bool, err error) {
+	return c.create(ctx, who, typeName, in, nil)
+}
+
+// create is Create, with tags of the core's own added to the resource's
+// (a schedule's name on what it made).
+func (c *Core) create(ctx context.Context, who *Caller, typeName string, in CreateInput, coreTags map[string]string) (op *registry.Operation, r *registry.Resource, replayed bool, err error) {
 	if p := c.needWrite(ctx, who); p != nil {
 		return nil, nil, false, p
 	}
@@ -260,11 +278,22 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 	if len(in.Spec) == 0 {
 		in.Spec = json.RawMessage("{}")
 	}
+	in.Tags = withTags(in.Tags, coreTags)
 	hash := requestHash("create", typeName, in.Zone, in.Spec, in.Tags)
 	if in.ClientToken != "" {
 		if op, r, p := c.replay(ctx, who, in.ClientToken, hash); p != nil || op != nil {
 			return op, r, op != nil, errOf(p)
 		}
+	}
+	// "@<schedule>" is the newest usable one that schedule made: written
+	// as its id before anything reads the spec
+	spec, resolved, p := c.resolve(ctx, who.Subject, who.Groups, in.Zone, t.Refs, in.Spec)
+	if p != nil {
+		return nil, nil, false, c.refused(ctx, p)
+	}
+	if resolved != nil {
+		in.Spec = spec
+		rec.Set(func(e *audit.Event) { e.Fields = map[string]string{"resolved": strings.Join(resolved, ",")} })
 	}
 	if v := t.Validate(in.Spec); len(v) > 0 {
 		p := problem(422, KindSchema, "the spec does not fit type %s: %s", t.Name, v[0].Reason)
@@ -636,17 +665,25 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 	if ok, why := c.host.ActionAvailable(t, a, r.Zone); !ok {
 		return nil, nil, false, c.refused(ctx, problem(422, KindUnavailable, "%s", why))
 	}
-	if v := a.Validate(in.Params); len(v) > 0 {
-		p := problem(422, KindSchema, "the params do not fit %s: %s", a.Name, v[0].Reason)
-		p.Violations = v
-		return nil, nil, false, c.refused(ctx, p)
-	}
 	// what the owner may name: their own, and what is shared with their
 	// groups — known when the owner asks; an operator acting for someone
 	// names that person's own
 	var groups []string
 	if who.Subject == r.Owner {
 		groups = who.Groups
+	}
+	params, resolved, p := c.resolve(ctx, r.Owner, groups, r.Zone, a.Refs, in.Params)
+	if p != nil {
+		return nil, nil, false, c.refused(ctx, p)
+	}
+	if resolved != nil {
+		in.Params = params
+		audit.From(ctx).Set(func(e *audit.Event) { e.Fields["resolved"] = strings.Join(resolved, ",") })
+	}
+	if v := a.Validate(in.Params); len(v) > 0 {
+		p := problem(422, KindSchema, "the params do not fit %s: %s", a.Name, v[0].Reason)
+		p.Violations = v
+		return nil, nil, false, c.refused(ctx, p)
 	}
 	if _, p := c.references(ctx, r.Owner, groups, r.Zone, a.Refs, in.Params); p != nil {
 		return nil, nil, false, c.refused(ctx, p)
@@ -986,6 +1023,15 @@ func (c *Core) Run(ctx context.Context) error {
 	}
 	tick := time.NewTicker(c.cfg.Reconcile.Every)
 	defer tick.Stop()
+	// the schedules' clock: a run comes within ScheduleEvery of its time
+	// (0 = none: a test turns them itself)
+	var sched <-chan time.Time
+	if len(c.cfg.Schedules) > 0 && c.ScheduleEvery > 0 {
+		st := time.NewTicker(c.ScheduleEvery)
+		defer st.Stop()
+		sched = st.C
+		c.ScheduleOnce(ctx)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -993,6 +1039,8 @@ func (c *Core) Run(ctx context.Context) error {
 			return nil
 		case <-tick.C:
 			c.ReconcileOnce(ctx)
+		case <-sched:
+			c.ScheduleOnce(ctx)
 		}
 	}
 }
@@ -1087,6 +1135,7 @@ func (c *Core) execute(op *registry.Operation, prev *registry.Resource) {
 type outcome struct {
 	spec, observed, result json.RawMessage
 	events                 []*pluginpb.Event
+	usability              *pluginpb.Usability
 }
 
 func (c *Core) call(ctx context.Context, p *plugins.Plugin, op *registry.Operation, r *registry.Resource) (outcome, error) {
@@ -1113,7 +1162,7 @@ func (c *Core) call(ctx context.Context, p *plugins.Plugin, op *registry.Operati
 			return outcome{}, err
 		}
 		resp, err := client.Create(cctx, &pluginpb.CreateRequest{Resource: toProto(r), Refs: rs})
-		return outcome{observed: resp.GetObserved(), events: resp.GetEvents()}, err
+		return outcome{observed: resp.GetObserved(), events: resp.GetEvents(), usability: resp.GetUsability()}, err
 	case registry.OpDelete:
 		resp, err := client.Delete(cctx, &pluginpb.DeleteRequest{Resource: toProto(r)})
 		return outcome{events: resp.GetEvents()}, err
@@ -1123,7 +1172,8 @@ func (c *Core) call(ctx context.Context, p *plugins.Plugin, op *registry.Operati
 			return outcome{}, err
 		}
 		resp, err := client.Act(cctx, &pluginpb.ActRequest{Resource: toProto(r), Action: op.Action, Params: op.Params, Refs: rs})
-		return outcome{spec: resp.GetSpec(), observed: resp.GetObserved(), result: resp.GetResult(), events: resp.GetEvents()}, err
+		return outcome{spec: resp.GetSpec(), observed: resp.GetObserved(), result: resp.GetResult(), events: resp.GetEvents(),
+			usability: resp.GetUsability()}, err
 	}
 }
 
@@ -1143,7 +1193,7 @@ func (c *Core) finish(op *registry.Operation, r *registry.Resource, out *outcome
 	if r != nil {
 		switch {
 		case op.Kind == registry.OpCreate && err == nil:
-			change = registry.Change{State: registry.Ready, Observed: out.observed}
+			change = registry.Change{State: registry.Ready, Observed: out.observed, Usability: usabilityOf(out.usability)}
 		case op.Kind == registry.OpCreate:
 			change = registry.Change{State: registry.Failed}
 		case op.Kind == registry.OpDelete && err == nil:
@@ -1158,7 +1208,7 @@ func (c *Core) finish(op *registry.Operation, r *registry.Resource, out *outcome
 			}
 			change = registry.Change{State: from.FromState}
 		case err == nil:
-			change = registry.Change{State: registry.Ready, Spec: out.spec, Observed: out.observed}
+			change = registry.Change{State: registry.Ready, Spec: out.spec, Observed: out.observed, Usability: usabilityOf(out.usability)}
 		default:
 			change = registry.Change{State: registry.Ready}
 			if len(prev) > 0 && prev[0] != nil {
@@ -1204,6 +1254,37 @@ func (c *Core) finish(op *registry.Operation, r *registry.Resource, out *outcome
 	if out != nil && r != nil {
 		c.events(r, out.events)
 	}
+}
+
+// lessOf is what a resource holds once its plugin said it holds less: the
+// smaller amount per dimension — a report never grows a holding, which only
+// admission does. Nil when nothing went down.
+func lessOf(held map[string]int64, now map[string]int64) map[string]int64 {
+	out := map[string]int64{}
+	less := false
+	for d, n := range held {
+		if m := now[d]; m < n {
+			n, less = max(m, 0), true
+		}
+		if n > 0 {
+			out[d] = n
+		}
+	}
+	if !less {
+		return nil
+	}
+	return out
+}
+
+// usabilityOf is a plugin's say on a resource as the registry keeps it:
+// absent = usable; still being made, in the word "pending" when it gives
+// none.
+func usabilityOf(u *pluginpb.Usability) *registry.Usability {
+	out := &registry.Usability{Unusable: u.GetUnusable(), Pending: u.GetPending()}
+	if out.Pending && out.Unusable == "" {
+		out.Unusable = "pending"
+	}
+	return out
 }
 
 // events writes a plugin's events to the audit.
@@ -1270,6 +1351,9 @@ func (c *Core) references(ctx context.Context, owner string, groups []string, zo
 				bad = append(bad, plugins.Violation{Field: field, Reason: fmt.Sprintf("%s is in zone %s, not %s", id, r.Zone, zone)})
 			case r.State != registry.Ready:
 				bad = append(bad, plugins.Violation{Field: field, Reason: fmt.Sprintf("%s is %s", id, r.State)})
+			case r.Unusable != "":
+				// its plugin's say: still being made, failed, retired
+				bad = append(bad, plugins.Violation{Field: field, Reason: fmt.Sprintf("%s is %s", id, r.Unusable)})
 			default:
 				out = append(out, [2]string{ref.Field, id})
 			}
@@ -1504,6 +1588,12 @@ func (c *Core) reconcileLocked(ctx context.Context, r *registry.Resource) (strin
 	verdict := strings.TrimPrefix(strings.ToLower(resp.GetDrift().String()), "drift_")
 	c.metrics.Inc("hangar_reconcile_total", r.Type, verdict)
 	change := registry.Change{IfState: r.State, Observed: resp.GetObserved()}
+	if d := resp.GetDrift(); d == pluginpb.Drift_DRIFT_IN_SYNC || d == pluginpb.Drift_DRIFT_REPAIRED || d == pluginpb.Drift_DRIFT_DRIFTED {
+		change.Usability = usabilityOf(resp.GetUsability())
+		if u := resp.GetUsage(); u != nil {
+			change.Usage = lessOf(r.Usage, u.GetAmounts())
+		}
+	}
 	if len(resp.GetSpec()) > 0 {
 		// the plugin moved what the resource is meant to be (a machine a
 		// hold stopped for good), with the room it now takes

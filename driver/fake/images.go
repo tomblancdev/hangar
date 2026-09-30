@@ -14,7 +14,8 @@ import (
 
 // A fake bake takes two calls: the first starts its builder (pending), the
 // next finishes it — available, or failed when its user data carries the
-// words FailBake. Held, a builder is let go and the bake waits.
+// words FailBake or the file says builders_fail. Held, a builder is let go
+// and the bake waits.
 //
 // Zone option image_kinds: the kinds it makes images for (comma-separated;
 // default: the kinds the zone runs).
@@ -74,7 +75,7 @@ func (e *Engine) Bake(_ context.Context, s driver.BakeSpec, held bool) (driver.I
 		im.Builder, im.State = false, driver.ImageWaiting
 	case !im.Builder:
 		im.Builder, im.State = true, driver.ImagePending
-	case strings.Contains(string(s.UserData), FailBake):
+	case strings.Contains(string(s.UserData), FailBake) || e.state.BuildersFail:
 		delete(e.state.Images, s.ID) // the builder is gone; its words stay with the plugin
 		failed := im.Image
 		failed.State, failed.Detail = driver.ImageFailed, "the builder's first boot reported errors: "+FailBake

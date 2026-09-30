@@ -107,5 +107,20 @@ plugins:
             package_upgrade: true
             packages: [qemu-guest-agent]
 
+# Requests the brain makes by itself, on a clock (ARCHITECTURE.md §3): the
+# recipe baked again every Sunday, in the operators' name and within their
+# tier, shared with everyone. A machine asks for image_id "@debian-13" and is
+# born from the newest usable one; once two newer are usable, an older one is
+# retired, then deleted when no machine is born from it any more. A recipe no
+# schedule names is baked only when someone asks.
+schedules:
+  - name: debian-13
+    cron: "0 3 * * sun"        # minute hour day-of-month month day-of-week
+    time_zone: UTC
+    as: {subject: recipes, groups: [example-operators]}   # whose name, whose tier
+    create: {type: image, zone: playground, spec: {recipe: debian-13, shared_with: ["*"]}}
+    keep: 2                    # the newest usable ones, as they are
+    retire: retire             # what an older one is given first
+
 reconcile:
   every: 30s

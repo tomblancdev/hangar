@@ -253,6 +253,23 @@ message CreateRequest {
 message CreateResponse {
   bytes observed = 1;
   repeated Event events = 2;
+  // Whether a new request may name it yet; absent = it may.
+  Usability usability = 3;
+}
+
+// Usability says whether a new request may name a resource — a machine
+// born from an image — and, when not, why (AWS: an image is pending, then
+// available; failed, or deregistered, after). Absent = it may: most
+// resources are usable once made. The plugin says it with every Create, Act
+// and Reconcile; the core refuses a reference to one that is not, in these
+// words, and a schedule counts only usable ones among those it keeps.
+message Usability {
+  // Why not, in one word the doors show ("pending", "failed", "retired");
+  // empty = it may be named.
+  string unusable = 1;
+  // Not yet: the engine is still making it, and it may become usable by
+  // itself. A schedule never lets go of one that is.
+  bool pending = 2;
 }
 
 message DeleteRequest {
@@ -279,6 +296,8 @@ message ActResponse {
   // What the action answers the person, if anything (JSON).
   bytes result = 3;
   repeated Event events = 4;
+  // Whether a new request may name it after the action; absent = it may.
+  Usability usability = 5;
 }
 
 enum Drift {
@@ -307,6 +326,19 @@ message ReconcileResponse {
   // unchanged.
   bytes spec = 5;
   Room room = 6;
+  // Whether a new request may name it now; absent = it may. Read with the
+  // verdicts in sync, repaired and drifted.
+  Usability usability = 7;
+  // What it holds now, when that went down on its own — a bake that failed
+  // holds nothing, as a create that did not happen. Absent = unchanged. The
+  // core keeps the smaller amount, dimension by dimension: growth is
+  // admitted, never reported.
+  Usage usage = 8;
+}
+
+// Usage is what a resource holds per QUANTITY dimension.
+message Usage {
+  map<string, int64> amounts = 1;
 }
 
 message SurveyRequest {

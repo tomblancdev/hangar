@@ -17,7 +17,7 @@ ids (`m-0123456789abcdef0`), types, images, user data, tags, client tokens,
 on-demand and spot — for a home lab, a club, a small office. It is not a
 hypervisor (it drives yours) and not an EC2 clone.
 
-> **Status: the images.** The core is built and proved end to end —
+> **Status: the schedules.** The core is built and proved end to end —
 > identity, tiers and limits, the registry, operations, reconcile, the audit,
 > the plugin host, the API. **The machines plugin and the Proxmox VE driver
 > are built**, proved on a throwaway Proxmox VE the repo installs itself
@@ -30,7 +30,10 @@ hypervisor (it drives yours) and not an EC2 clone.
 > into a machine, moved to another, parked on none, grown — their data kept
 > throughout, and neither end deleted while one is in the other. **And
 > images**: baked from a recipe, or saved from your stopped machine, shared
-> with your group or everyone — a machine born from one usable at once. The
+> with your group or everyone — a machine born from one usable at once —
+> **and baked again by themselves**: a recipe on the brain's own clock, a
+> machine asking for `@debian-13` born from the newest, the older ones
+> retired and deleted once nothing is born from them. The
 > command line and the console come next. No release is cut yet. [ARCHITECTURE.md](ARCHITECTURE.md) says what is built
 > and what is designed, section by section.
 
@@ -84,8 +87,11 @@ tier a person's groups reach is theirs; a dimension a tier does not name is
 allowed nothing), **zones** (a driver and how to reach it), **plugins** (built
 in, or a program at a path pinned by its SHA-256; enabled per zone; one
 credential per zone read from a file or an environment variable, never
-written in the file). `hangar check` starts every plugin and refuses a limit
-that names no declared dimension before anything serves.
+written in the file), **schedules** (a create on a cron line, in the name of
+a subject and groups, keeping the newest few). `hangar check` starts every
+plugin, refuses a limit that names no declared dimension and a schedule its
+plugins cannot answer, and prints each schedule's next run — before anything
+serves.
 
 The brain speaks plain HTTP: put it behind your gateway, and never on the
 internet directly — it holds the plugins' credentials.
