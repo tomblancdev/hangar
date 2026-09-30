@@ -132,6 +132,7 @@ const (
 	KindBusy        = "busy"
 	KindConflict    = "conflict"
 	KindAttached    = "attached"
+	KindShared      = "shared"
 	KindEngine      = "engine"
 	KindDown        = "plugin-down"
 	KindInternal    = "internal"
@@ -193,6 +194,41 @@ func (c *Core) needWrite(ctx context.Context, who *Caller) *Problem {
 // visible: a person sees their own; an operator sees everyone's.
 func visible(who *Caller, owner string) bool { return who.Tier.Operator || owner == who.Subject }
 
+// sharedWith: a resource its owner opened to everyone, or to one of these
+// groups.
+func sharedWith(r *registry.Resource, groups []string) bool {
+	for _, g := range r.SharedWith {
+		if g == "*" || slices.Contains(groups, g) {
+			return true
+		}
+	}
+	return false
+}
+
+// shareProblem refuses a share with a group the caller is not in: a person
+// opens what is theirs to the groups they belong to, or to everyone (which a
+// tier allows or not, by the plugin's own choice dimension); an operator, to
+// any group.
+func shareProblem(who *Caller, groups []string) *Problem {
+	if who.Tier.Operator {
+		return nil
+	}
+	var not []string
+	for _, g := range groups {
+		if g != "*" && !slices.Contains(who.Groups, g) {
+			not = append(not, g)
+		}
+	}
+	if len(not) == 0 {
+		return nil
+	}
+	in := strings.Join(who.Groups, ", ")
+	if in == "" {
+		in = "none"
+	}
+	return problem(403, KindShared, "you share only with groups you are in (%s), or with everyone (*): not %s", in, strings.Join(not, ", "))
+}
+
 // ---- Create -------------------------------------------------------------
 
 // CreateInput is a create request.
@@ -236,7 +272,7 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 		return nil, nil, false, c.refused(ctx, p)
 	}
 
-	rels, p := c.references(ctx, who.Subject, in.Zone, t.Refs, in.Spec)
+	rels, p := c.references(ctx, who.Subject, who.Groups, in.Zone, t.Refs, in.Spec)
 	if p != nil {
 		return nil, nil, false, c.refused(ctx, p)
 	}
@@ -246,6 +282,10 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 	}
 	plan, p := c.plan(ctx, t, &pluginpb.PlanRequest{Type: t.Name, Zone: in.Zone, Spec: in.Spec, Refs: refs})
 	if p != nil {
+		return nil, nil, false, c.refused(ctx, p)
+	}
+	shares := t.SharedWith(plan.GetSpec())
+	if p := shareProblem(who, shares); p != nil {
 		return nil, nil, false, c.refused(ctx, p)
 	}
 
@@ -294,6 +334,9 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 			return err
 		}
 		if err := tx.InsertResource(r); err != nil {
+			return err
+		}
+		if err := tx.SetShares(r.ID, shares); err != nil {
 			return err
 		}
 		for _, rel := range rels {
@@ -459,15 +502,20 @@ func requestHash(parts ...any) string {
 
 // ---- Delete and actions -------------------------------------------------
 
-// resourceFor finds a resource the caller may see and act on.
-func (c *Core) resourceFor(ctx context.Context, who *Caller, id string) (*registry.Resource, *plugins.Type, *Problem) {
+// resourceFor finds a resource the caller may see — and, for a change, act
+// on: a resource shared with them is theirs to read and to name, not to
+// change.
+func (c *Core) resourceFor(ctx context.Context, who *Caller, id string, change bool) (*registry.Resource, *plugins.Type, *Problem) {
 	audit.From(ctx).Set(func(e *audit.Event) { e.Resource = id })
 	r, err := c.store.Resource(ctx, id)
-	if errors.Is(err, registry.ErrNotFound) || (err == nil && !visible(who, r.Owner)) {
+	if errors.Is(err, registry.ErrNotFound) || (err == nil && !visible(who, r.Owner) && !sharedWith(r, who.Groups)) {
 		return nil, nil, c.refused(ctx, problem(404, KindNotFound, "no resource %s", id))
 	}
 	if err != nil {
 		return nil, nil, problem(500, KindInternal, "%v", err)
+	}
+	if change && !visible(who, r.Owner) {
+		return nil, nil, c.refused(ctx, problem(403, KindShared, "%s is %s's, shared with you to see and use: only its owner changes it", r.ID, r.Owner))
 	}
 	audit.From(ctx).Set(func(e *audit.Event) { e.Type, e.Zone = r.Type, r.Zone })
 	t := c.host.Type(r.Type)
@@ -493,7 +541,7 @@ func (c *Core) Delete(ctx context.Context, who *Caller, id, clientToken string) 
 	if p := c.needWrite(ctx, who); p != nil {
 		return nil, nil, false, p
 	}
-	r, t, p := c.resourceFor(ctx, who, id)
+	r, t, p := c.resourceFor(ctx, who, id, true)
 	if p != nil {
 		return nil, nil, false, p
 	}
@@ -553,7 +601,7 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 	if p := c.needWrite(ctx, who); p != nil {
 		return nil, nil, false, p
 	}
-	r, t, p := c.resourceFor(ctx, who, id)
+	r, t, p := c.resourceFor(ctx, who, id, true)
 	if p != nil {
 		return nil, nil, false, p
 	}
@@ -593,7 +641,14 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 		p.Violations = v
 		return nil, nil, false, c.refused(ctx, p)
 	}
-	if _, p := c.references(ctx, r.Owner, r.Zone, a.Refs, in.Params); p != nil {
+	// what the owner may name: their own, and what is shared with their
+	// groups — known when the owner asks; an operator acting for someone
+	// names that person's own
+	var groups []string
+	if who.Subject == r.Owner {
+		groups = who.Groups
+	}
+	if _, p := c.references(ctx, r.Owner, groups, r.Zone, a.Refs, in.Params); p != nil {
 		return nil, nil, false, c.refused(ctx, p)
 	}
 	change := registry.Change{State: registry.Updating, IfState: registry.Ready}
@@ -608,6 +663,11 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 			return nil, nil, false, c.refused(ctx, p)
 		}
 		change.Spec, change.Usage, change.Choices = plan.GetSpec(), plan.GetUsage(), plan.GetChoices()
+		if who.Subject == r.Owner {
+			if p := shareProblem(who, t.SharedWith(change.Spec)); p != nil {
+				return nil, nil, false, c.refused(ctx, p)
+			}
+		}
 		if change.Usage == nil {
 			change.Usage = map[string]int64{}
 		}
@@ -699,17 +759,18 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 
 // Get returns a resource the caller may see.
 func (c *Core) Get(ctx context.Context, who *Caller, id string) (*registry.Resource, error) {
-	r, _, p := c.resourceFor(ctx, who, id)
+	r, _, p := c.resourceFor(ctx, who, id, false)
 	if p != nil {
 		return nil, p
 	}
 	return r, nil
 }
 
-// List lists resources: a person's own; an operator's choice of owner, or all.
+// List lists resources: a person's own and what others shared with them; an
+// operator's choice of owner, or all.
 func (c *Core) List(ctx context.Context, who *Caller, f registry.Filter) ([]*registry.Resource, int64, error) {
 	if !who.Tier.Operator {
-		f.Owner = who.Subject
+		f.Owner, f.SharedTo = who.Subject, append([]string{}, who.Groups...)
 	}
 	return c.store.Resources(ctx, f)
 }
@@ -1179,10 +1240,12 @@ func refIDs(ref plugins.Ref, doc json.RawMessage) []string {
 }
 
 // references checks the ids a spec or an action's params name: each must be
-// a resource of the declared type, the owner's own, in the same zone, and
-// ready. One the caller may not see is refused in the same words as one
-// that does not exist. It returns the (field, id) pairs to record.
-func (c *Core) references(ctx context.Context, owner, zone string, refs []plugins.Ref, doc json.RawMessage) ([][2]string, *Problem) {
+// a resource of the declared type, in the same zone, and ready — the owner's
+// own, or (for a reference that is no attachment) one shared with the
+// owner's groups or with everyone. One the owner may not name is refused in
+// the same words as one that does not exist. It returns the (field, id)
+// pairs to record.
+func (c *Core) references(ctx context.Context, owner string, groups []string, zone string, refs []plugins.Ref, doc json.RawMessage) ([][2]string, *Problem) {
 	var out [][2]string
 	var bad []plugins.Violation
 	for _, ref := range refs {
@@ -1191,12 +1254,17 @@ func (c *Core) references(ctx context.Context, owner, zone string, refs []plugin
 			if ref.Many {
 				field += fmt.Sprintf("/%d", i)
 			}
+			if c.host.Type(ref.Type) == nil {
+				bad = append(bad, plugins.Violation{Field: field, Reason: fmt.Sprintf("no plugin here makes the type %s", ref.Type)})
+				continue
+			}
 			r, err := c.store.Resource(ctx, id)
 			if err != nil && !errors.Is(err, registry.ErrNotFound) {
 				return nil, problem(500, KindInternal, "the registry cannot read %s", id)
 			}
+			mine := r != nil && (r.Owner == owner || !ref.Attached && sharedWith(r, groups))
 			switch {
-			case r == nil || r.Owner != owner || r.Type != ref.Type || r.State == registry.Deleted:
+			case r == nil || !mine || r.Type != ref.Type || r.State == registry.Deleted:
 				bad = append(bad, plugins.Violation{Field: field, Reason: fmt.Sprintf("you have no %s %s", ref.Type, id)})
 			case r.Zone != zone:
 				bad = append(bad, plugins.Violation{Field: field, Reason: fmt.Sprintf("%s is in zone %s, not %s", id, r.Zone, zone)})
@@ -1230,8 +1298,8 @@ func specRelations(t *plugins.Type, spec json.RawMessage) [][2]string {
 	return out
 }
 
-// followSpec writes a resource's relations anew from its spec as stored:
-// what it names now, and nothing it named before.
+// followSpec writes a resource's relations and shares anew from its spec as
+// stored: what it names and whom it is open to now, nothing from before.
 func (c *Core) followSpec(tx *registry.Tx, r *registry.Resource) error {
 	t := c.host.Type(r.Type)
 	if t == nil {
@@ -1239,6 +1307,9 @@ func (c *Core) followSpec(tx *registry.Tx, r *registry.Resource) error {
 	}
 	now, err := tx.Resource(r.ID)
 	if err != nil {
+		return err
+	}
+	if err := tx.SetShares(r.ID, t.SharedWith(now.Spec)); err != nil {
 		return err
 	}
 	return tx.SetRelations(r.ID, specRelations(t, now.Spec))
@@ -1343,7 +1414,7 @@ func (c *Core) loadRefs(ctx context.Context, refs []plugins.Ref, doc json.RawMes
 
 func toProto(r *registry.Resource) *pluginpb.Resource {
 	return &pluginpb.Resource{Id: r.ID, Type: r.Type, Zone: r.Zone, Owner: r.Owner, Spec: r.Spec, Observed: r.Observed, Tags: r.Tags,
-		Hold: r.Hold}
+		Hold: r.Hold, Room: &pluginpb.Room{GuaranteedMb: r.Room.GuaranteedMB, SpotMb: r.Room.SpotMB, Running: r.Room.Running}}
 }
 
 // ---- Reconcile ----------------------------------------------------------

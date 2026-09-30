@@ -28,6 +28,7 @@ import (
 	"github.com/tomblancdev/hangar/internal/plugins"
 	"github.com/tomblancdev/hangar/internal/registry"
 	"github.com/tomblancdev/hangar/internal/testoidc"
+	"github.com/tomblancdev/hangar/plugins/images"
 	"github.com/tomblancdev/hangar/plugins/machines"
 	"github.com/tomblancdev/hangar/plugins/toy"
 	"github.com/tomblancdev/hangar/plugins/volumes"
@@ -45,6 +46,8 @@ func TestMain(m *testing.M) {
 			sdk.Serve(machines.New())
 		case "volumes":
 			sdk.Serve(volumes.New())
+		case "images":
+			sdk.Serve(images.New())
 		}
 		os.Exit(0)
 	}

@@ -873,7 +873,11 @@ type Resource struct {
 	// Create, Act and Reconcile — what that means is the plugin's (a machine
 	// borrowing all its memory stops; one with a floor shrinks to it) — and
 	// back when the hold is lifted.
-	Hold          string `protobuf:"bytes,8,opt,name=hold,proto3" json:"hold,omitempty"`
+	Hold string `protobuf:"bytes,8,opt,name=hold,proto3" json:"hold,omitempty"`
+	// What it takes from its zone's pools now, as last admitted or reported —
+	// for a plugin whose resource's room changes on its own (a bake borrows
+	// its builder's memory until the image is made, then takes none).
+	Room          *Room `protobuf:"bytes,9,opt,name=room,proto3" json:"room,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -962,6 +966,13 @@ func (x *Resource) GetHold() string {
 		return x.Hold
 	}
 	return ""
+}
+
+func (x *Resource) GetRoom() *Room {
+	if x != nil {
+		return x.Room
+	}
+	return nil
 }
 
 type PlanRequest struct {
@@ -2115,7 +2126,7 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"ZoneReport\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\"\n" +
 	"\fcapabilities\x18\x02 \x03(\tR\fcapabilities\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\x8f\x02\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\xbb\x02\n" +
 	"\bResource\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
@@ -2124,7 +2135,8 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x04spec\x18\x05 \x01(\fR\x04spec\x12\x1a\n" +
 	"\bobserved\x18\x06 \x01(\fR\bobserved\x128\n" +
 	"\x04tags\x18\a \x03(\v2$.hangar.plugin.v1.Resource.TagsEntryR\x04tags\x12\x12\n" +
-	"\x04hold\x18\b \x01(\tR\x04hold\x1a7\n" +
+	"\x04hold\x18\b \x01(\tR\x04hold\x12*\n" +
+	"\x04room\x18\t \x01(\v2\x16.hangar.plugin.v1.RoomR\x04room\x1a7\n" +
 	"\tTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdf\x01\n" +
@@ -2297,49 +2309,50 @@ var file_hangar_plugin_v1_plugin_proto_depIdxs = []int32{
 	30, // 6: hangar.plugin.v1.ZoneConfig.options:type_name -> hangar.plugin.v1.ZoneConfig.OptionsEntry
 	11, // 7: hangar.plugin.v1.ConfigureResponse.zones:type_name -> hangar.plugin.v1.ZoneReport
 	31, // 8: hangar.plugin.v1.Resource.tags:type_name -> hangar.plugin.v1.Resource.TagsEntry
-	12, // 9: hangar.plugin.v1.PlanRequest.current:type_name -> hangar.plugin.v1.Resource
-	12, // 10: hangar.plugin.v1.PlanRequest.refs:type_name -> hangar.plugin.v1.Resource
-	32, // 11: hangar.plugin.v1.PlanResponse.usage:type_name -> hangar.plugin.v1.PlanResponse.UsageEntry
-	33, // 12: hangar.plugin.v1.PlanResponse.choices:type_name -> hangar.plugin.v1.PlanResponse.ChoicesEntry
-	16, // 13: hangar.plugin.v1.PlanResponse.refusals:type_name -> hangar.plugin.v1.Refusal
-	15, // 14: hangar.plugin.v1.PlanResponse.room:type_name -> hangar.plugin.v1.Room
-	12, // 15: hangar.plugin.v1.CreateRequest.resource:type_name -> hangar.plugin.v1.Resource
-	12, // 16: hangar.plugin.v1.CreateRequest.refs:type_name -> hangar.plugin.v1.Resource
-	29, // 17: hangar.plugin.v1.CreateResponse.events:type_name -> hangar.plugin.v1.Event
-	12, // 18: hangar.plugin.v1.DeleteRequest.resource:type_name -> hangar.plugin.v1.Resource
-	29, // 19: hangar.plugin.v1.DeleteResponse.events:type_name -> hangar.plugin.v1.Event
-	12, // 20: hangar.plugin.v1.ActRequest.resource:type_name -> hangar.plugin.v1.Resource
-	12, // 21: hangar.plugin.v1.ActRequest.refs:type_name -> hangar.plugin.v1.Resource
-	29, // 22: hangar.plugin.v1.ActResponse.events:type_name -> hangar.plugin.v1.Event
-	12, // 23: hangar.plugin.v1.ReconcileRequest.resource:type_name -> hangar.plugin.v1.Resource
-	1,  // 24: hangar.plugin.v1.ReconcileResponse.drift:type_name -> hangar.plugin.v1.Drift
-	29, // 25: hangar.plugin.v1.ReconcileResponse.events:type_name -> hangar.plugin.v1.Event
-	15, // 26: hangar.plugin.v1.ReconcileResponse.room:type_name -> hangar.plugin.v1.Room
-	26, // 27: hangar.plugin.v1.SurveyRequest.conditions:type_name -> hangar.plugin.v1.Condition
-	28, // 28: hangar.plugin.v1.SurveyResponse.conditions:type_name -> hangar.plugin.v1.ConditionState
-	34, // 29: hangar.plugin.v1.SurveyResponse.holds:type_name -> hangar.plugin.v1.SurveyResponse.HoldsEntry
-	35, // 30: hangar.plugin.v1.Event.fields:type_name -> hangar.plugin.v1.Event.FieldsEntry
-	2,  // 31: hangar.plugin.v1.PluginService.Describe:input_type -> hangar.plugin.v1.DescribeRequest
-	8,  // 32: hangar.plugin.v1.PluginService.Configure:input_type -> hangar.plugin.v1.ConfigureRequest
-	13, // 33: hangar.plugin.v1.PluginService.Plan:input_type -> hangar.plugin.v1.PlanRequest
-	17, // 34: hangar.plugin.v1.PluginService.Create:input_type -> hangar.plugin.v1.CreateRequest
-	19, // 35: hangar.plugin.v1.PluginService.Delete:input_type -> hangar.plugin.v1.DeleteRequest
-	21, // 36: hangar.plugin.v1.PluginService.Act:input_type -> hangar.plugin.v1.ActRequest
-	23, // 37: hangar.plugin.v1.PluginService.Reconcile:input_type -> hangar.plugin.v1.ReconcileRequest
-	25, // 38: hangar.plugin.v1.PluginService.Survey:input_type -> hangar.plugin.v1.SurveyRequest
-	3,  // 39: hangar.plugin.v1.PluginService.Describe:output_type -> hangar.plugin.v1.DescribeResponse
-	10, // 40: hangar.plugin.v1.PluginService.Configure:output_type -> hangar.plugin.v1.ConfigureResponse
-	14, // 41: hangar.plugin.v1.PluginService.Plan:output_type -> hangar.plugin.v1.PlanResponse
-	18, // 42: hangar.plugin.v1.PluginService.Create:output_type -> hangar.plugin.v1.CreateResponse
-	20, // 43: hangar.plugin.v1.PluginService.Delete:output_type -> hangar.plugin.v1.DeleteResponse
-	22, // 44: hangar.plugin.v1.PluginService.Act:output_type -> hangar.plugin.v1.ActResponse
-	24, // 45: hangar.plugin.v1.PluginService.Reconcile:output_type -> hangar.plugin.v1.ReconcileResponse
-	27, // 46: hangar.plugin.v1.PluginService.Survey:output_type -> hangar.plugin.v1.SurveyResponse
-	39, // [39:47] is the sub-list for method output_type
-	31, // [31:39] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	15, // 9: hangar.plugin.v1.Resource.room:type_name -> hangar.plugin.v1.Room
+	12, // 10: hangar.plugin.v1.PlanRequest.current:type_name -> hangar.plugin.v1.Resource
+	12, // 11: hangar.plugin.v1.PlanRequest.refs:type_name -> hangar.plugin.v1.Resource
+	32, // 12: hangar.plugin.v1.PlanResponse.usage:type_name -> hangar.plugin.v1.PlanResponse.UsageEntry
+	33, // 13: hangar.plugin.v1.PlanResponse.choices:type_name -> hangar.plugin.v1.PlanResponse.ChoicesEntry
+	16, // 14: hangar.plugin.v1.PlanResponse.refusals:type_name -> hangar.plugin.v1.Refusal
+	15, // 15: hangar.plugin.v1.PlanResponse.room:type_name -> hangar.plugin.v1.Room
+	12, // 16: hangar.plugin.v1.CreateRequest.resource:type_name -> hangar.plugin.v1.Resource
+	12, // 17: hangar.plugin.v1.CreateRequest.refs:type_name -> hangar.plugin.v1.Resource
+	29, // 18: hangar.plugin.v1.CreateResponse.events:type_name -> hangar.plugin.v1.Event
+	12, // 19: hangar.plugin.v1.DeleteRequest.resource:type_name -> hangar.plugin.v1.Resource
+	29, // 20: hangar.plugin.v1.DeleteResponse.events:type_name -> hangar.plugin.v1.Event
+	12, // 21: hangar.plugin.v1.ActRequest.resource:type_name -> hangar.plugin.v1.Resource
+	12, // 22: hangar.plugin.v1.ActRequest.refs:type_name -> hangar.plugin.v1.Resource
+	29, // 23: hangar.plugin.v1.ActResponse.events:type_name -> hangar.plugin.v1.Event
+	12, // 24: hangar.plugin.v1.ReconcileRequest.resource:type_name -> hangar.plugin.v1.Resource
+	1,  // 25: hangar.plugin.v1.ReconcileResponse.drift:type_name -> hangar.plugin.v1.Drift
+	29, // 26: hangar.plugin.v1.ReconcileResponse.events:type_name -> hangar.plugin.v1.Event
+	15, // 27: hangar.plugin.v1.ReconcileResponse.room:type_name -> hangar.plugin.v1.Room
+	26, // 28: hangar.plugin.v1.SurveyRequest.conditions:type_name -> hangar.plugin.v1.Condition
+	28, // 29: hangar.plugin.v1.SurveyResponse.conditions:type_name -> hangar.plugin.v1.ConditionState
+	34, // 30: hangar.plugin.v1.SurveyResponse.holds:type_name -> hangar.plugin.v1.SurveyResponse.HoldsEntry
+	35, // 31: hangar.plugin.v1.Event.fields:type_name -> hangar.plugin.v1.Event.FieldsEntry
+	2,  // 32: hangar.plugin.v1.PluginService.Describe:input_type -> hangar.plugin.v1.DescribeRequest
+	8,  // 33: hangar.plugin.v1.PluginService.Configure:input_type -> hangar.plugin.v1.ConfigureRequest
+	13, // 34: hangar.plugin.v1.PluginService.Plan:input_type -> hangar.plugin.v1.PlanRequest
+	17, // 35: hangar.plugin.v1.PluginService.Create:input_type -> hangar.plugin.v1.CreateRequest
+	19, // 36: hangar.plugin.v1.PluginService.Delete:input_type -> hangar.plugin.v1.DeleteRequest
+	21, // 37: hangar.plugin.v1.PluginService.Act:input_type -> hangar.plugin.v1.ActRequest
+	23, // 38: hangar.plugin.v1.PluginService.Reconcile:input_type -> hangar.plugin.v1.ReconcileRequest
+	25, // 39: hangar.plugin.v1.PluginService.Survey:input_type -> hangar.plugin.v1.SurveyRequest
+	3,  // 40: hangar.plugin.v1.PluginService.Describe:output_type -> hangar.plugin.v1.DescribeResponse
+	10, // 41: hangar.plugin.v1.PluginService.Configure:output_type -> hangar.plugin.v1.ConfigureResponse
+	14, // 42: hangar.plugin.v1.PluginService.Plan:output_type -> hangar.plugin.v1.PlanResponse
+	18, // 43: hangar.plugin.v1.PluginService.Create:output_type -> hangar.plugin.v1.CreateResponse
+	20, // 44: hangar.plugin.v1.PluginService.Delete:output_type -> hangar.plugin.v1.DeleteResponse
+	22, // 45: hangar.plugin.v1.PluginService.Act:output_type -> hangar.plugin.v1.ActResponse
+	24, // 46: hangar.plugin.v1.PluginService.Reconcile:output_type -> hangar.plugin.v1.ReconcileResponse
+	27, // 47: hangar.plugin.v1.PluginService.Survey:output_type -> hangar.plugin.v1.SurveyResponse
+	40, // [40:48] is the sub-list for method output_type
+	32, // [32:40] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_hangar_plugin_v1_plugin_proto_init() }

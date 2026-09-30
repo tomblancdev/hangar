@@ -220,7 +220,7 @@ paths:
   /v1/resources:
     get:
       tags: [resources]
-      summary: List resources — yours; an operator's pick of owner, or everyone's.
+      summary: List resources — yours and what others shared with your groups (or everyone); an operator's pick of owner, or everyone's.
       parameters:
         - { name: type, in: query, schema: { type: string } }
         - { name: zone, in: query, schema: { type: string } }
@@ -240,7 +240,7 @@ paths:
           explode: true
         - name: owner
           in: query
-          description: Operators only; others always list their own.
+          description: Operators only; others always list their own, and what is shared with them.
           schema: { type: string }
         - name: after
           in: query
@@ -576,6 +576,15 @@ components:
         choices: { type: object, additionalProperties: { type: string } }
         usage: { type: object, additionalProperties: { type: integer } }
         tags: { type: object, additionalProperties: { type: string } }
+        shared_with:
+          type: array
+          items: { type: string }
+          description: |
+            The groups its owner opened it to (`*` = everyone), as its spec's
+            field marked `x-hangar-share` says; absent = its owner's alone.
+            Someone in one of them sees it and names it in their own
+            requests; only its owner (or an operator) changes or deletes it
+            (403 `shared`).
         drift: { type: string, description: What reconcile found when not in sync. }
         room:
           type: object
@@ -700,7 +709,7 @@ components:
         detail: { type: string, examples: ["2 of 2 toy.boxes used; this asks for 1 more"] }
         kind:
           type: string
-          enum: [sign-in, no-tier, scope, not-found, bad-request, zone, unavailable-here, schema, plugin-refused, limit, room, busy, conflict, attached, engine, plugin-down, internal]
+          enum: [sign-in, no-tier, scope, not-found, bad-request, zone, unavailable-here, schema, plugin-refused, limit, room, busy, conflict, attached, shared, engine, plugin-down, internal]
         violations:
           type: array
           description: For `schema` and `plugin-refused` — each field that does not fit.

@@ -54,6 +54,10 @@ tiers:
       volumes.count: 2
       volumes.size_gb: 20
       volumes.backup_gb: 5     # backups are a size: a tier that names none backs up nothing
+      images.count: 2          # images of their own
+      images.size_gb: 40
+      images.source: [machine] # they save their stopped machines; baking a recipe stays the operators'
+      images.visibility: [private, shared]   # shared with groups they are in; never with everyone
 
 zones:
   - name: playground
@@ -87,6 +91,21 @@ plugins:
   - name: volumes              # disks of their own: attach, detach, move, grow
     builtin: volumes
     zones: [playground]
+  - name: images               # system disks machines are born from (a machine's image_id)
+    builtin: images
+    zones: [playground]
+    settings:
+      recipes:                 # what an operator bakes: a base on the engine + a first boot
+        debian-13:
+          base: {vm: "local:import/debian-13-genericcloud-amd64.qcow2"}   # the engine's own name, per kind
+          disk_gb: 4
+          memory_mb: 2048      # its builder's, borrowed from the zone's spot room while it bakes
+          timeout: 30m
+          user_data: |         # no secret here: whoever sees an image sees its recipe
+            #cloud-config
+            package_update: true
+            package_upgrade: true
+            packages: [qemu-guest-agent]
 
 reconcile:
   every: 30s

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -37,7 +39,7 @@ func TestMigrationsRunOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if v, _ := s.Version(context.Background()); v != 2 {
+		if v, _ := s.Version(context.Background()); v != 3 {
 			t.Fatalf("schema version %d", v)
 		}
 		_ = s.Close()
@@ -98,6 +100,57 @@ func TestListingFiltersAndPages(t *testing.T) {
 	rs, _, _ = s.Resources(ctx, Filter{States: []string{Deleted}})
 	if len(rs) != 0 {
 		t.Fatal("no deleted resource was made")
+	}
+}
+
+// A listing of one's own and of what others shared: with one of one's
+// groups, or with everyone — never what was shared with a group one is not
+// in, nor what someone stopped sharing.
+func TestSharesWidenAListingToWhatOthersOpened(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	put(t, s, "box-0000000000000000a", "alice", Ready, nil, nil)
+	put(t, s, "box-0000000000000000b", "bob", Ready, nil, nil)
+	put(t, s, "box-0000000000000000c", "bob", Ready, nil, nil)
+	put(t, s, "box-0000000000000000d", "bob", Ready, nil, nil)
+	put(t, s, "box-0000000000000000e", "bob", Ready, nil, nil)
+	share := func(id string, groups ...string) {
+		t.Helper()
+		if err := s.Tx(ctx, func(tx *Tx) error { return tx.SetShares(id, groups) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	share("box-0000000000000000b", "*")
+	share("box-0000000000000000c", "family")
+	share("box-0000000000000000d", "friends")
+	share("box-0000000000000000e", "family")
+	share("box-0000000000000000e") // no longer
+	ids := func(f Filter) []string {
+		t.Helper()
+		rs, _, err := s.Resources(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.ID+":"+strings.Join(r.SharedWith, ","))
+		}
+		return out
+	}
+	got := ids(Filter{Owner: "alice", SharedTo: []string{"family"}})
+	want := []string{"box-0000000000000000a:", "box-0000000000000000b:*", "box-0000000000000000c:family"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("alice in family sees %v, want %v", got, want)
+	}
+	if got := ids(Filter{Owner: "alice", SharedTo: []string{}}); len(got) != 2 {
+		t.Fatalf("alice in no group sees her own and what is everyone's: %v", got)
+	}
+	if got := ids(Filter{Owner: "alice"}); len(got) != 1 {
+		t.Fatalf("without SharedTo, her own alone: %v", got)
+	}
+	r, err := s.Resource(ctx, "box-0000000000000000c")
+	if err != nil || !slices.Equal(r.SharedWith, []string{"family"}) {
+		t.Fatalf("one resource read with its shares: %v %v", r.SharedWith, err)
 	}
 }
 

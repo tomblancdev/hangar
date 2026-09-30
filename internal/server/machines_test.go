@@ -119,3 +119,26 @@ func TestAMachineAndItsKeyPairs(t *testing.T) {
 		t.Fatalf("after the resize: %v", got.body)
 	}
 }
+
+// A brain with no images plugin: a machine naming an image by id is refused
+// at the request — the machines plugin still starts, and a machine by the
+// operator's name for an image is made as ever.
+func TestAnImageIdWithoutTheImagesPlugin(t *testing.T) {
+	s := newStackWith(t, machinesConfig, "machines")
+	alice := s.token("alice", "users")
+	r := s.do("POST", "/v1/resources", alice, map[string]any{"type": "machine", "zone": "m",
+		"spec": map[string]any{"image_id": "img-00000000000000000"}})
+	if r.code != 422 || !strings.Contains(r.str("detail"), "no plugin here makes the type image") {
+		t.Fatalf("an image by id with no images plugin: %d %v", r.code, r.body)
+	}
+	if r := s.do("POST", "/v1/resources", alice, map[string]any{"type": "machine", "zone": "m", "spec": map[string]any{}}); r.code != 422 ||
+		!strings.Contains(r.str("detail"), "image (the operator's name) or image_id") {
+		t.Fatalf("a machine from nothing: %d %v", r.code, r.body)
+	}
+	if id := s.create(alice, map[string]any{"type": "machine", "zone": "m", "spec": map[string]any{"image": "debian-13"}}).str("resource", "id"); !strings.HasPrefix(id, "m-") {
+		t.Fatalf("a machine by the operator's name: %s", id)
+	}
+	if !strings.Contains(s.logs.String(), "a reference no request can use") {
+		t.Fatal("the start says which reference no request can use")
+	}
+}

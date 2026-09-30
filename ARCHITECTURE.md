@@ -22,7 +22,8 @@ where this page and they disagree, they win.
 | Idle machines put to sleep, awake hours counted against a tier, keep awake | designed (§6, power) |
 | The machines plugin (machines, key pairs); the Proxmox VE driver; references between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md)) |
 | The volumes plugin (volumes, parked on a shelf where the engine keeps no disk without a guest); attachments between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
-| The images plugin | designed (§7) |
+| The images plugin (baked from a recipe, saved from a stopped machine, shared, retired); resources shared with others | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
+| Recipes baked again on a schedule | designed (§7) |
 | The command line and the console generated from the schemas | designed (§2) |
 | Names, ports, snapshots, object storage, databases; the Incus and AWS drivers | designed (§7) |
 
@@ -191,6 +192,31 @@ lost resource binds nothing (else a machine the engine lost could never be
 let go of). The drivers keep the same rule underneath: a guest holding a
 volume refuses its delete. **(built)**
 
+**Shares.** A type whose schema marks one top-level property
+`"x-hangar-share": true` (an array of strings: group names, `"*"` =
+everyone) is one an owner may open to others. The core keeps whom each
+resource is shared with **as its spec says**, like its relations (written at
+the create, set anew as each operation ends and when reconcile moves a
+spec). Someone in one of those groups — anyone, for `*` — **sees it**
+(get, and the listing: one's own and what is shared with one's groups) and
+**names it** in their own requests — a reference that is **no attachment**
+(an attachment lives inside what it names: nobody plugs a disk into someone
+else's machine). **Only its owner (or an operator) changes or deletes it**:
+403 `shared`, « img-… is bob's, shared with you to see and use ». **A person
+shares only with groups they are in**, or with everyone — which a tier
+allows or not by the plugin's own choice dimension (the images plugin's
+`images.visibility`); an operator shares with any group. **(built)**
+
+**A plugin sees the room a resource holds** (`Resource.room`): a resource
+whose room changes on its own — a bake borrows its builder's memory until
+its image is made, then takes none — returns its spec and new room from
+reconcile, only when they differ. **(built)**
+
+**A reference to a type no enabled plugin declares** is logged at start and
+refused at the request (« no plugin here makes the type image ») — the rest of the
+type works: a machine names an image by id only where images are made, and
+by the operator's names everywhere. **(built)**
+
 **Adding a plugin = three things:** the plugin (built in, or a program of its
 own at a path, pinned by its SHA-256), one config block enabling it on zones,
 its credential per zone (from a file or an environment variable of the
@@ -241,6 +267,13 @@ size and backup flag; a block volume shows its guest the serial
 `vol0123…` (the id without its dash, AWS's form). Where the engine keeps no
 disk without a guest the driver parks one on a stopped **shelf** guest of
 its owner — the plugin never sees a shelf; `CanPark` says where it cannot.
+**The images facet** (`driver.Images`: bake, save, read, delete — idempotent
+on the core's id) makes images: a **bake** is moved forward call by call
+(its builder made and started, read, made the image or failed with its
+words, let go while the zone's room is needed and started over after), a
+**save** is one call (a stopped guest's system disk, refused with a volume
+plugged in), a **delete** is refused while guests born from the image still
+share its disk; `ImageKinds` says which kinds it makes images for.
 
 **The Proxmox VE driver is built** ([docs/proxmox.md](docs/proxmox.md)): one
 API token fenced to one pool, `fence.pool` advertised only when the token's
@@ -256,7 +289,12 @@ after each guest it moves to; a volume leaving a running VM rests on its
 shelf, where its options are written back; one leaving a running container
 is refused — [docs/proxmox.md](docs/proxmox.md#volumes)) and `fence.pool` —
 the one thing its token may do outside its pools is read the power of the
-guests the zone watches.
+guests the zone watches. It makes **images** as VM templates in the images
+pool, named after their id and tagged with nothing (a clone copies its
+template's tags: a machine born with an image's id would not be itself — read
+on the bench): a bake's builder boots the base once with the recipe, then the
+driver's own last step, and says `done` or `failed` by its host name through
+the guest agent ([docs/proxmox.md](docs/proxmox.md#images)).
 *(The Incus and AWS drivers are designed.)*
 
 ## 6. Zones, pools, classes, reservations, preemption **(built)**
@@ -357,7 +395,7 @@ zones:
   counts **awake hours** against the owner's tier (a limit per month); a
   machine can be kept awake, at that cost.
 
-## 7. Every plugin — capabilities and limits (the first two **built**)
+## 7. Every plugin — capabilities and limits (the first three **built**)
 
 ### The first three
 
@@ -370,6 +408,30 @@ a stream through the core the protocol does not carry yet). **The classes,
 hours, keep awake and `idle_after`** come with §6's power; **GPU** and
 **`peers`** later. A machine holds its size against its tier while it
 exists, running or not; against its zone, as its class says (§6).
+
+**The images plugin is built**, as its row says, but for the schedule. An
+image (`img-…`) is **baked** from a recipe of the operator's, or **saved**
+from a stopped machine of its owner's — its system disk alone, never its
+volumes (an image may be shared: no one's data goes with it). A machine is
+born from one by id (`image_id`, beside the operator's names in `image`):
+its own, or one shared with it, **available** and not retired; its disk at
+least the image's. **A bake takes minutes, so it is not one call**: the
+create answers at once (`pending`, as AWS says of an image being made) and
+the brain's reconcile carries it forward — `available`, or `failed` with the
+words of the builder's own first boot. **A builder borrows spot room while it
+works** (the recipe's `memory_mb`): it wakes a sleeping zone, is refused while
+the zone's room is held, and is let go at once when the room is needed — its
+bake **starts over by itself** once the room is back, never counted as a
+failure. **A bake that fails on its own is never retried blindly**, as the
+clouds do (AWS Batch retries a job whose host was reclaimed, never one whose
+script failed): `rebake` runs it again, from the recipe as it is then. A
+builder that keeps stopping before it finishes, unasked, fails its bake at
+the third time. **An image is private at birth**; `share` opens it (§4,
+shares); `retire` stops new machines being born from it — those born from it
+run on. **A delete is refused by the engine while machines born from it still
+share its disk** (Proxmox VE's linked clones), naming them: retire it
+meanwhile. A recipe is copied into each image it bakes — an image says what
+it was made from, and whoever sees it sees its recipe: no secret in one.
 
 **The volumes plugin is built**, as its row says. A volume's **content** is
 fixed at birth: `block` (a disk its VM formats itself) or `filesystem` (a
@@ -387,12 +449,19 @@ numbers), and its spec written at its admission.
 |---|---|---|---|---|
 | **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · console (serial / terminal) · delete · keep awake (costs awake hours) | count · vCPU · memory GB · awake hours a month · kinds allowed · classes allowed · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `hook.pre_start` or core admission |
 | **volumes** | **`vol-…`**: size, content (block / filesystem), backup yes/no, the machine it is attached to and its path there, tags | create · attach · detach · **move** (to another machine of the same owner) · resize (grow) · set_backup · delete | count · total GB · **backed-up GB** | `volume.move_between_guests`, `fence.pool`; where the engine keeps no disk without a guest, an unattached volume parks on a stopped **« shelf » guest** of its owner |
-| **images** | **`img-…`**: name, family, version, visibility (operator / private / shared with a group), the recipe it came from | list · **bake** (operator: from a recipe) · **save** (a user: from their own stopped machine) · share · retire | own images count · own images GB | a template/clone path per driver (Proxmox: `qm template` + linked or full clones; container templates) |
+| **images** | **`img-…`**: name, family, kind, size, whom it is shared with (`shared_with`: groups, `*` = everyone), retired, the recipe it came from (`from`) or the machine it was saved from; observed: `pending` → `available` \| `failed` (its words), `waiting` while the zone's room is held, its engine form per kind | **bake** (create from a `recipe`) · **save** (create from a stopped `machine`) · share · retire · rebake · delete | `images.count` · `images.size_gb` (one's own) · choices `images.source` (recipe, machine) and `images.visibility` (private, shared, public) | the images facet (`driver.Images`): a bake moved forward call by call, a save, a delete refused under linked clones — Proxmox VE: VM templates in the images pool, a builder VM per bake |
 
-**Recipes** (for `bake`): a base cloud image + cloud-init or a provisioning
-script the operator provides — the product ships generic ones; an operator
-adds their own (their agent, their monitoring). Rebuilt on a schedule the
-operator sets.
+**Recipes** (for `bake`), in the plugin's settings: a base on the engine per
+kind (Proxmox VE: a disk image on an import storage, or a template's name —
+an image of the product's included, so recipes layer), a disk size, the
+builder's cores, memory and time to finish, and its first boot — a
+`#cloud-config` or a `#!` script — to which the driver adds its own last step
+(the disk made ready to be cloned). An operator writes their own (their
+agent, their monitoring). **Designed: rebuilt on a schedule the operator
+sets, per recipe** — some baked again by themselves (a new version shared as
+the last, the older ones beyond a count retired: AWS Image Builder's
+pipeline and lifecycle policy), others never unless asked; the brain asks in
+the name of the operator the schedule names, within their tier.
 
 ### The next ones (each its own design, then its own release)
 
@@ -432,6 +501,10 @@ directly, and each credential must stay fenced.
 | API tokens made on the brain's host by `hangar token create` | a first operator can start without an identity provider, and a lost provider is not a lost brain |
 | A resource attached to another stops the delete of either (409 `attached`), rather than going with it or being parked by the core | nothing is lost by surprise: on the engine the volume is inside the machine, and a delete would take its data |
 | Backups counted as a size per tier (`volumes.backup_gb`), not a yes or no | the backup store is finite: one person allowed backups could fill it |
+| A bake answers at once (`pending`) and reconcile carries it forward, rather than one long call | a long operation holds its resource: a zone's claim for a priority guest would wait behind it |
+| An interrupted bake starts over by itself; one that failed on its own waits for `rebake` | an interruption says nothing of the recipe; a failure would fail again the same way (the clouds' rule for spot interruptions) |
+| An image carries its owner's system disk only; a machine with a volume plugged in is not saved | an image may be shared: no one's data may go with it |
+| A person shares only with groups they are in, or with everyone as their tier allows | a share is a publication: nobody reaches people they do not belong with |
 
 **Set aside:** an EC2 API clone (nothing maintained speaks it for the engines
 this targets — OpenStack's EC2 layer, CloudStack's `ec2stack`, Eucalyptus and

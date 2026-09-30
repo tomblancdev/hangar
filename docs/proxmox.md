@@ -21,6 +21,7 @@ there.
 | a bridge or an SDN vnet for the guests, and a VMID range nobody else uses | the zone's `bridge`, `vlan` and `vmids` options |
 | a user and its **privilege-separated API token** | the plugin's one credential, `user@realm!name=secret` |
 | for the volumes plugin: **its own** user and token, narrower (below), and the zone's `shelf_archive` — a container archive | its credential; a container's volume parked on no machine rests on a stopped container made from that archive — see [Volumes](#volumes) |
+| for the images plugin: **its own** user and token (below), and the base disk images its recipes start from on an `import` storage (Debian's `genericcloud` qcow2, say) | its credential; a bake imports the base into its builder — see [Images](#images) |
 | **the hook** (`hangar-hook`, a build of this repo) on a storage with content `snippets`, set as root on each VM template of the images pool and on each guest a zone keeps room for | the node's hand: it makes room when a priority guest starts, and admits every start of a machine — see [The hook](#the-hook) |
 
 ## The least the token needs
@@ -43,6 +44,19 @@ it makes, in the same pool; nothing of a guest's power, network or seed:
 | `/pool/<machines pool>` | `VM.Allocate`, `VM.Audit`, `VM.Config.Disk`, `VM.Config.Options`, `Datastore.AllocateSpace`, `Datastore.Audit`, `Pool.Audit` | a volume's disk on a machine of the pool (`Config.Disk`, on both guests of a move — `target-vmid` asks it of each), the description line that says which disk is which volume (`Config.Options`), the shelves (`Allocate`) |
 | `/storage/<disks>` | `Datastore.AllocateSpace`, `Datastore.Audit` | the volumes themselves |
 | `/storage/<where the archives are>` | `Datastore.Audit` | a container shelf is made from the zone's `shelf_archive` |
+
+**The images plugin's token** — its own: templates and the builders that
+bake them in the images pool; in the machines' pool, what a save and a
+refused delete read, nothing of their power or config:
+
+| path | privileges | why |
+|---|---|---|
+| `/pool/<images pool>` | `VM.Allocate`, `VM.Audit`, `VM.Clone`, `VM.Config.CDROM`, `VM.Config.CPU`, `VM.Config.Disk`, `VM.Config.HWType`, `VM.Config.Memory`, `VM.Config.Network`, `VM.Config.Options`, `VM.PowerMgmt`, `VM.GuestAgent.Audit`, **`VM.GuestAgent.FileRead`**, `Datastore.AllocateSpace`, `Datastore.Audit`, `Pool.Audit` | a builder made (from a disk image, or a template copied whole), started, shut down, made a template (`VM.Allocate`: `POST …/template`); its host name read through the guest agent (`Audit`) — how its last step says done or failed — and one file, its first boot's log, when it failed (`FileRead`, a privilege of its own since Proxmox VE 9; nothing is ever written or run through the agent) |
+| `/pool/<machines pool>` | `VM.Audit`, `VM.Clone`, `Pool.Audit` | a save: a stopped machine read (its volumes: none may go with it) and cloned whole into the images pool (`VM.Clone` on the source, `VM.Allocate` on the target pool); a refused delete names the machines whose disk is a linked clone of the image's |
+| `/storage/<disks>` | `Datastore.AllocateSpace`, `Datastore.Audit` | the builders' and templates' disks |
+| `/storage/<where the base disk images are>` | `Datastore.Audit` | `import-from` a disk image of content `import` asks `Datastore.AllocateSpace` **or** `Datastore.Audit` on its storage (`PVE::Storage::check_volume_access`) — read, not written |
+| `/storage/<seed storage>` | `Datastore.Allocate`, `Datastore.AllocateTemplate`, `Datastore.Audit` | the builder's first boot arrives on a seed disc, as a VM's does |
+| `/sdn/zones/<zone>/<vnet>` (with SDN) | `SDN.Use` | a builder's first boot fetches its packages |
 
 A shelf container is made **without a host name**: pve-container counts
 `hostname` as network (`VM.Config.Network`, read live and in
@@ -162,6 +176,76 @@ and **renamed when it moves** to another (`target-vmid`, qemu-server's
 - The two plugins pick guest ids from one range, each in its own process: a
   create that finds its id taken (*already exists*) takes the next.
 
+## Images
+
+An image is a **VM template in the images pool, named after its id** — a
+machine born from it is a clone of it, linked beside it on the same storage
+(or full, with `full_clone`), as it is of any template there. **It carries
+no tag**: a clone copies its template's tags, and a machine born with an
+image's `hangar-id` would not be found as itself (hit on the bench, the first
+run). What it is lives in its description: its marker, and for a baked one
+the bake's lines.
+
+**A bake** is a builder, a VM made in the images pool from the recipe's base
+— a disk image imported from an `import` storage (`import-from`), or a
+template of the pool copied whole (an image of the product's included: a
+recipe layers on another's result) — sized as the recipe says, tagged
+`hangar-id` and `class.spot` while it works (a node making room for a
+priority guest without the brain stops it, as a spot machine), its first
+boot on a seed disc. Its user data is **a MIME multipart**: the recipe's
+part untouched (a `#cloud-config` stays one, a script stays a script), then
+the driver's own **last step**, a script queuing a unit ordered after
+`cloud-final`. When cloud-init has finished, that unit reads its verdict
+(`cloud-init status --wait`: 1 is an error, 2 only recoverable), keeps
+`cloud-init status --long` and the end of `cloud-init-output.log` in
+`/run/hangar-bake.log`, starts the guest agent — and:
+
+- **clean**: clears what must differ between clones — `cloud-init clean
+  --logs --seed --machine-id`, the ssh host keys, the random seed, the
+  package cache, the journal — and sets the host name `hangar-bake-done`;
+- **errors**: sets the host name `hangar-bake-failed`.
+
+The driver reads the host name through the guest agent (`get-host-name`,
+`VM.GuestAgent.Audit`) at each call: done, it writes `hangar bake <n> done`
+in the description (a brain stopped between here and the end finds it done),
+shuts the builder down, deletes its seed disc and its tags, and makes it a
+template; failed, it reads the log (`file-read`, `VM.GuestAgent.FileRead`)
+and destroys the builder. **So a recipe installs `qemu-guest-agent`** — which
+is also how the machines born from it report their address; a builder the
+agent never answers for fails at its `timeout`, saying so. A builder found
+stopped before it finished is destroyed and made again (its first boot
+cannot resume). Read on the bench: Debian 13's cloud image, the guest agent
+installed, baked in 2 to 4.5 minutes; the machines born from it answer with
+their address within a minute of their create on a quiet bench, each with
+its own machine id and ssh host keys; a failing recipe comes back with
+cloud-init's verdict and the end of its log.
+
+**A new guest or template is read in its config**, never from
+`/cluster/resources` alone, whose name (the placeholder `VM <vmid>`, not
+the real one) and `template` flag trail a clone or a conversion by a
+pvestatd pass (read on the bench, twice: a save found
+nothing it had just cloned, and a machine asked for right after the save
+found no template) — the lag already read for power. A save finishes the
+clone by the VMID it took.
+
+**A save** is a full clone of a stopped machine into the images pool (its
+seed disc, unused disks and tags dropped), made a template: a machine holding
+a volume is refused (an image is its system disk alone). **Nothing cleans
+it**: a machine saved as it runs gives its clones its machine id and host
+keys — clear them in it first (`cloud-init clean --machine-id`, then stop it)
+where its clones must differ.
+
+**A delete** of a template machines were born from as linked clones is
+refused by Proxmox VE before anything is destroyed (`destroy_vm`: *base
+volume … is still in use by linked cloned*); the driver names the machines
+whose disk is `base-<vmid>-disk-…/…`.
+
+**The hook on images.** Only `root@pam` attaches a hookscript, so a template
+the product bakes or saves carries none — unless the machine it was saved
+from had one — and its clones are admitted by the brain alone. Where the
+node's own admission matters, set the hook on the images pool's templates as
+root after each bake (a job of the node's).
+
 ## The hook
 
 `hangar-hook` is a guest's hookscript: Proxmox VE runs it as root, with the
@@ -253,6 +337,23 @@ plugins:
     zones: [lab]
     credentials:
       lab: {file: /run/secrets/pve-volumes-token}  # its own, narrower token
+  - name: images
+    builtin: images
+    zones: [lab]
+    credentials:
+      lab: {file: /run/secrets/pve-images-token}   # its own: templates and builders, saves
+    settings:
+      recipes:
+        debian-13:
+          base: {vm: "local:import/debian-13-genericcloud-amd64.qcow2"}   # a disk image on an import storage
+          disk_gb: 4
+          memory_mb: 2048                         # the builder's: spot room borrowed while it bakes
+          timeout: 30m
+          user_data: |
+            #cloud-config
+            package_update: true
+            package_upgrade: true
+            packages: [qemu-guest-agent]          # the driver reads the builder — and its machines — through it
 ```
 
 ## The bench
@@ -267,6 +368,10 @@ sh tools/bench/bench.sh up
 eval "$(sh tools/bench/bench.sh env)"
 go test -p 1 ./driver/proxmox/ ./cmd/hangar/ -run Bench -v
 ```
+
+The images' tests bake from the cloud image `setup.sh` already put on the
+bench's `import` storage: nothing more to download but the packages a
+recipe installs.
 
 `-p 1`: one package at a time — both packages' tests drive the bench's one
 priority guest (VM 100), and go test runs packages side by side unless told

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -99,6 +100,10 @@ type Type struct {
 	Actions  []*Action
 	// Refs: the spec's fields that name other resources.
 	Refs []Ref
+	// Share: the spec's field that says whom its owner opened it to — an
+	// array of group names, "*" = everyone — marked "x-hangar-share": true;
+	// "" = a type that is its owner's alone.
+	Share string
 
 	schema *jsonschema.Schema
 }
@@ -117,6 +122,22 @@ type Ref struct {
 	Type     string `json:"type"`
 	Many     bool   `json:"many"`
 	Attached bool   `json:"attached,omitempty"`
+}
+
+// SharedWith reads the groups a spec opens its resource to ("*" =
+// everyone), sorted, without repeats; none for a type that is not shared.
+func (t *Type) SharedWith(spec json.RawMessage) []string {
+	if t == nil || t.Share == "" {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(spec, &fields) != nil {
+		return nil
+	}
+	var groups []string
+	_ = json.Unmarshal(fields[t.Share], &groups)
+	slices.Sort(groups)
+	return slices.Compact(groups)
 }
 
 // Ref returns the type's reference of a field, or nil.
@@ -179,15 +200,17 @@ func Start(ctx context.Context, cfg *config.Config, opt Options, log *slog.Logge
 		h.plugins[p.Name] = p
 		h.order = append(h.order, p.Name)
 	}
-	if err := h.checkRefs(); err != nil {
-		h.Close()
-		return nil, err
+	for _, w := range h.checkRefs() {
+		log.Warn("a reference no request can use", "why", w.Error())
 	}
 	return h, nil
 }
 
-// checkRefs refuses a reference to a type no plugin declares.
-func (h *Host) checkRefs() error {
+// checkRefs lists the references to a type no enabled plugin declares: a
+// request that names one is refused ("no plugin here makes …"), and the rest
+// of the type works — a machine may name an image by id only where images
+// are made, and by the operator's names everywhere.
+func (h *Host) checkRefs() []error {
 	var errs []error
 	for _, t := range h.Types() {
 		for _, r := range t.Refs {
@@ -203,7 +226,38 @@ func (h *Host) checkRefs() error {
 			}
 		}
 	}
-	return errors.Join(errs...)
+	return errs
+}
+
+// shareOf reads the field a schema marks "x-hangar-share": true — at most
+// one, an array of strings.
+func shareOf(raw []byte) (string, error) {
+	var doc struct {
+		Properties map[string]struct {
+			Share bool   `json:"x-hangar-share"`
+			Type  string `json:"type"`
+			Items *struct {
+				Type string `json:"type"`
+			} `json:"items"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return "", err
+	}
+	var out string
+	for _, field := range slices.Sorted(maps.Keys(doc.Properties)) {
+		p := doc.Properties[field]
+		switch {
+		case !p.Share:
+		case out != "":
+			return "", fmt.Errorf("x-hangar-share on %s and on %s: one field says whom a resource is shared with", out, field)
+		case p.Type != "array" || p.Items == nil || p.Items.Type != "string":
+			return "", fmt.Errorf("field %s: x-hangar-share marks an array of strings (group names, * = everyone)", field)
+		default:
+			out = field
+		}
+	}
+	return out, nil
 }
 
 // refsOf reads the fields a schema marks as references.
@@ -484,6 +538,8 @@ func compileType(plugin string, d *pluginpb.DescribeResponse, rt *pluginpb.Resou
 	if err != nil {
 		errs = append(errs, fmt.Errorf("schema: %w", err))
 	} else if t.Refs, err = refsOf(rt.GetSchema()); err != nil {
+		errs = append(errs, fmt.Errorf("schema: %w", err))
+	} else if t.Share, err = shareOf(rt.GetSchema()); err != nil {
 		errs = append(errs, fmt.Errorf("schema: %w", err))
 	}
 	t.schema = s

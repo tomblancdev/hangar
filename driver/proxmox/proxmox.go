@@ -724,14 +724,33 @@ func (d *Driver) createContainer(ctx context.Context, vmid int, s driver.GuestSp
 	return d.c.run(ctx, http.MethodPost, "/nodes/"+url.PathEscape(d.node)+"/lxc", p)
 }
 
-// template finds a VM template by name in the images pool.
+// nameKnown: /cluster/resources says a guest's name — for a guest just made
+// it says "VM <vmid>" until pvestatd's next pass (read on the bench through a
+// fenced token, 3 s after a clone).
+func (r resource) nameKnown() bool { return r.Name != "" && r.Name != "VM "+strconv.Itoa(r.VMID) }
+
+// template finds a VM template by name in the images pool. A guest just made
+// a template is read in its config: /cluster/resources gives its name and
+// its template flag a pvestatd pass late (read on the bench — a machine
+// asked for right after an image was saved found no template).
 func (d *Driver) template(ctx context.Context, name string) (resource, error) {
 	rs, err := d.resources(ctx)
 	if err != nil {
 		return resource{}, err
 	}
 	for _, r := range rs {
-		if r.Pool == d.images && r.Template == 1 && r.Type == "qemu" && r.Name == name {
+		if r.Pool != d.images || r.Type != "qemu" || (r.Name != name && r.nameKnown()) {
+			continue
+		}
+		if r.Template == 1 && r.Name == name {
+			return r, nil
+		}
+		var cfg map[string]any
+		if err := d.c.call(ctx, http.MethodGet, r.path()+"/config", nil, &cfg); err != nil {
+			continue
+		}
+		if num(cfg["template"]) == 1 && str(cfg["name"]) == name {
+			r.Name = name
 			return r, nil
 		}
 	}

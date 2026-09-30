@@ -1,8 +1,9 @@
 // Package machines is the plugin that makes machines: containers and VMs on
 // any driver with the guests facet, sized by AWS's instance type names (or
 // the operator's aliases, or plain cores and memory), started from an image
-// the operator names, with the owner's key pairs and — where the kind boots
-// it — cloud-init user data.
+// the operator names (image) or an image resource (image_id: one's own, or
+// one shared with one — the images plugin's, available and not retired), with
+// the owner's key pairs and — where the kind boots it — cloud-init user data.
 //
 // Two types:
 //
@@ -97,8 +98,11 @@ type Spec struct {
 	Cores    int    `json:"cores"`
 	MemoryGB int    `json:"memory_gb"`
 	DiskGB   int    `json:"disk_gb"`
-	Image    string `json:"image"`
-	Class    string `json:"class"`
+	// Image: the operator's name for what it starts from; or ImageID: an
+	// image resource, one's own or shared with one (the images plugin).
+	Image   string `json:"image,omitempty"`
+	ImageID string `json:"image_id,omitempty"`
+	Class   string `json:"class"`
 	// FloorGB: with guaranteed+spot, the memory that stays when the room is
 	// held; the rest is borrowed.
 	FloorGB int `json:"floor_gb,omitempty"`
@@ -152,7 +156,6 @@ const machineSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["image"],
   "properties": {
     "name":      { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
                    "description": "Its host name; its id when absent." },
@@ -165,7 +168,9 @@ const machineSchema = `{
     "disk_gb":   { "type": "integer", "minimum": 1, "maximum": 4096, "default": 8,
                    "description": "Its root disk." },
     "image":     { "type": "string", "minLength": 1, "maxLength": 128,
-                   "description": "What it starts from, by the name the operator gave it." },
+                   "description": "What it starts from, by the name the operator gave it. Or image_id." },
+    "image_id":  { "type": "string", "x-hangar-ref": "image",
+                   "description": "What it starts from: an image of yours, or one shared with you. Or image." },
     "class":     { "type": "string", "enum": ["guaranteed", "spot", "guaranteed+spot"], "default": "spot",
                    "description": "Guaranteed room; room borrowed and given back when the zone needs it (it stops); or a guaranteed floor with the rest borrowed (it shrinks to its floor instead)." },
     "floor_gb":  { "type": "integer", "minimum": 1, "maximum": 1024,
@@ -375,6 +380,47 @@ func (p *Plugin) imageRef(image, kind string) (string, *pluginpb.Refusal) {
 	return ref, nil
 }
 
+// image is what the machines plugin reads of an image resource (the images
+// plugin's spec and observed).
+type image struct {
+	Retired bool              `json:"retired"`
+	State   string            `json:"state"`
+	SizeGB  int               `json:"size_gb"`
+	Forms   map[string]string `json:"forms"`
+}
+
+// bornFrom reads the image a machine is born from — handed over by the core,
+// which checked it is the owner's or shared with them — and says why a
+// machine of that kind cannot be born from it.
+func bornFrom(refs []*pluginpb.Resource, id, kind string) (image, *pluginpb.Refusal) {
+	for _, r := range refs {
+		if r.GetId() != id || r.GetType() != "image" {
+			continue
+		}
+		var spec, obs image
+		_ = sdk.Decode(r.GetSpec(), &spec)
+		_ = sdk.Decode(r.GetObserved(), &obs)
+		obs.Retired = spec.Retired
+		refuse := func(format string, a ...any) (image, *pluginpb.Refusal) {
+			return obs, &pluginpb.Refusal{Field: "/image_id", Reason: fmt.Sprintf(format, a...)}
+		}
+		switch {
+		case obs.Retired:
+			return refuse("%s is retired: no machine is born from it any more", id)
+		case obs.State != "available":
+			state := obs.State
+			if state == "" {
+				state = "not made yet"
+			}
+			return refuse("%s is %s: a machine is born from an available image", id, state)
+		case obs.Forms[kind] == "":
+			return refuse("%s is an image for a %s, not for a %s", id, strings.Join(slices.Sorted(maps.Keys(obs.Forms)), " or "), kindWord(kind))
+		}
+		return obs, nil
+	}
+	return image{}, &pluginpb.Refusal{Field: "/image_id", Reason: fmt.Sprintf("no image %s", id)}
+}
+
 // size applies a type, or cores and memory, to a spec. A create names both
 // halves (or a type); a resize may name one, and the other stays.
 func (p *Plugin) size(s *Spec, typ *string, cores, mem *int, create bool) *pluginpb.Refusal {
@@ -477,12 +523,17 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 			Type     *string `json:"type"`
 			Cores    *int    `json:"cores"`
 			MemoryGB *int    `json:"memory_gb"`
+			DiskGB   *int    `json:"disk_gb"`
 		}
-		in.Kind, in.DiskGB, in.Class, in.Resume = "vm", 8, Spot, true
+		in.Kind, in.Class, in.Resume = "vm", Spot, true
 		if err := sdk.Decode(req.GetSpec(), &in); err != nil {
 			return nil, err
 		}
 		s = in.Spec
+		s.DiskGB = 8
+		if in.DiskGB != nil {
+			s.DiskGB = *in.DiskGB
+		}
 		if in.Type == nil && in.Cores == nil && in.MemoryGB == nil {
 			def := DefaultType
 			in.Type = &def
@@ -493,8 +544,24 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 		if !slices.Contains(caps, need) {
 			refuse(&pluginpb.Refusal{Field: "/kind", Reason: fmt.Sprintf("zone %s runs no %s", req.GetZone(), kindWord(s.Kind))})
 		} else {
-			_, r := p.imageRef(s.Image, s.Kind)
-			refuse(r)
+			switch {
+			case s.Image != "" && s.ImageID != "":
+				refuse(&pluginpb.Refusal{Field: "/image_id", Reason: "an image by the operator's name, or image_id — not both"})
+			case s.ImageID != "":
+				img, r := bornFrom(req.GetRefs(), s.ImageID, s.Kind)
+				refuse(r)
+				// its system disk is the image's, at least
+				if in.DiskGB == nil && img.SizeGB > s.DiskGB {
+					s.DiskGB = img.SizeGB
+				} else if img.SizeGB > s.DiskGB {
+					refuse(&pluginpb.Refusal{Field: "/disk_gb", Reason: fmt.Sprintf("%s's disk is %d GB: disk_gb is at least that", s.ImageID, img.SizeGB)})
+				}
+			case s.Image != "":
+				_, r := p.imageRef(s.Image, s.Kind)
+				refuse(r)
+			default:
+				refuse(&pluginpb.Refusal{Field: "/image", Reason: "what it starts from: image (the operator's name) or image_id"})
+			}
 			refuse(classRefusals(s, req.GetZone(), g, caps)...)
 		}
 		if s.UserData != "" && !g.Traits(s.Kind).UserData {
@@ -616,9 +683,17 @@ func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*plug
 	if err != nil {
 		return nil, err
 	}
-	ref, refusal := p.imageRef(s.Image, s.Kind)
+	var ref string
+	var refusal *pluginpb.Refusal
+	if s.ImageID != "" {
+		var img image
+		img, refusal = bornFrom(req.GetRefs(), s.ImageID, s.Kind)
+		ref = img.Forms[s.Kind]
+	} else {
+		ref, refusal = p.imageRef(s.Image, s.Kind)
+	}
 	if refusal != nil {
-		return nil, sdk.NotNow("%s", refusal.GetReason()) // the operator's images moved since the plan
+		return nil, sdk.NotNow("%s", refusal.GetReason()) // the images moved since the plan
 	}
 	var keys []string
 	for _, kp := range req.GetRefs() {

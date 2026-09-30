@@ -17,7 +17,7 @@ ids (`m-0123456789abcdef0`), types, images, user data, tags, client tokens,
 on-demand and spot — for a home lab, a club, a small office. It is not a
 hypervisor (it drives yours) and not an EC2 clone.
 
-> **Status: the volumes.** The core is built and proved end to end —
+> **Status: the images.** The core is built and proved end to end —
 > identity, tiers and limits, the registry, operations, reconcile, the audit,
 > the plugin host, the API. **The machines plugin and the Proxmox VE driver
 > are built**, proved on a throwaway Proxmox VE the repo installs itself
@@ -28,8 +28,10 @@ hypervisor (it drives yours) and not an EC2 clone.
 > one when it starts — spot machines stopped, floors shrunk, whoever starts
 > it, the brain reachable or not. **And volumes**: disks of your own, plugged
 > into a machine, moved to another, parked on none, grown — their data kept
-> throughout, and neither end deleted while one is in the other. Images and
-> the doors come next. No release is cut yet. [ARCHITECTURE.md](ARCHITECTURE.md) says what is built
+> throughout, and neither end deleted while one is in the other. **And
+> images**: baked from a recipe, or saved from your stopped machine, shared
+> with your group or everyone — a machine born from one usable at once. The
+> command line and the console come next. No release is cut yet. [ARCHITECTURE.md](ARCHITECTURE.md) says what is built
 > and what is designed, section by section.
 
 ## How it fits together

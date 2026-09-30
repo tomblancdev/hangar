@@ -184,6 +184,10 @@ message Resource {
   // borrowing all its memory stops; one with a floor shrinks to it) — and
   // back when the hold is lifted.
   string hold = 8;
+  // What it takes from its zone's pools now, as last admitted or reported —
+  // for a plugin whose resource's room changes on its own (a bake borrows
+  // its builder's memory until the image is made, then takes none).
+  Room room = 9;
 }
 
 message PlanRequest {

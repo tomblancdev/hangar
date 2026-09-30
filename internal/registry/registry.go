@@ -72,7 +72,10 @@ type Resource struct {
 	Choices  map[string]string `json:"choices"`
 	Usage    map[string]int64  `json:"usage"`
 	Tags     map[string]string `json:"tags"`
-	Drift    string            `json:"drift,omitempty"`
+	// SharedWith: the groups its owner opened it to ("*" = everyone), as its
+	// spec says; empty = its owner's alone.
+	SharedWith []string `json:"shared_with,omitempty"`
+	Drift      string   `json:"drift,omitempty"`
 	// Room: what it takes from its zone's pools.
 	Room Room `json:"room"`
 	// Hold: the key of the reservation holding its borrowed room back since
@@ -339,6 +342,20 @@ func (t *Tx) SetRelations(from string, rels [][2]string) error {
 	return nil
 }
 
+// SetShares writes anew the groups a resource is shared with ("*" =
+// everyone): its shares follow its spec, as its references do.
+func (t *Tx) SetShares(id string, groups []string) error {
+	if _, err := t.q.ExecContext(t.ctx, `DELETE FROM shares WHERE resource_id = ?`, id); err != nil {
+		return err
+	}
+	for _, g := range groups {
+		if _, err := t.q.ExecContext(t.ctx, `INSERT OR IGNORE INTO shares (resource_id, grp) VALUES (?, ?)`, id, g); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Relations lists what a resource refers to, as (kind, id) pairs.
 func (t *Tx) Relations(from string) ([][2]string, error) { return relationsOf(t.ctx, t.q, from) }
 
@@ -526,10 +543,10 @@ func getResource(ctx context.Context, q querier, id string) (*Resource, error) {
 	return r, nil
 }
 
-// fill reads the tags and usage of resources.
+// fill reads the tags, usage and shares of resources.
 func fill(ctx context.Context, q querier, rs []*Resource) error {
 	for _, r := range rs {
-		r.Tags, r.Usage = map[string]string{}, map[string]int64{}
+		r.Tags, r.Usage, r.SharedWith = map[string]string{}, map[string]int64{}, nil
 		rows, err := q.QueryContext(ctx, `SELECT key, value FROM tags WHERE resource_id = ?`, r.ID)
 		if err != nil {
 			return err
@@ -557,19 +574,35 @@ func fill(ctx context.Context, q querier, rs []*Resource) error {
 			r.Usage[d] = n
 		}
 		_ = rows.Close()
+		rows, err = q.QueryContext(ctx, `SELECT grp FROM shares WHERE resource_id = ? ORDER BY grp`, r.ID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var g string
+			if err := rows.Scan(&g); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			r.SharedWith = append(r.SharedWith, g)
+		}
+		_ = rows.Close()
 	}
 	return nil
 }
 
 // Filter narrows a listing.
 type Filter struct {
-	Owner  string   // "" = every owner
-	Type   string   // "" = every type
-	Zone   string   // "" = every zone
-	States []string // empty = the live states
-	Tags   map[string]string
-	After  int64 // the cursor: rows after this seq
-	Limit  int   // default 100, at most 1000
+	Owner string // "" = every owner
+	// SharedTo: with Owner, also what others shared with any of these groups
+	// — and with everyone ("*"), always.
+	SharedTo []string
+	Type     string   // "" = every type
+	Zone     string   // "" = every zone
+	States   []string // empty = the live states
+	Tags     map[string]string
+	After    int64 // the cursor: rows after this seq
+	Limit    int   // default 100, at most 1000
 }
 
 // Resources lists resources in the order they were made. next is the cursor
@@ -578,7 +611,16 @@ func (s *Store) Resources(ctx context.Context, f Filter) (rs []*Resource, next i
 	where := []string{"seq > ?"}
 	args := []any{f.After}
 	add := func(cond string, v any) { where = append(where, cond); args = append(args, v) }
-	if f.Owner != "" {
+	switch {
+	case f.Owner != "" && f.SharedTo != nil:
+		groups := append([]string{"*"}, f.SharedTo...)
+		where = append(where, "(owner = ? OR id IN (SELECT resource_id FROM shares WHERE grp IN ("+
+			strings.TrimSuffix(strings.Repeat("?, ", len(groups)), ", ")+")))")
+		args = append(args, f.Owner)
+		for _, g := range groups {
+			args = append(args, g)
+		}
+	case f.Owner != "":
 		add("owner = ?", f.Owner)
 	}
 	if f.Type != "" {

@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Capability is a flag a driver sets when its engine can do the thing.
@@ -333,4 +334,88 @@ func SerialOf(id string) string {
 		s = s[:20]
 	}
 	return s
+}
+
+// ---- The images facet -------------------------------------------------------
+
+// An image's states, as its engine reports them.
+const (
+	// ImagePending: its bake runs (its builder is at work).
+	ImagePending = "pending"
+	// ImageWaiting: its bake waits to start over — the zone's room was
+	// needed, or its builder stopped before it finished.
+	ImageWaiting = "waiting"
+	// ImageAvailable: machines may be born from it.
+	ImageAvailable = "available"
+	// ImageFailed: its bake ended in errors; Detail says which, in the
+	// words of the guest's own first boot.
+	ImageFailed = "failed"
+)
+
+// Images is the facet of a driver that makes images: frozen system disks
+// that guests are born from (GuestSpec.Image names one by its Ref).
+//
+// A bake takes minutes, so it is not one call: Bake moves it forward as far
+// as it goes at once and says where it stands — the plugin calls it at the
+// create and at every reconcile after, and keeps nothing but the attempt's
+// number; everything else is on the engine. A save is one call.
+type Images interface {
+	// ImageKinds are the kinds of guest this engine makes images for.
+	ImageKinds() []string
+	// Bake moves a bake forward: it makes and starts its builder (a guest
+	// that boots the base once, with the recipe as its first boot), reads
+	// how that first boot went, and makes the image when it finished clean
+	// — or says why not (ImageFailed; the builder is gone). Held: the zone's
+	// room is needed — a builder at work is let go at once and the bake
+	// waits (ImageWaiting), to start over from the beginning when called
+	// unheld. A builder that stopped before it finished starts over too.
+	// Idempotent on spec.ID and spec.Attempt.
+	Bake(ctx context.Context, spec BakeSpec, held bool) (Image, error)
+	// SaveImage makes an image of a stopped guest's system disk (guest: the
+	// core's id), idempotent on id. A running guest, or one holding volumes
+	// (an image never carries someone's data), is ErrRefused.
+	SaveImage(ctx context.Context, id, guest string) (Image, error)
+	// Image reads an image, or its bake, by the core's id.
+	Image(ctx context.Context, id string) (Image, error)
+	// DeleteImage removes an image, or its bake; one already gone is not an
+	// error. An image guests born from it still use (a clone that shares
+	// its disk) is ErrRefused, naming them where the engine can.
+	DeleteImage(ctx context.Context, id string) error
+}
+
+// BakeSpec is what a bake makes an image from.
+type BakeSpec struct {
+	ID string // the core's resource id, written on the builder and on the image
+	// Attempt: the bake's number (a failed one baked again is the next): a
+	// builder of another attempt is not this one's.
+	Attempt int
+	Kind    string // the kind of guest the image is for ("vm")
+	// Base: the engine's own name of what the builder starts from (Proxmox:
+	// a disk image on an import storage, or a template's name).
+	Base     string
+	DiskGB   int
+	Cores    int
+	MemoryMB int
+	// UserData: the builder's first boot — the recipe's; the driver adds its
+	// own last step, which makes the disk ready to be cloned.
+	UserData []byte
+	// Timeout: how long the builder may work before its bake is failed.
+	Timeout time.Duration
+	// Tags: written on the builder for the engine's node to read (a builder
+	// borrows its room: class spot, the memory admitted).
+	Tags map[string]string
+}
+
+// Image is an image as the engine reports it.
+type Image struct {
+	ID        string `json:"id"`
+	EngineRef string `json:"engine_ref"`
+	Kind      string `json:"kind"`
+	Node      string `json:"node,omitempty"`
+	State     string `json:"state"`
+	Detail    string `json:"detail,omitempty"`
+	// Ref: the engine's own name a guest is born from (GuestSpec.Image).
+	Ref     string `json:"ref,omitempty"`
+	SizeGB  int    `json:"size_gb,omitempty"`
+	Attempt int    `json:"attempt,omitempty"`
 }

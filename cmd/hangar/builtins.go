@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/tomblancdev/hangar/plugins/images"
 	"github.com/tomblancdev/hangar/plugins/machines"
 	"github.com/tomblancdev/hangar/plugins/toy"
 	"github.com/tomblancdev/hangar/plugins/volumes"
@@ -11,6 +12,7 @@ import (
 // own process ("hangar plugin <name>"), with only its own credential: being
 // in the same file changes nothing about the walls between them.
 var builtins = map[string]func() pluginpb.PluginServiceServer{
+	images.Name:   func() pluginpb.PluginServiceServer { return images.New() },
 	machines.Name: func() pluginpb.PluginServiceServer { return machines.New() },
 	toy.Name:      func() pluginpb.PluginServiceServer { return toy.New() },
 	volumes.Name:  func() pluginpb.PluginServiceServer { return volumes.New() },

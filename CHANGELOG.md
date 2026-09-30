@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased — les images
+
+System disks machines are born from — proved on the repo's throwaway Proxmox
+VE, through the binary's API, the machines and images plugins each on its
+own token.
+
+- **The images plugin** (`images`): `image` (`img-…`) — **baked** from a
+  recipe of the operator's (a base on the engine per kind, a disk size, the
+  builder's cores, memory and time, a `#cloud-config` or `#!` first boot), or
+  **saved** from a stopped machine of the owner's (its system disk alone: a
+  machine with a volume plugged in is refused). Actions: `share`, `retire`
+  (no machine born from it any more; those born from it run on), `rebake` (a
+  failed bake again, from the recipe as it is now). Limits: `images.count`,
+  `images.size_gb`, and two choices — `images.source` (recipe, machine) and
+  `images.visibility` (private, shared, public). A recipe is copied into each
+  image it bakes (`spec.from`).
+- **A bake is not one call**: the create answers `pending`, the brain's
+  reconcile moves it forward — `available`, or `failed` with the words of the
+  builder's first boot. The builder **borrows spot room** (it wakes a sleeping
+  zone, is refused while the room is held) and **is let go at once** when the
+  room is needed: its bake **starts over by itself** when the room is back,
+  never counted as a failure. A failure of the recipe is never retried
+  blindly; a builder that stops unasked three times fails its bake.
+- **Machines born from an image** (`image_id`, beside the operator's names in
+  `image`): one's own or one shared with one, available, not retired; the
+  disk at least the image's.
+- **Shares** in the core (`"x-hangar-share": true` on a spec's array of
+  groups, `*` = everyone): a person in one of the groups sees the resource
+  (get, and the listing now holds one's own and what is shared with one's
+  groups) and names it in their requests (a reference, never an attachment);
+  only its owner or an operator changes or deletes it (403 `shared`). A
+  person shares only with groups they are in, or with everyone as their tier
+  allows. Shares follow the spec, like relations (registry schema 3).
+- **A plugin sees a resource's room** (`Resource.room` in the protocol), and a
+  resource whose room changes on its own returns it from reconcile.
+- **A reference to a type no enabled plugin declares** no longer stops the
+  start: it is logged, and refused at the request.
+- **The drivers' images facet** (`driver.Images`), on the fake engine and on
+  Proxmox VE: VM templates in the images pool, named after their id and
+  tagged with nothing (read on the bench: a clone copies its template's
+  tags, and a machine born with an image's id was not found as itself). A
+  bake's builder is imported from a disk image (`import-from`, which a fenced
+  token may do with `Datastore.Audit` on its storage) or copied from a
+  template, boots the recipe then the driver's last step (a unit after
+  `cloud-final`: cloud-init's verdict, the disk made ready to be cloned —
+  cloud-init's memory, the machine id, the host keys cleared — the verdict
+  said by the host name), read through the guest agent; a failure's log read
+  with `VM.GuestAgent.FileRead`. A template machines were born from as
+  linked clones refuses its delete, naming them. **A new guest's name and a
+  template's flag are read in its config** — `/cluster/resources` gives them
+  a pvestatd pass late (read on the bench: a save lost its own clone, a
+  machine asked for right after it found no template).
+- **The bench** gains the images plugin's user, roles and token
+  (`HANGAR_BENCH_IMAGES_TOKEN_FILE`).
+
 ## Unreleased — les volumes
 
 Disks that belong to their owner rather than to a machine — proved on the

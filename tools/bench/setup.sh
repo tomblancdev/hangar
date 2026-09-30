@@ -11,7 +11,9 @@
 #      role on the images, one user and its API token (privilege-separated)
 #      for the machines plugin — and a narrower one for the volumes plugin:
 #      disks and its own shelf guests in the same pool, no network, no seed
-#      store, no watched guest
+#      store, no watched guest — and one for the images plugin: templates and
+#      the builders that bake them in pool hangar-images, a stopped machine
+#      of pool hangar read and cloned (a save), nothing else of the machines
 #   5. a priority guest: VM 100, the operator's own, outside the pools — the
 #      guest a zone keeps room for while it runs; the token may read its
 #      power (VM.Audit on it) and nothing else there. The hook itself
@@ -20,7 +22,8 @@
 #
 # The token's secret is written to /root/hangar-token (0600) as
 # `user@realm!name=secret`, for bench.sh to copy out; it is never printed —
-# the volumes plugin's to /root/volumes-token, the same way.
+# the volumes plugin's to /root/volumes-token, the images plugin's to
+# /root/images-token, the same way.
 # So is a second one, /root/wide-token: root's, unfenced — the tests'
 # control that the driver tells a fenced token from one that is not.
 # Idempotent: a step already done is skipped — bench.sh runs it at every
@@ -160,6 +163,37 @@ for who in "--users hangar-volumes@pve" "--tokens hangar-volumes@pve!bench"; do
 		pveum acl modify /pool/hangar --roles HangarVolumes $who
 		pveum acl modify /storage/local-zfs --roles PVEDatastoreUser $who
 		pveum acl modify /storage/local --roles HangarTemplates $who # a container shelf's archive
+	}
+done
+# the images plugin: in the images pool, its builders (a VM made from a disk
+# image, or a template copied whole; its first boot on a seed disc; its host
+# name and one log file read through the guest agent) and the templates they
+# become; in the machines' pool, a stopped machine read and cloned (a save)
+# and the machines' disks read (which were born from a template), nothing
+# of their power or config
+iprivs="VM.Allocate,VM.Audit,VM.Clone,VM.Config.CDROM,VM.Config.CPU,VM.Config.Disk,VM.Config.HWType"
+iprivs="$iprivs,VM.Config.Memory,VM.Config.Network,VM.Config.Options,VM.PowerMgmt,VM.GuestAgent.Audit"
+iprivs="$iprivs,VM.GuestAgent.FileRead,Datastore.AllocateSpace,Datastore.Audit,Pool.Audit"
+pveum role add HangarImagesMake --privs "$iprivs" 2>/dev/null || pveum role modify HangarImagesMake --privs "$iprivs"
+pveum role add HangarImagesSave --privs VM.Audit,VM.Clone,Pool.Audit 2>/dev/null ||
+	pveum role modify HangarImagesSave --privs VM.Audit,VM.Clone,Pool.Audit
+pveum user add hangar-images@pve --comment "hangar's images plugin" 2>/dev/null || true
+if [ ! -s /root/images-token ]; then
+	pveum user token remove hangar-images@pve bench 2>/dev/null || true
+	secret=$(pveum user token add hangar-images@pve bench --privsep 1 --output-format json |
+		sed -n 's/.*"value":"\([^"]*\)".*/\1/p')
+	[ -n "$secret" ] || { say "the images token was not made"; exit 1; }
+	(umask 077 && printf 'hangar-images@pve!bench=%s\n' "$secret" >/root/images-token)
+fi
+for who in "--users hangar-images@pve" "--tokens hangar-images@pve!bench"; do
+	# shellcheck disable=SC2086 # two words on purpose
+	{
+		pveum acl modify /pool/hangar-images --roles HangarImagesMake $who
+		pveum acl modify /pool/hangar --roles HangarImagesSave $who
+		pveum acl modify /storage/local-zfs --roles PVEDatastoreUser $who
+		pveum acl modify /storage/local --roles HangarTemplates $who # a base disk image to import
+		pveum acl modify /storage/hangar-seeds --roles HangarSeeds $who
+		pveum acl modify /sdn/zones/hbench/hbnet --roles PVESDNUser $who
 	}
 done
 # A control for the fence: a token that reaches everything (root's, not

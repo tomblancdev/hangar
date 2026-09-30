@@ -8,6 +8,8 @@
 // the file, or in-process with Forget, Tamper, FailNext), which is what
 // reconcile is for.
 //
+// Images live there too ("images"): a bake takes two calls (images.go).
+//
 // Volumes live in the same file ("volumes"): each on a guest, or parked with
 // no guest at all (the fake needs no shelf); a running container lets go of
 // none, as on Proxmox VE, and a guest holding one is not deleted.
@@ -23,6 +25,8 @@
 //	                          flag but the GPU ones
 //	expect_credential_sha256  refuse to open unless the plugin's credential
 //	                          hashes to this (proves the credential arrived)
+//	image_kinds               the kinds it makes images for; default: the
+//	                          kinds it runs
 package fake
 
 import (
@@ -50,12 +54,14 @@ func init() { driver.Register(Name, Open) }
 
 // Engine is one fake zone.
 type Engine struct {
-	mu       sync.Mutex
-	path     string // "" = memory only
-	caps     []driver.Capability
-	watch    []string
-	state    state
-	failNext error
+	mu    sync.Mutex
+	path  string // "" = memory only
+	caps  []driver.Capability
+	watch []string
+	// imageKinds: the kinds it makes images for (nil: the kinds it runs)
+	imageKinds []string
+	state      state
+	failNext   error
 }
 
 type state struct {
@@ -74,6 +80,8 @@ type state struct {
 	WatchFails bool `json:"watch_fails,omitempty"`
 	// Volumes, by the core's id.
 	Volumes map[string]*driver.Volume `json:"volumes,omitempty"`
+	// Images, and their bakes, by the core's id.
+	Images map[string]*fakeImage `json:"images,omitempty"`
 }
 
 // errAsleep is what a sleeping zone answers: an engine that cannot be reached
@@ -95,6 +103,14 @@ func Open(_ context.Context, p driver.Params) (driver.Driver, error) {
 		for _, c := range strings.Split(list, ",") {
 			if c = strings.TrimSpace(c); c != "" {
 				e.caps = append(e.caps, c)
+			}
+		}
+	}
+	if list, ok := p.Options["image_kinds"]; ok {
+		e.imageKinds = []string{}
+		for _, k := range strings.Split(list, ",") {
+			if k = strings.TrimSpace(k); k != "" {
+				e.imageKinds = append(e.imageKinds, k)
 			}
 		}
 	}
