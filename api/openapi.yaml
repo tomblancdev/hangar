@@ -36,6 +36,19 @@ info:
     not usable yet (`unusable`: pending, failed, retired) is refused where
     it is named (422 `schema`).
 
+    **Changes.** A resource changes through its type's actions. To bring
+    one to a whole new spec — what a spec file applied from the command
+    line does — ask its plan first (`POST /v1/resources/{id}/plan`): its
+    plugin answers the actions that take it there, in order, or the fields
+    no action changes (set at its birth). Then ask each action as usual. A
+    reference written `@<schedule>` in that spec is where the resource
+    already is when what it names was made by that schedule: a machine is
+    never moved to a newer image.
+
+    **Signing in.** `GET /v1/signin` names the identity provider, the
+    client id and the scopes a door signs people in with (the device flow,
+    RFC 8628, for the command line).
+
     **Retries.** Every create, delete and action takes a `client_token`
     (AWS's ClientToken): the same token with the same request returns the
     first operation (200) instead of starting a second; with a different
@@ -119,6 +132,24 @@ paths:
           description: An animated SVG.
           content:
             image/svg+xml: {}
+
+  /v1/signin:
+    get:
+      tags: [house]
+      summary: Where a door signs people in.
+      description: |
+        The operator's identity provider, the client id the brain reads
+        tokens for — a public client with the device flow on: the brain
+        holds no client secret — and the scopes to ask for (the groups
+        claim, a refresh token). 404 on a brain that takes API tokens only.
+      security: []
+      responses:
+        "200":
+          description: The sign-in settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SignIn" }
+        default: { $ref: "#/components/responses/Problem" }
 
   /v1/whoami:
     get:
@@ -350,6 +381,34 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Accepted" }
+        default: { $ref: "#/components/responses/Problem" }
+
+  /v1/resources/{id}/plan:
+    parameters:
+      - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+    post:
+      tags: [resources]
+      summary: What would bring the resource to this spec — changes nothing.
+      description: |
+        Its plugin answers the actions that take it there, in the order to
+        ask them, or the fields that differ and no action changes (set at
+        its birth: `fixed`). No steps and nothing fixed: it is there. The
+        spec is whole — a field it leaves out is wanted at its default —
+        and checked as a create's is; only what it names anew must be ready
+        and usable (a machine keeps the image it was born from, retired or
+        not). Only the owner (or an operator) plans a change. A type whose
+        plugin plans no change answers 422 `unavailable-here`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PlanRequest" }
+      responses:
+        "200":
+          description: The plan.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangePlan" }
         default: { $ref: "#/components/responses/Problem" }
 
   /v1/operations:
@@ -662,6 +721,47 @@ components:
           type: object
           description: Checked against the action's params schema.
         client_token: { $ref: "#/components/schemas/ClientToken" }
+    SignIn:
+      type: object
+      required: [issuer, client_id, scopes]
+      properties:
+        issuer: { type: string, description: The OIDC issuer; its discovery document names the device and token endpoints. }
+        client_id: { type: string }
+        scopes: { type: array, items: { type: string } }
+    PlanRequest:
+      type: object
+      required: [spec]
+      additionalProperties: false
+      properties:
+        spec:
+          type: object
+          description: The whole spec wanted — the type's schema; references by id or `@<schedule>`.
+    ChangePlan:
+      type: object
+      required: [resource, steps]
+      properties:
+        resource: { $ref: "#/components/schemas/Id" }
+        steps:
+          type: array
+          description: The actions to ask, in order; empty = nothing to do (unless something is fixed).
+          items:
+            type: object
+            required: [action]
+            properties:
+              action: { type: string }
+              params: { type: object, description: Absolute — valid against the action's params schema. }
+        fixed:
+          type: array
+          description: The fields that differ and no action changes — set at its birth.
+          items:
+            type: object
+            properties:
+              field: { type: string, description: A JSON pointer. }
+              reason: { type: string, examples: ["it is a container, and a machine's kind is set at its birth"] }
+        resolved:
+          type: array
+          items: { type: string }
+          description: What each `@<schedule>` of the spec stood for (`@debian-13=img-…`).
     Accepted:
       type: object
       required: [operation, resource]

@@ -156,6 +156,30 @@ func (p *Plugin) guests(zone string) (driver.Guests, []driver.Capability, error)
 	return d.(driver.Guests), d.Capabilities(), nil
 }
 
+// PlanChange says what brings a box to another spec: its cores and memory
+// through resize; its kind is set at its birth.
+func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) (*pluginpb.PlanChangeResponse, error) {
+	if req.GetCurrent().GetType() != "box" {
+		return nil, sdk.Refuse("no type %q here", req.GetCurrent().GetType())
+	}
+	var was Spec
+	if err := sdk.Decode(req.GetCurrent().GetSpec(), &was); err != nil {
+		return nil, err
+	}
+	want := Spec{Kind: "container", Cores: 1, MemoryGB: 1}
+	if err := sdk.Decode(req.GetSpec(), &want); err != nil {
+		return nil, err
+	}
+	out := &pluginpb.PlanChangeResponse{}
+	if want.Kind != was.Kind {
+		out.Fixed = append(out.Fixed, sdk.Fixed("/kind", "a "+was.Kind, "a box's kind"))
+	}
+	if want.Cores != was.Cores || want.MemoryGB != was.MemoryGB {
+		out.Steps = append(out.Steps, sdk.Step("resize", map[string]any{"cores": want.Cores, "memory_gb": want.MemoryGB}))
+	}
+	return out, nil
+}
+
 func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.PlanResponse, error) {
 	if req.GetType() != "box" {
 		return nil, sdk.Refuse("no type %q here", req.GetType())

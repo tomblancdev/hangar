@@ -102,3 +102,18 @@ func Unreachable(format string, a ...any) error {
 func Event(name, message string, fields map[string]string) *pluginpb.Event {
 	return &pluginpb.Event{Name: name, Message: message, Fields: fields}
 }
+
+// Step is one action a PlanChange answers, with its params.
+func Step(action string, params any) *pluginpb.Step {
+	s := &pluginpb.Step{Action: action}
+	if params != nil {
+		s.Params = JSON(params)
+	}
+	return s
+}
+
+// Fixed is a field PlanChange finds different and no action changes: set at
+// the resource's birth. was is what it is, in words.
+func Fixed(field, was, what string) *pluginpb.Refusal {
+	return &pluginpb.Refusal{Field: field, Reason: fmt.Sprintf("it is %s, and %s is set at its birth", was, what)}
+}

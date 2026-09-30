@@ -144,6 +144,59 @@ reconcile: {every: 5s}
 		time.Sleep(250 * time.Millisecond)
 	}
 
+	// the command line, the same binary: a type's commands drawn from its
+	// schema, and a spec file made true
+	cli := func(args ...string) (string, string) {
+		t.Helper()
+		cmd := exec.Command(bin, args...)
+		cmd.Env = append(os.Environ(), "HANGAR_URL="+base, "HANGAR_TOKEN="+secret, "HANGAR_HOME="+filepath.Join(dir, "cli"))
+		var out, errb bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &errb
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("hangar %s: %v\n%s%s", strings.Join(args, " "), err, out.String(), errb.String())
+		}
+		return out.String(), errb.String()
+	}
+	if out, _ := cli("box", "--help"); !strings.Contains(out, "hangar box create") || !strings.Contains(out, "memory_gb") || !strings.Contains(out, "hangar box resize ID [--cores --memory-gb]") {
+		t.Fatalf("a type's help, drawn from its schema:\n%s", out)
+	}
+	if _, errs := cli("box", "delete", id); !strings.Contains(errs, "deleted "+id) {
+		t.Fatalf("the lost box let go of: %s", errs)
+	}
+	boxes := filepath.Join(dir, "boxes.yaml")
+	write := func(cores int) {
+		if err := os.WriteFile(boxes, fmt.Appendf(nil, "set: e2e\nzone: z\nresources:\n  one:\n    type: box\n    spec: {cores: %d}\n", cores), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(1)
+	if _, errs := cli("apply", boxes); !strings.Contains(errs, "1 created") {
+		t.Fatalf("apply: %s", errs)
+	}
+	if _, errs := cli("apply", boxes); !strings.Contains(errs, "Nothing to do") {
+		t.Fatalf("apply again: %s", errs)
+	}
+	write(2)
+	if _, errs := cli("apply", boxes); !strings.Contains(errs, "resize {cores: 2, memory_gb: 1}") || !strings.Contains(errs, "1 changed") {
+		t.Fatalf("apply a change: %s", errs)
+	}
+	if out, _ := cli("box", "list", "-o", "id"); len(strings.Fields(out)) != 1 {
+		t.Fatalf("one box: %q", out)
+	}
+	// the box leaves the file: with no one at stdin (/dev/null, a character
+	// device as a terminal is) nothing is deleted without --yes
+	if err := os.WriteFile(boxes, []byte("set: e2e\nzone: z\nresources: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unasked := exec.Command(bin, "apply", boxes)
+	unasked.Env = append(os.Environ(), "HANGAR_URL="+base, "HANGAR_TOKEN="+secret, "HANGAR_HOME="+filepath.Join(dir, "cli"))
+	if out, err := unasked.CombinedOutput(); err == nil || !strings.Contains(string(out), "run again with --yes") {
+		t.Fatalf("a delete with no one to ask: %v\n%s", err, out)
+	}
+	if _, errs := cli("apply", boxes, "--yes"); !strings.Contains(errs, "1 deleted") {
+		t.Fatalf("apply --yes: %s", errs)
+	}
+
 	_ = srv.Process.Signal(syscall.SIGTERM)
 	select {
 	case err := <-exited:

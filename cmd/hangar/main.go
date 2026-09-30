@@ -3,8 +3,10 @@
 // within their tier's limits, on the engines the operator already owns.
 //
 // One static binary. It is the brain (serve), its own checker (check), the
-// hand that makes the first API token on the brain's host (token), and —
-// started by itself as separate processes — its built-in plugins (plugin).
+// hand that makes the first API token on the brain's host (token), —
+// started by itself as separate processes — its built-in plugins (plugin),
+// and the command line people ask a brain with (login, apply, and every type
+// the brain offers: internal/cli).
 package main
 
 import (
@@ -26,6 +28,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/tomblancdev/hangar/internal/audit"
+	"github.com/tomblancdev/hangar/internal/cli"
 	"github.com/tomblancdev/hangar/internal/config"
 	"github.com/tomblancdev/hangar/internal/core"
 	"github.com/tomblancdev/hangar/internal/identity"
@@ -42,7 +45,7 @@ var version = "dev"
 
 const usage = `hangar — a small cloud's control plane.
 
-Usage:
+On the brain's host:
   hangar serve   [--config FILE]          run the brain
   hangar check   [--config FILE]          start every plugin, check the config against
                                           what they declare, print it, stop (0 = sound)
@@ -59,7 +62,7 @@ $HANGAR_LISTEN and $HANGAR_DATA_DIR override the file's listen and data_dir.
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
+		fmt.Fprint(os.Stderr, usage+cli.Usage)
 		os.Exit(2)
 	}
 	var err error
@@ -75,10 +78,10 @@ func main() {
 	case "version", "--version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
-		fmt.Print(usage)
+		fmt.Print(usage + cli.Usage)
 	default:
-		fmt.Fprintf(os.Stderr, "hangar: no command %q\n\n%s", os.Args[1], usage)
-		os.Exit(2)
+		// the command line: its own words, and every type the brain offers
+		os.Exit(cli.Main(os.Args[1:], cli.DefaultEnv()))
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hangar:", err)

@@ -93,6 +93,7 @@ var routes = []route{
 	{pattern: "GET /metrics", h: func(s *Server) http.HandlerFunc { return s.metricsPage }},
 	{pattern: "GET /openapi.json", h: func(s *Server) http.HandlerFunc { return s.openapi }},
 	{pattern: "GET /mark.svg", h: func(s *Server) http.HandlerFunc { return s.mark }},
+	{pattern: "GET /v1/signin", h: func(s *Server) http.HandlerFunc { return s.signin }},
 
 	{pattern: "GET /v1/whoami", api: func(s *Server) apiFunc { return s.whoami }},
 	{pattern: "GET /v1/types", api: func(s *Server) apiFunc { return s.types }},
@@ -105,6 +106,7 @@ var routes = []route{
 	{pattern: "GET /v1/resources/{id}", api: func(s *Server) apiFunc { return s.getResource }},
 	{pattern: "DELETE /v1/resources/{id}", api: func(s *Server) apiFunc { return s.deleteResource }},
 	{pattern: "POST /v1/resources/{id}/actions/{action}", api: func(s *Server) apiFunc { return s.act }},
+	{pattern: "POST /v1/resources/{id}/plan", api: func(s *Server) apiFunc { return s.planChange }},
 	{pattern: "GET /v1/operations", api: func(s *Server) apiFunc { return s.listOperations }},
 	{pattern: "GET /v1/operations/{id}", api: func(s *Server) apiFunc { return s.getOperation }},
 	{pattern: "GET /v1/tokens", api: func(s *Server) apiFunc { return s.listTokens }},
@@ -312,6 +314,20 @@ func (s *Server) mark(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(ui.Lockup(s.cfg.House))
 }
 
+// signin tells a door where people sign in: the identity provider, the
+// client id (the audience the brain reads tokens for — a public client,
+// the device flow on) and the scopes to ask for. Public, as any web app's
+// sign-in settings are; 404 on a brain that takes API tokens only.
+func (s *Server) signin(w http.ResponseWriter, _ *http.Request) {
+	o := s.cfg.Identity.OIDC
+	if o == nil {
+		writeProblem(w, &core.Problem{Status: 404, Kind: core.KindNotFound,
+			Detail: "this hangar has no identity provider: sign in with an API token (HANGAR_TOKEN), made on the brain's host by hangar token create"})
+		return
+	}
+	_ = writeJSON(w, 200, map[string]any{"issuer": o.Issuer, "client_id": o.Audience, "scopes": o.Scopes})
+}
+
 var front = template.Must(template.New("front").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
@@ -493,6 +509,22 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request, who *core.Caller) e
 	}
 	op, res, replayed, err := s.core.Act(r.Context(), who, r.PathValue("id"), r.PathValue("action"), in)
 	return accepted(w, op, res, replayed, err)
+}
+
+type planBody struct {
+	Spec json.RawMessage `json:"spec"`
+}
+
+func (s *Server) planChange(w http.ResponseWriter, r *http.Request, who *core.Caller) error {
+	var in planBody
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	plan, err := s.core.PlanChange(r.Context(), who, r.PathValue("id"), in.Spec)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, 200, plan)
 }
 
 // ---- Operations ---------------------------------------------------------

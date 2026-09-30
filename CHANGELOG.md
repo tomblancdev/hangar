@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased — la ligne de commande
+
+The command line, drawn from what the brain serves — proved on the fake
+engine (controls red), through the binary, on the repo's throwaway Proxmox VE
+(a dev box made true from its file) and against a throwaway authentik (the
+device flow, the refresh, the revocation).
+
+- **`hangar` is also the command line** ([docs/cli.md](docs/cli.md)): `login`
+  (the **device flow**, RFC 8628, at the brain's identity provider with its
+  own client id — a public client; or an API token read from stdin), `logout`
+  (the refresh token revoked, RFC 7009), `whoami`, `types`, `zones`, `limits`,
+  `operations`, `wait`, and **every type the brain offers**:
+  `hangar <type> create|list|get|delete|<action>`, its flags the type's
+  schema's top-level properties, drawn at run time from `GET /v1/types`. The
+  sign-ins in `$HANGAR_HOME/credentials.json` (`0600`); `HANGAR_URL`,
+  `HANGAR_TOKEN`, `HANGAR_ZONE`.
+- **`hangar apply FILE`**: a spec file made true — each entry one resource in
+  its type's words; a reference an id, `@<schedule>` or another entry, made in
+  that order; the brain its state (tags `apply:set`, `apply:name`; the
+  caller's own resources only — an operator's listing of everyone's never
+  becomes their plan). Created, changed by the steps each plugin names,
+  deleted after asking (`--yes`; refused with no one at stdin), a field set at
+  birth stopping everything before anything changes; `--plan`.
+- **A change's plan** (`POST /v1/resources/{id}/plan`, the protocol's
+  `PlanChange`): what brings a resource to a whole spec — its plugin's steps,
+  in order, or the fields set at its birth. Changes nothing. Only what the
+  spec names anew must be usable; `@<schedule>` is where the resource already
+  is when that schedule made what it names. The machines (resize), volumes
+  (resize, set_backup, attach/detach/move), images (share) and toy plugins
+  answer it; the SDK's `Step` and `Fixed`.
+- **`GET /v1/signin`** (public): the issuer, the client id and the scopes a
+  door signs people in with; `identity.oidc.scopes` (default `openid profile
+  offline_access`).
+- `internal/testoidc` signs a command line in by the device flow, refreshes
+  and revokes; `internal/stacktest` runs a whole brain in another package's
+  tests.
+
 ## Unreleased — les recettes qui se refont
 
 Recipes baked again by themselves — proved on the fake engine by a clock

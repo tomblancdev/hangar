@@ -612,6 +612,99 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 	}, nil
 }
 
+// PlanChange says what brings a machine to another spec: its size through
+// resize; everything else a machine is set at its birth. Power is no field
+// of the spec: a change never starts nor stops a machine. A field the wanted
+// spec leaves out is wanted at its default — but for disk_gb, whose default
+// follows its image: only a disk_gb written is compared.
+func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) (*pluginpb.PlanChangeResponse, error) {
+	cur := req.GetCurrent()
+	switch cur.GetType() {
+	case "keypair":
+		var was, want KeyPair
+		if err := sdk.Decode(cur.GetSpec(), &was); err != nil {
+			return nil, err
+		}
+		if err := sdk.Decode(req.GetSpec(), &want); err != nil {
+			return nil, err
+		}
+		canonical, _, err := parseKey(want.PublicKey)
+		if err != nil {
+			return nil, sdk.Refuse("/public_key: %v", err)
+		}
+		if canonical != was.PublicKey {
+			return &pluginpb.PlanChangeResponse{Fixed: []*pluginpb.Refusal{sdk.Fixed("/public_key", "another key", "a key pair's key")}}, nil
+		}
+		return &pluginpb.PlanChangeResponse{}, nil
+	case "machine":
+	default:
+		return nil, sdk.Refuse("no type %q here", cur.GetType())
+	}
+	var was Spec
+	if err := sdk.Decode(cur.GetSpec(), &was); err != nil {
+		return nil, err
+	}
+	var in struct {
+		Spec
+		Type     *string `json:"type"`
+		Cores    *int    `json:"cores"`
+		MemoryGB *int    `json:"memory_gb"`
+		DiskGB   *int    `json:"disk_gb"`
+	}
+	in.Kind, in.Class, in.Resume = "vm", Spot, true
+	if err := sdk.Decode(req.GetSpec(), &in); err != nil {
+		return nil, err
+	}
+	want := was
+	if in.Type == nil && in.Cores == nil && in.MemoryGB == nil {
+		def := DefaultType
+		in.Type = &def
+	}
+	if r := p.size(&want, in.Type, in.Cores, in.MemoryGB, true); r != nil {
+		return nil, sdk.Refuse("%s: %s", r.Field, r.Reason)
+	}
+	out := &pluginpb.PlanChangeResponse{}
+	fixed := func(field string, differ bool, was, what string) {
+		if differ {
+			out.Fixed = append(out.Fixed, sdk.Fixed(field, was, what))
+		}
+	}
+	or := func(s, none string) string {
+		if s == "" {
+			return none
+		}
+		return s
+	}
+	fixed("/name", in.Name != was.Name, or(was.Name, "unnamed"), "a machine's name")
+	fixed("/kind", in.Kind != was.Kind, "a "+kindWord(was.Kind), "a machine's kind")
+	fixed("/image", in.Image != was.Image, or(was.Image, "no image by name"), "what a machine starts from")
+	fixed("/image_id", in.ImageID != was.ImageID, or(was.ImageID, "no image resource"), "what a machine starts from")
+	fixed("/class", in.Class != was.Class, was.Class, "a machine's class")
+	fixed("/floor_gb", in.FloorGB != was.FloorGB, strconv.Itoa(was.FloorGB)+" GB", "a machine's floor")
+	fixed("/cores_beside", in.CoresBeside != was.CoresBeside, strconv.Itoa(was.CoresBeside), "a machine's cores_beside")
+	fixed("/resume", in.Resume != was.Resume, strconv.FormatBool(was.Resume), "whether a spot machine resumes")
+	fixed("/key_pairs", !sameSet(in.KeyPairs, was.KeyPairs), or(strings.Join(was.KeyPairs, ", "), "none"), "a machine's key pairs")
+	fixed("/user_data", in.UserData != was.UserData, "other user data", "what a machine's first boot is handed")
+	if in.DiskGB != nil {
+		fixed("/disk_gb", *in.DiskGB != was.DiskGB, strconv.Itoa(was.DiskGB)+" GB", "a machine's root disk")
+	}
+	if want.Type != was.Type || want.Cores != was.Cores || want.MemoryGB != was.MemoryGB {
+		if want.Type != "" {
+			out.Steps = append(out.Steps, sdk.Step("resize", map[string]any{"type": want.Type}))
+		} else {
+			out.Steps = append(out.Steps, sdk.Step("resize", map[string]any{"cores": want.Cores, "memory_gb": want.MemoryGB}))
+		}
+	}
+	return out, nil
+}
+
+func sameSet(a, b []string) bool {
+	a, b = slices.Clone(a), slices.Clone(b)
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(slices.Compact(a), slices.Compact(b))
+}
+
 func kindWord(kind string) string {
 	if kind == "vm" {
 		return "VM"

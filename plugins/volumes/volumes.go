@@ -366,6 +366,74 @@ func next(v driver.Volumes, cur Spec, action string, raw []byte, refs []*pluginp
 	return s, refusals, nil
 }
 
+// PlanChange says what brings a volume to another spec: grown by resize,
+// its backup by set_backup, its place by attach, detach or move — the
+// machine it is on is changed last. Its content is set at its birth, and it
+// never shrinks.
+func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) (*pluginpb.PlanChangeResponse, error) {
+	if req.GetCurrent().GetType() != "volume" {
+		return nil, sdk.Refuse("no type %q here", req.GetCurrent().GetType())
+	}
+	var was, want Spec
+	if err := sdk.Decode(req.GetCurrent().GetSpec(), &was); err != nil {
+		return nil, err
+	}
+	if err := sdk.Decode(req.GetSpec(), &want); err != nil {
+		return nil, err
+	}
+	if want.Content == "" {
+		want.Content = driver.ContentBlock
+		if want.Mount != "" {
+			want.Content = driver.ContentFilesystem
+		}
+	}
+	out := &pluginpb.PlanChangeResponse{}
+	if want.Content != was.Content {
+		// its path and its place follow from what it is: nothing more to say
+		out.Fixed = append(out.Fixed, sdk.Fixed("/content", "a "+was.Content+" volume", "a volume's content"))
+		return out, nil
+	}
+	switch {
+	case want.SizeGB < was.SizeGB:
+		out.Fixed = append(out.Fixed, &pluginpb.Refusal{Field: "/size_gb", Reason: fmt.Sprintf("it is %d GB, and a volume only grows", was.SizeGB)})
+	case want.SizeGB > was.SizeGB:
+		out.Steps = append(out.Steps, sdk.Step("resize", map[string]any{"size_gb": want.SizeGB}))
+	}
+	if want.Backup != was.Backup {
+		out.Steps = append(out.Steps, sdk.Step("set_backup", map[string]any{"backup": want.Backup}))
+	}
+	// the path goes with the place: a filesystem volume takes it when it is
+	// attached (a parked one keeps its last for its next attach)
+	at := func(machine string) map[string]any {
+		pp := map[string]any{"machine": machine}
+		if want.Mount != "" {
+			pp["mount"] = want.Mount
+		}
+		return pp
+	}
+	switch {
+	case want.Machine == was.Machine && want.Mount != "" && want.Mount != was.Mount && was.Machine != "":
+		out.Steps = append(out.Steps, sdk.Step("detach", nil), sdk.Step("attach", at(want.Machine)))
+	case want.Machine == was.Machine && want.Mount != was.Mount && was.Machine == "":
+		out.Fixed = append(out.Fixed, &pluginpb.Refusal{Field: "/mount", Reason: fmt.Sprintf("it is parked with %s, and a volume takes a new path only when it is attached", or(was.Mount, "no path"))})
+	case want.Machine == was.Machine:
+	case was.Machine == "":
+		out.Steps = append(out.Steps, sdk.Step("attach", at(want.Machine)))
+	case want.Machine == "":
+		out.Steps = append(out.Steps, sdk.Step("detach", nil))
+	default:
+		out.Steps = append(out.Steps, sdk.Step("move", at(want.Machine)))
+	}
+	return out, nil
+}
+
+func or(s, none string) string {
+	if s == "" {
+		return none
+	}
+	return s
+}
+
 func usage(s Spec) map[string]int64 {
 	u := map[string]int64{"volumes.count": 1, "volumes.size_gb": int64(s.SizeGB), "volumes.backup_gb": 0}
 	if s.Backup {

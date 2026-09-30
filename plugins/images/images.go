@@ -469,6 +469,44 @@ func kindWord(kind string) string {
 	return kind
 }
 
+// PlanChange says what brings an image to another spec: whom it is shared
+// with, through share; what it was made from, and its name, are set at its
+// birth. Whether it is retired is its owner's action, never a spec's.
+func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) (*pluginpb.PlanChangeResponse, error) {
+	if req.GetCurrent().GetType() != "image" {
+		return nil, sdk.Refuse("no type %q here", req.GetCurrent().GetType())
+	}
+	var was, want Spec
+	if err := sdk.Decode(req.GetCurrent().GetSpec(), &was); err != nil {
+		return nil, err
+	}
+	if err := sdk.Decode(req.GetSpec(), &want); err != nil {
+		return nil, err
+	}
+	out := &pluginpb.PlanChangeResponse{}
+	fixed := func(field, now, then, what string) {
+		if now != then {
+			if then == "" {
+				then = "none"
+			}
+			out.Fixed = append(out.Fixed, sdk.Fixed(field, then, what))
+		}
+	}
+	fixed("/name", want.Name, was.Name, "an image's name")
+	fixed("/recipe", want.Recipe, was.Recipe, "what an image was made from")
+	fixed("/machine", want.Machine, was.Machine, "what an image was made from")
+	a, b := slices.Clone(want.SharedWith), slices.Clone(was.SharedWith)
+	slices.Sort(a)
+	slices.Sort(b)
+	if !slices.Equal(slices.Compact(a), slices.Compact(b)) {
+		if want.SharedWith == nil {
+			want.SharedWith = []string{}
+		}
+		out.Steps = append(out.Steps, sdk.Step("share", map[string]any{"shared_with": want.SharedWith}))
+	}
+	return out, nil
+}
+
 func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.PlanResponse, error) {
 	if req.GetType() != "image" {
 		return nil, sdk.Refuse("no type %q here", req.GetType())

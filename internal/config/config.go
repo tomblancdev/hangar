@@ -56,6 +56,13 @@ type OIDC struct {
 	// NameClaim is shown in the audit beside the subject (default
 	// "preferred_username").
 	NameClaim string `yaml:"name_claim"`
+	// Scopes the command line asks for when it signs someone in (default
+	// openid, profile, offline_access): whichever of the provider's scopes
+	// put the groups claim in the token, and offline_access for a refresh
+	// token. The command line signs in with the audience as its client id —
+	// a public client, the device flow on (RFC 8628): the brain holds no
+	// client secret, it only reads tokens.
+	Scopes []string `yaml:"scopes"`
 }
 
 // Tokens bounds the API tokens people make for automation.
@@ -330,6 +337,9 @@ func (c *Config) defaults() {
 		}
 		if o.NameClaim == "" {
 			o.NameClaim = "preferred_username"
+		}
+		if len(o.Scopes) == 0 {
+			o.Scopes = []string{"openid", "profile", "offline_access"}
 		}
 	}
 	if c.Reconcile.Every == 0 {

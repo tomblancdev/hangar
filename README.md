@@ -17,7 +17,7 @@ ids (`m-0123456789abcdef0`), types, images, user data, tags, client tokens,
 on-demand and spot — for a home lab, a club, a small office. It is not a
 hypervisor (it drives yours) and not an EC2 clone.
 
-> **Status: the schedules.** The core is built and proved end to end —
+> **Status: the command line.** The core is built and proved end to end —
 > identity, tiers and limits, the registry, operations, reconcile, the audit,
 > the plugin host, the API. **The machines plugin and the Proxmox VE driver
 > are built**, proved on a throwaway Proxmox VE the repo installs itself
@@ -33,8 +33,12 @@ hypervisor (it drives yours) and not an EC2 clone.
 > with your group or everyone — a machine born from one usable at once —
 > **and baked again by themselves**: a recipe on the brain's own clock, a
 > machine asking for `@debian-13` born from the newest, the older ones
-> retired and deleted once nothing is born from them. The
-> command line and the console come next. No release is cut yet. [ARCHITECTURE.md](ARCHITECTURE.md) says what is built
+> retired and deleted once nothing is born from them. **And the command
+> line**, drawn from what the brain serves: signed in by the device flow at
+> your identity provider, every type a command, and `hangar apply` making a
+> spec file true — created, changed by the steps each plugin names, deleted
+> after asking ([docs/cli.md](docs/cli.md)). The console comes next. No
+> release is cut yet. [ARCHITECTURE.md](ARCHITECTURE.md) says what is built
 > and what is designed, section by section.
 
 ## How it fits together
@@ -69,6 +73,25 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST localhost:8080/v1/resources \
      -d '{"type":"box","zone":"playground","spec":{"cores":2}}'
 curl -s -H "Authorization: Bearer $TOKEN" localhost:8080/v1/limits
 ```
+
+The same binary is the command line — every type the brain offers a
+command, its flags drawn from the type's schema ([docs/cli.md](docs/cli.md)):
+
+```sh
+export HANGAR_URL=http://localhost:8080 HANGAR_TOKEN=$TOKEN
+./hangar types
+./hangar box list
+cat > boxes.yaml <<'YAML'
+set: try
+zone: playground
+resources:
+  one: {type: box, spec: {cores: 1}}
+YAML
+./hangar apply boxes.yaml       # again: nothing to do; cores: 2, then again: a resize
+```
+
+With an identity provider, `hangar login https://…` signs you in by the
+device flow instead of a token.
 
 The example's zone runs on the fake engine, whose state is
 `data/playground.json`: edit it by hand — change a box's cores, or delete one

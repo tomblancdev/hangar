@@ -232,6 +232,22 @@ func TestARecipeBakedAgainByItself(t *testing.T) {
 	if r = get(bm); r.str("observed", "running") != "true" {
 		t.Fatalf("bob's machine runs on: %v", r.body)
 	}
+	// bob's machine brought to a spec: "@debian" is where it is — born from
+	// what the schedule made, retired since — and never moves it to the
+	// newest; the image it names already needs no longer be usable; another
+	// image is set at its birth
+	plan := func(spec map[string]any) reply {
+		return s.do("POST", "/v1/resources/"+bm+"/plan", bob, map[string]any{"spec": spec})
+	}
+	if r = plan(map[string]any{"image_id": "@debian"}); r.code != 200 || r.str("steps") != "[]" || r.body["fixed"] != nil {
+		t.Fatalf("\"@debian\" keeps a machine where it is: %d %v", r.code, r.body)
+	}
+	if r = plan(map[string]any{"image_id": img1}); r.code != 200 || r.str("steps") != "[]" || r.body["fixed"] != nil {
+		t.Fatalf("the retired image it names already: %d %v", r.code, r.body)
+	}
+	if r = plan(map[string]any{"image_id": img3}); r.code != 200 || r.str("fixed", "0", "field") != "/image_id" {
+		t.Fatalf("another image is set at its birth: %d %v", r.code, r.body)
+	}
 	if r = get(hand); word(r) != "" || r.str("state") != "ready" {
 		t.Fatalf("the image baked by hand is never touched: %v", r.body)
 	}

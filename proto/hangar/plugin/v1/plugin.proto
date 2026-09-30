@@ -40,6 +40,11 @@ service PluginService {
   rpc Configure(ConfigureRequest) returns (ConfigureResponse);
   // What a create or an action would hold, without doing it.
   rpc Plan(PlanRequest) returns (PlanResponse);
+  // What it takes to bring a resource to another spec: the actions, in
+  // order, or the fields no action changes (set at its birth). No side
+  // effects. A plugin that leaves it unimplemented has types that change only
+  // through their actions, asked one by one.
+  rpc PlanChange(PlanChangeRequest) returns (PlanChangeResponse);
   rpc Create(CreateRequest) returns (CreateResponse);
   rpc Delete(DeleteRequest) returns (DeleteResponse);
   rpc Act(ActRequest) returns (ActResponse);
@@ -232,6 +237,32 @@ message Room {
   int64 spot_mb = 2;
   // Whether it runs once the request is done (spot room is used only then).
   bool running = 3;
+}
+
+message PlanChangeRequest {
+  // The resource as the registry holds it (its spec: defaults applied).
+  Resource current = 1;
+  // The spec wanted, whole — valid against the type's schema, its
+  // references already ids. A field it leaves out is wanted at its default.
+  bytes spec = 2;
+  // The resources the wanted spec names, as the registry holds them.
+  repeated Resource refs = 3;
+}
+
+message PlanChangeResponse {
+  // The actions that bring the resource to the spec, in the order they are
+  // to be asked; none = it is there already. Each is then asked as any
+  // action is: planned, admitted, audited.
+  repeated Step steps = 1;
+  // The fields that differ and that no action changes — set at its birth
+  // ("/kind": "container, and a machine's kind is set at its birth").
+  repeated Refusal fixed = 2;
+}
+
+message Step {
+  string action = 1;
+  // Its params, absolute (rule 3), valid against the action's params schema.
+  bytes params = 2;
 }
 
 message Refusal {

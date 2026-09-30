@@ -24,7 +24,8 @@ where this page and they disagree, they win.
 | The volumes plugin (volumes, parked on a shelf where the engine keeps no disk without a guest); attachments between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
 | The images plugin (baked from a recipe, saved from a stopped machine, shared, retired); resources shared with others | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
 | Schedules: a create on the brain's own clock, in the name of the one it names — a recipe baked again every week; `@<schedule>` names the newest usable one; the older ones let go of (§3, §4, §7) | **built** — proved on a throwaway Proxmox VE |
-| The command line and the console generated from the schemas | designed (§2) |
+| The command line generated from the schemas: sign-in by the device flow, every type's commands, `apply` of a spec file; a change's plan (§2, §4) | **built** — proved on a throwaway Proxmox VE and a throwaway identity provider ([docs/cli.md](docs/cli.md)) |
+| The console generated from the schemas; a rebuild in `apply` (a field set at birth, made again) | designed (§2) |
 | Names, ports, snapshots, object storage, databases; the Incus and AWS drivers | designed (§7) |
 
 ---
@@ -95,8 +96,24 @@ between them.
 **The doors are generated.** Every type a plugin declares comes with the JSON
 Schema of its spec and of each action's params; `GET /v1/types` serves them,
 and the command line's flags and the console's forms are drawn from them — a
-new plugin appears in both without a line of their code changing. *(Designed:
-neither door exists yet; the API they will read does.)*
+new plugin appears in both without a line of their code changing.
+
+**The command line is built** ([docs/cli.md](docs/cli.md)): the same binary,
+a client of the API like any other. `hangar login` asks the brain where people
+sign in (`GET /v1/signin`) and runs the **device flow** (RFC 8628) at the
+operator's provider, with the brain's own client id — a public client: the
+brain holds no client secret, it only reads tokens; the refresh token is kept
+in a `0600` file, the ID token sent and refreshed, revoked at `logout`. Every
+type is `hangar <type> create|list|get|delete|<action>`, its flags its schema's
+top-level properties. **`hangar apply`** makes a spec file true: each entry one
+resource in its type's words, a reference an id, `@<schedule>` or another entry
+(made in that order); the brain is the state (the tags `apply:set` and
+`apply:name`, the caller's own resources only); what is missing is created,
+what differs brought there by **the steps its plugin names** (§4, a change's
+plan), what left the file deleted after asking; a field set at birth that
+differs stops everything before anything changes. *(Designed: the console;
+**a rebuild** — that field's resource made again, its attached volumes carried
+across, shown in the plan and asked.)*
 
 ## 3. The core — what never changes when a service is added **(built)**
 
@@ -158,7 +175,9 @@ the one to copy). A plugin declares, and only declares:
 
 and **acts** when asked: `Configure` (open a driver per zone, report its
 capabilities) · `Plan` (what a create or an action would hold — no side
-effects) · `Create`, `Delete`, `Act` · `Reconcile` (desired against actual).
+effects) · `PlanChange` (the steps that bring a resource to another spec, or
+the fields set at its birth — no side effects; optional) · `Create`,
+`Delete`, `Act` · `Reconcile` (desired against actual).
 
 **Four rules a plugin keeps:** (1) `Create`, `Delete` and `Act` are
 **idempotent on the resource id** — the id is minted by the core before the
@@ -234,6 +253,22 @@ allows or not by the plugin's own choice dimension (the images plugin's
 whose room changes on its own — a bake borrows its builder's memory until
 its image is made, then takes none — returns its spec and new room from
 reconcile, only when they differ. **(built)**
+
+**A change's plan.** A resource changes through its type's actions; to bring
+one to a whole new spec — what `apply` does — the core asks **its plugin**
+(`PlanChange`): the steps, in order (« resize {memory_gb: 48} »; « detach,
+then attach {machine, mount} » for a new path), or the fields that differ and
+no action changes — set at its birth. The plugin knows its fields; the core
+knows none. `POST /v1/resources/{id}/plan` answers it and changes nothing;
+each step is then asked as any action is (planned, admitted, audited). The
+spec is whole (a field left out is wanted at its default) and checked as a
+create's; **only what it names anew must be usable** (a machine keeps the
+image it was born from, retired or not); **a reference written `@<schedule>`
+is where the resource already is when that schedule made what it names** —
+the latest is what a *new* machine is born from, and never moves one that
+exists (I22's rule, kept by the core). A plugin that leaves `PlanChange`
+unimplemented has types that change only through their actions, asked one by
+one. **(built)**
 
 **A reference to a type no enabled plugin declares** is logged at start and
 refused at the request (« no plugin here makes the type image ») — the rest of the
@@ -553,6 +588,12 @@ directly, and each credential must stay fenced.
 | A schedule keeps its `keep` newest usable ones; older ones are retired, then deleted once nothing names them — and only once newer ones are usable | a way back stays; the store stops growing; a failed week never costs the last good image |
 | Whether a resource is usable is its plugin's say, re-read at every reconcile | the core knows no plugin's states; an event would be lost by a restart |
 | A failed bake holds nothing | a failure streak would otherwise fill a tier, and a schedule jam behind its own failures |
+| The command line is a client of the API, generated at run time from `GET /v1/types` | a new plugin is a new command with no release of the door; the brain checks everything, the door only turns words into JSON |
+| Sign-in by the device flow, with the brain's own client id (a public client) | the password and the second factor stay on the provider's page, in any browser; the brain holds no client secret; one client for every door |
+| `apply` runs in the client; the brain is its state (two tags), only the caller's own resources counted | no state file to lose or share; the API stays one ask flow; an operator's listing of everyone's never becomes their plan |
+| What brings a resource to a spec is its plugin's say (`PlanChange`), asked beforehand and run as ordinary actions | the plugin knows which action changes which field; every step is admitted and audited as if asked by hand |
+| A resource that left the file is deleted — after asking (`--yes` for scripts; refused with no one at stdin) | the file is the whole truth, as Terraform's; nothing goes unasked |
+| A field set at birth that differs stops the whole apply before anything changes; a rebuild is designed, not built | nothing is lost by surprise (a machine's disk is data); a rebuild must carry the volumes across |
 
 **Set aside:** an EC2 API clone (nothing maintained speaks it for the engines
 this targets — OpenStack's EC2 layer, CloudStack's `ec2stack`, Eucalyptus and

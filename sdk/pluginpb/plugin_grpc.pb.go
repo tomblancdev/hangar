@@ -47,14 +47,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PluginService_Describe_FullMethodName  = "/hangar.plugin.v1.PluginService/Describe"
-	PluginService_Configure_FullMethodName = "/hangar.plugin.v1.PluginService/Configure"
-	PluginService_Plan_FullMethodName      = "/hangar.plugin.v1.PluginService/Plan"
-	PluginService_Create_FullMethodName    = "/hangar.plugin.v1.PluginService/Create"
-	PluginService_Delete_FullMethodName    = "/hangar.plugin.v1.PluginService/Delete"
-	PluginService_Act_FullMethodName       = "/hangar.plugin.v1.PluginService/Act"
-	PluginService_Reconcile_FullMethodName = "/hangar.plugin.v1.PluginService/Reconcile"
-	PluginService_Survey_FullMethodName    = "/hangar.plugin.v1.PluginService/Survey"
+	PluginService_Describe_FullMethodName   = "/hangar.plugin.v1.PluginService/Describe"
+	PluginService_Configure_FullMethodName  = "/hangar.plugin.v1.PluginService/Configure"
+	PluginService_Plan_FullMethodName       = "/hangar.plugin.v1.PluginService/Plan"
+	PluginService_PlanChange_FullMethodName = "/hangar.plugin.v1.PluginService/PlanChange"
+	PluginService_Create_FullMethodName     = "/hangar.plugin.v1.PluginService/Create"
+	PluginService_Delete_FullMethodName     = "/hangar.plugin.v1.PluginService/Delete"
+	PluginService_Act_FullMethodName        = "/hangar.plugin.v1.PluginService/Act"
+	PluginService_Reconcile_FullMethodName  = "/hangar.plugin.v1.PluginService/Reconcile"
+	PluginService_Survey_FullMethodName     = "/hangar.plugin.v1.PluginService/Survey"
 )
 
 // PluginServiceClient is the client API for PluginService service.
@@ -69,6 +70,11 @@ type PluginServiceClient interface {
 	Configure(ctx context.Context, in *ConfigureRequest, opts ...grpc.CallOption) (*ConfigureResponse, error)
 	// What a create or an action would hold, without doing it.
 	Plan(ctx context.Context, in *PlanRequest, opts ...grpc.CallOption) (*PlanResponse, error)
+	// What it takes to bring a resource to another spec: the actions, in
+	// order, or the fields no action changes (set at its birth). No side
+	// effects. A plugin that leaves it unimplemented has types that change only
+	// through their actions, asked one by one.
+	PlanChange(ctx context.Context, in *PlanChangeRequest, opts ...grpc.CallOption) (*PlanChangeResponse, error)
 	Create(ctx context.Context, in *CreateRequest, opts ...grpc.CallOption) (*CreateResponse, error)
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
 	Act(ctx context.Context, in *ActRequest, opts ...grpc.CallOption) (*ActResponse, error)
@@ -113,6 +119,16 @@ func (c *pluginServiceClient) Plan(ctx context.Context, in *PlanRequest, opts ..
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PlanResponse)
 	err := c.cc.Invoke(ctx, PluginService_Plan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginServiceClient) PlanChange(ctx context.Context, in *PlanChangeRequest, opts ...grpc.CallOption) (*PlanChangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlanChangeResponse)
+	err := c.cc.Invoke(ctx, PluginService_PlanChange_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -181,6 +197,11 @@ type PluginServiceServer interface {
 	Configure(context.Context, *ConfigureRequest) (*ConfigureResponse, error)
 	// What a create or an action would hold, without doing it.
 	Plan(context.Context, *PlanRequest) (*PlanResponse, error)
+	// What it takes to bring a resource to another spec: the actions, in
+	// order, or the fields no action changes (set at its birth). No side
+	// effects. A plugin that leaves it unimplemented has types that change only
+	// through their actions, asked one by one.
+	PlanChange(context.Context, *PlanChangeRequest) (*PlanChangeResponse, error)
 	Create(context.Context, *CreateRequest) (*CreateResponse, error)
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
 	Act(context.Context, *ActRequest) (*ActResponse, error)
@@ -209,6 +230,9 @@ func (UnimplementedPluginServiceServer) Configure(context.Context, *ConfigureReq
 }
 func (UnimplementedPluginServiceServer) Plan(context.Context, *PlanRequest) (*PlanResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Plan not implemented")
+}
+func (UnimplementedPluginServiceServer) PlanChange(context.Context, *PlanChangeRequest) (*PlanChangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PlanChange not implemented")
 }
 func (UnimplementedPluginServiceServer) Create(context.Context, *CreateRequest) (*CreateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Create not implemented")
@@ -296,6 +320,24 @@ func _PluginService_Plan_Handler(srv interface{}, ctx context.Context, dec func(
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PluginServiceServer).Plan(ctx, req.(*PlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginService_PlanChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlanChangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServiceServer).PlanChange(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginService_PlanChange_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServiceServer).PlanChange(ctx, req.(*PlanChangeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -408,6 +450,10 @@ var PluginService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Plan",
 			Handler:    _PluginService_Plan_Handler,
+		},
+		{
+			MethodName: "PlanChange",
+			Handler:    _PluginService_PlanChange_Handler,
 		},
 		{
 			MethodName: "Create",
