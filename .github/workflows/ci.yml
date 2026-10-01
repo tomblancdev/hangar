@@ -29,8 +29,12 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l . | tee /dev/stderr)"
       - run: go vet ./...
-      # the whole suite, the binary's end-to-end run included
+      # the whole suite, the binary's end-to-end run included — and the
+      # console's app in a real browser, the runner's own Chrome (without one
+      # named, those tests would skip: named, a missing one fails)
       - run: go test -race ./...
+        env:
+          HANGAR_BROWSER: /usr/bin/google-chrome
       - run: CGO_ENABLED=0 go build -trimpath -o /tmp/hangar ./cmd/hangar
       - run: CGO_ENABLED=0 go build -trimpath -o /tmp/hangar-hook ./cmd/hangar-hook && /tmp/hangar-hook --help >/dev/null
 

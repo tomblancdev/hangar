@@ -1,0 +1,53 @@
+# The throwaway provider's set-up (tools/provider/authentik.sh): the client a
+# hangar's doors sign in with, and two people. No secret here: passwords come
+# from the environment.
+version: 1
+metadata:
+  name: hangar-throwaway
+entries:
+  - model: authentik_core.group
+    id: users
+    identifiers: {name: users}
+  - model: authentik_core.group
+    id: visitors
+    identifiers: {name: visitors}
+  - model: authentik_core.user
+    identifiers: {username: alice}
+    attrs:
+      name: Alice
+      email: alice@example.org
+      password: !Env HANGAR_ALICE_PASSWORD
+      groups: [!KeyOf users]
+  - model: authentik_core.user
+    identifiers: {username: eve}          # signs in, and reaches no tier
+    attrs:
+      name: Eve
+      email: eve@example.org
+      password: !Env HANGAR_ALICE_PASSWORD
+      groups: [!KeyOf visitors]
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider
+    identifiers: {name: hangar}
+    attrs:
+      client_type: public               # no secret: a door proves itself by PKCE, or by the device code
+      client_id: hangar
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      redirect_uris:
+        - {matching_mode: strict, url: "@CONSOLE@/console/callback"}
+      grant_types:
+        - authorization_code
+        - refresh_token
+        - urn:ietf:params:oauth:grant-type:device_code
+      access_code_validity: minutes=10
+      access_token_validity: minutes=1      # short: the tests watch a token end and be renewed
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-profile]]
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-offline_access]]
+  - model: authentik_core.application
+    identifiers: {slug: hangar}
+    attrs:
+      name: hangar
+      provider: !KeyOf provider

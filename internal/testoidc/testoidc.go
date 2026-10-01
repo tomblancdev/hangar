@@ -1,17 +1,22 @@
 // Package testoidc is an OIDC issuer for tests: discovery, a key set, and
 // tokens signed on demand — the identity provider an operator already runs,
 // reduced to what the brain reads of it. It also signs a command line in by
-// the device flow (RFC 8628) for a public client, refreshes, and revokes
+// the device flow (RFC 8628) for a public client, a console by the
+// authorization code flow with PKCE (RFC 7636), refreshes, and revokes
 // (RFC 7009): the person's approval is the test's own call.
 package testoidc
 
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -31,11 +36,31 @@ type Issuer struct {
 	// (default an hour) — short, to prove the refresh.
 	TokenTTL time.Duration
 
+	// Redirects: the redirect addresses registered for the client, exactly;
+	// nil accepts any (a provider never redirects to one it does not know).
+	Redirects []string
+	// OtherNonce: the tokens a code brings answer another sign-in than the
+	// one that asked — what a door must refuse.
+	OtherNonce bool
+	// Slow: how long a refresh takes to be answered (a provider under load).
+	Slow time.Duration
+
 	mu        sync.Mutex
 	devices   map[string]*device // by device code
+	codes     map[string]*grant  // by authorization code
+	person    *Claims            // who is signed in at the provider's own page
 	refresh   map[string]device  // a live refresh token → who it signs in
 	refreshes int
 	revoked   int
+	codeAsks  int
+}
+
+// grant is an authorization code waiting to be traded.
+type grant struct {
+	device
+	redirect  string
+	challenge string
+	expires   time.Time
 }
 
 type device struct {
@@ -54,7 +79,7 @@ func New(t testing.TB) *Issuer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	iss := &Issuer{key: key, t: t, devices: map[string]*device{}, refresh: map[string]device{}}
+	iss := &Issuer{key: key, t: t, devices: map[string]*device{}, codes: map[string]*grant{}, refresh: map[string]device{}}
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -65,8 +90,10 @@ func New(t testing.TB) *Issuer {
 			"authorization_endpoint": iss.URL + "/authorize", "token_endpoint": iss.URL + "/token",
 			"device_authorization_endpoint": iss.URL + "/device", "revocation_endpoint": iss.URL + "/revoke",
 			"id_token_signing_alg_values_supported": []string{"RS256"},
+			"code_challenge_methods_supported":      []string{"S256"},
 		})
 	})
+	mux.HandleFunc("GET /authorize", iss.authorize)
 	mux.HandleFunc("POST /device", iss.deviceAuthorization)
 	mux.HandleFunc("POST /token", iss.token)
 	mux.HandleFunc("POST /revoke", iss.revoke)
@@ -86,6 +113,7 @@ type Claims struct {
 	Name     string
 	Expiry   time.Time // zero: an hour from now
 	Issuer   string    // empty: this issuer
+	Nonce    string    // the sign-in request's, when it sent one
 }
 
 // Token signs a token with the issuer's key.
@@ -121,11 +149,87 @@ func sign(t testing.TB, key *rsa.PrivateKey, url string, c Claims) string {
 		Expiry: jwt.NewNumericDate(c.Expiry), IssuedAt: jwt.NewNumericDate(time.Now().Add(-time.Minute)),
 	}
 	extra := map[string]any{"groups": c.Groups, "preferred_username": c.Name}
+	if c.Nonce != "" {
+		extra["nonce"] = c.Nonce
+	}
 	raw, err := jwt.Signed(signer).Claims(std).Claims(extra).Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+// ---- The authorization code flow (a browser's) ------------------------------
+
+// SignedIn says who is signed in at the provider's own page: the next
+// browser sent to /authorize comes back with a code for them, as with a
+// provider's session already open. Nil: nobody — the browser comes back
+// refused.
+func (i *Issuer) SignedIn(c *Claims) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.person = c
+}
+
+// CodeAsks counts the browsers sent to /authorize.
+func (i *Issuer) CodeAsks() int { i.mu.Lock(); defer i.mu.Unlock(); return i.codeAsks }
+
+func (i *Issuer) authorize(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeAsks++
+	back, err := url.Parse(q.Get("redirect_uri"))
+	// what a provider cannot send back, it shows on its own page
+	switch {
+	case q.Get("client_id") == "":
+		http.Error(w, "invalid_client", 400)
+		return
+	case err != nil || back.Host == "" || (i.Redirects != nil && !slices.Contains(i.Redirects, q.Get("redirect_uri"))):
+		http.Error(w, "redirect_uri mismatch: "+q.Get("redirect_uri"), 400)
+		return
+	}
+	answer := url.Values{"state": {q.Get("state")}}
+	switch {
+	case q.Get("response_type") != "code":
+		answer.Set("error", "unsupported_response_type")
+	case q.Get("code_challenge") == "" || q.Get("code_challenge_method") != "S256":
+		answer.Set("error", "invalid_request")
+		answer.Set("error_description", "a public client proves itself by PKCE (S256)")
+	case i.person == nil:
+		answer.Set("error", "access_denied")
+	default:
+		c := *i.person
+		c.Audience, c.Nonce = q.Get("client_id"), q.Get("nonce")
+		if i.OtherNonce {
+			c.Nonce = random(8)
+		}
+		code := random(16)
+		i.codes[code] = &grant{
+			device:   device{clientID: q.Get("client_id"), scope: q.Get("scope"), claims: &c},
+			redirect: q.Get("redirect_uri"), challenge: q.Get("code_challenge"), expires: time.Now().Add(time.Minute),
+		}
+		answer.Set("code", code)
+	}
+	back.RawQuery = answer.Encode()
+	http.Redirect(w, r, back.String(), http.StatusFound)
+}
+
+// tradeCode is the token endpoint's authorization_code grant: a code is good
+// once, for the client and the address it was asked with, and only to the
+// one holding the verifier its challenge was made from.
+func (i *Issuer) tradeCode(w http.ResponseWriter, r *http.Request) {
+	g, ok := i.codes[r.PostFormValue("code")]
+	delete(i.codes, r.PostFormValue("code"))
+	sum := sha256.Sum256([]byte(r.PostFormValue("code_verifier")))
+	switch {
+	case !ok || time.Now().After(g.expires) || g.clientID != r.PostFormValue("client_id") || g.redirect != r.PostFormValue("redirect_uri"):
+		oauthError(w, "invalid_grant")
+	case base64.RawURLEncoding.EncodeToString(sum[:]) != g.challenge:
+		oauthError(w, "invalid_grant")
+	default:
+		i.issue(w, g.device)
+	}
 }
 
 // ---- The device flow --------------------------------------------------------
@@ -210,16 +314,39 @@ func (i *Issuer) issue(w http.ResponseWriter, d device) {
 	}
 	c := *d.claims
 	c.Expiry = time.Now().Add(ttl)
-	rt := random(16)
-	i.refresh[rt] = d
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	out := map[string]any{
 		"access_token": random(16), "token_type": "Bearer", "expires_in": int(ttl.Seconds()),
-		"id_token": sign(i.t, i.key, i.URL, c), "refresh_token": rt, "scope": d.scope,
-	})
+		"id_token": sign(i.t, i.key, i.URL, c), "scope": d.scope,
+	}
+	// a refresh token comes only to who asked to stay signed in
+	if slices.Contains(strings.Fields(d.scope), "offline_access") {
+		rt := random(16)
+		// the tokens a refresh brings carry no nonce: it was the sign-in's
+		again := *d.claims
+		again.Nonce = ""
+		d.claims = &again
+		i.refresh[rt] = d
+		out["refresh_token"] = rt
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// Forget ends every sign-in at the provider: no refresh token is good any
+// more (an account disabled, a session revoked there).
+func (i *Issuer) Forget() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	clear(i.refresh)
 }
 
 func (i *Issuer) token(w http.ResponseWriter, r *http.Request) {
+	if r.PostFormValue("grant_type") == "refresh_token" {
+		i.mu.Lock()
+		slow := i.Slow
+		i.mu.Unlock()
+		time.Sleep(slow)
+	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	switch r.PostFormValue("grant_type") {
@@ -238,6 +365,8 @@ func (i *Issuer) token(w http.ResponseWriter, r *http.Request) {
 			delete(i.devices, r.PostFormValue("device_code"))
 			i.issue(w, *d)
 		}
+	case "authorization_code":
+		i.tradeCode(w, r)
 	case "refresh_token":
 		d, ok := i.refresh[r.PostFormValue("refresh_token")]
 		if !ok || d.clientID != r.PostFormValue("client_id") {
@@ -261,4 +390,11 @@ func (i *Issuer) revoke(w http.ResponseWriter, r *http.Request) {
 		i.revoked++
 	}
 	w.WriteHeader(200)
+}
+
+// SlowRefresh makes every refresh take this long from now on.
+func (i *Issuer) SlowRefresh(d time.Duration) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.Slow = d
 }

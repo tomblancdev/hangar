@@ -174,7 +174,7 @@ const shareSchema = `{
   "additionalProperties": false,
   "required": ["shared_with"],
   "properties": {
-    "shared_with": { "type": "array", "maxItems": 20, "uniqueItems": true,
+    "shared_with": { "type": "array", "x-hangar-share": true, "maxItems": 20, "uniqueItems": true,
                      "items": { "type": "string", "minLength": 1, "maxLength": 128 },
                      "description": "Whom it is shared with now: groups you are in, * = everyone, [] = no one but you." }
   }

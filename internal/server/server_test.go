@@ -585,7 +585,8 @@ func TestHealthAndMetrics(t *testing.T) {
 	}
 	b, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(b), "/mark.svg") {
-		t.Fatal("the front page")
+	// with the console on (the default), the brain's address is the console's
+	if resp.Request.URL.Path != "/console/" || !strings.Contains(string(b), "static/js/main.js") {
+		t.Fatalf("the front page: at %s", resp.Request.URL.Path)
 	}
 }

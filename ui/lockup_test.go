@@ -2,6 +2,8 @@ package ui
 
 import (
 	"bytes"
+	"encoding/xml"
+	"io"
 	"strings"
 	"testing"
 )
@@ -40,5 +42,34 @@ func TestLockupSubstitutesTheOperatorsHouse(t *testing.T) {
 func TestLockupWithoutAHouseIsTheAssetItself(t *testing.T) {
 	if !bytes.Equal(Lockup(""), Lockup("   ")) {
 		t.Fatal("a blank house is no house")
+	}
+}
+
+// The mark is shown as an image, and an image's SVG is XML: one stray "<" in
+// it — a tag named in a comment of its stylesheet was enough — and no
+// browser draws it, while nothing complains.
+func TestTheMarkIsWellFormed(t *testing.T) {
+	for _, house := range []string{"", "Example House", `A & B <"x">`} {
+		dec := xml.NewDecoder(bytes.NewReader(Lockup(house)))
+		for {
+			if _, err := dec.Token(); err == io.EOF {
+				break
+			} else if err != nil {
+				t.Fatalf("the mark for house %q is not well-formed XML: %v", house, err)
+			}
+		}
+	}
+}
+
+func TestTheMarkAtRest(t *testing.T) {
+	still := Still("Example House")
+	if bytes.Equal(still, Lockup("Example House")) {
+		t.Fatal("Still changed nothing: the asset no longer says how it looks without motion")
+	}
+	if !strings.Contains(string(still), tspans("EXAMPLE HOUSE")) {
+		t.Fatal("the mark at rest lost the house word")
+	}
+	if err := xml.NewDecoder(bytes.NewReader(still)).Decode(new(struct{})); err != nil {
+		t.Fatalf("the mark at rest is not well-formed XML: %v", err)
 	}
 }

@@ -13,6 +13,8 @@
 #   curl -H "Authorization: Bearer $TOKEN" -X POST localhost:8080/v1/resources \
 #       -d '{"type":"machine","zone":"playground","spec":{"image":"debian-13","type":"t3.small"}}'
 #
+# or in a browser: http://localhost:8080 is the console — paste the token to sign in.
+#
 # or the same binary as the command line (docs/cli.md):
 #
 #   HANGAR_URL=http://localhost:8080 HANGAR_TOKEN=$TOKEN hangar box create --cores 2
@@ -23,6 +25,11 @@
 listen: ":8080"
 data_dir: ./data
 house: ""                     # your word for the mark; empty = the product's own
+# console:                    # the web console, at /console/ (docs/console.md) — on unless said otherwise.
+#   url: https://hangar.example.org   # the address people open it at: the identity provider sends them
+#                             #   back to <url>/console/callback, and an https one makes its cookie Secure
+#   idle: 12h                 # a sign-in unused this long ends
+#   enabled: false            # the brain serves none: `hangar console --brain URL` in front of it instead
 time_zone: UTC                # the calendar the meters' months are counted in (a tier's hours a month)
 
 identity:

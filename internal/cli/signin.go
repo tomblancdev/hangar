@@ -2,7 +2,7 @@ package cli
 
 import (
 	"bufio"
-	"encoding/base64"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/tomblancdev/hangar/internal/provider"
 )
 
 // ---- Signing in: the device flow (RFC 8628) --------------------------------
@@ -25,13 +27,6 @@ type signinInfo struct {
 	Issuer   string   `json:"issuer"`
 	ClientID string   `json:"client_id"`
 	Scopes   []string `json:"scopes"`
-}
-
-type discovery struct {
-	Issuer     string `json:"issuer"`
-	Token      string `json:"token_endpoint"`
-	Device     string `json:"device_authorization_endpoint"`
-	Revocation string `json:"revocation_endpoint"`
 }
 
 func getJSON(env *Env, u string, out any) (int, error) {
@@ -54,60 +49,20 @@ func getJSON(env *Env, u string, out any) (int, error) {
 	return 200, json.Unmarshal(b, out)
 }
 
-// discover reads the provider's discovery document, and holds it to the
-// issuer it was asked for (as OIDC's discovery says).
-func discover(env *Env, issuer string) (*discovery, error) {
-	var d discovery
-	if _, err := getJSON(env, strings.TrimSuffix(issuer, "/")+"/.well-known/openid-configuration", &d); err != nil {
-		return nil, fmt.Errorf("the identity provider %s: %w", issuer, err)
-	}
-	if d.Issuer != issuer {
-		return nil, fmt.Errorf("the identity provider at %s calls itself %s", issuer, d.Issuer)
-	}
-	if d.Token == "" {
-		return nil, fmt.Errorf("the identity provider %s names no token endpoint", issuer)
-	}
-	return &d, nil
+// discover reads the provider's discovery document.
+func discover(env *Env, issuer string) (*provider.Discovery, error) {
+	return provider.Discover(context.Background(), env.HTTP, issuer)
 }
 
-type oauthTokens struct {
-	AccessToken  string `json:"access_token"`
-	IDToken      string `json:"id_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int    `json:"expires_in"`
-	Error        string `json:"error"`
-	Description  string `json:"error_description"`
-	Interval     int    `json:"interval"`
-}
-
-func postForm(env *Env, endpoint string, form url.Values) (*oauthTokens, error) {
-	resp, err := env.HTTP.PostForm(endpoint, form)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	var t oauthTokens
-	if err := json.Unmarshal(b, &t); err != nil {
-		return nil, fmt.Errorf("%s answered %s", endpoint, resp.Status)
-	}
-	if t.Error == "" && resp.StatusCode != 200 {
-		t.Error = resp.Status
-	}
-	return &t, nil
+func postForm(env *Env, endpoint string, form url.Values) (*provider.Tokens, error) {
+	return provider.PostForm(context.Background(), env.HTTP, endpoint, form)
 }
 
 // keep writes a provider's answer into a sign-in: the ID token is what the
 // brain reads (the access token when no ID token came), its expiry read
 // from the token itself.
-func (e *entry) keep(env *Env, t *oauthTokens) error {
-	tok := t.IDToken
-	if tok == "" {
-		tok = t.AccessToken
-	}
+func (e *entry) keep(env *Env, t *provider.Tokens) error {
+	tok := t.Bearer()
 	if tok == "" {
 		return errors.New("the provider handed no token")
 	}
@@ -115,30 +70,8 @@ func (e *entry) keep(env *Env, t *oauthTokens) error {
 	if t.RefreshToken != "" {
 		e.RefreshToken = t.RefreshToken
 	}
-	e.ExpiresAt = env.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
-	if exp, ok := jwtExpiry(tok); ok {
-		e.ExpiresAt = exp
-	}
+	e.ExpiresAt = t.Expiry(env.Now())
 	return nil
-}
-
-// jwtExpiry reads a JWT's exp without checking it — the brain checks.
-func jwtExpiry(tok string) (time.Time, bool) {
-	parts := strings.Split(tok, ".")
-	if len(parts) != 3 {
-		return time.Time{}, false
-	}
-	b, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return time.Time{}, false
-	}
-	var c struct {
-		Exp int64 `json:"exp"`
-	}
-	if json.Unmarshal(b, &c) != nil || c.Exp == 0 {
-		return time.Time{}, false
-	}
-	return time.Unix(c.Exp, 0), true
 }
 
 func deviceSignIn(env *Env, base string, info *signinInfo) (*entry, error) {
@@ -223,12 +156,9 @@ func refresh(env *Env, e *entry) error {
 	if err != nil {
 		return err
 	}
-	t, err := postForm(env, d.Token, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {e.RefreshToken}, "client_id": {e.ClientID}})
+	t, err := provider.Refresh(context.Background(), env.HTTP, d.Token, e.ClientID, e.RefreshToken)
 	if err != nil {
 		return err
-	}
-	if t.Error != "" {
-		return fmt.Errorf("the identity provider said %s", strings.TrimSpace(t.Error+" "+t.Description))
 	}
 	return e.keep(env, t)
 }
@@ -328,15 +258,8 @@ func logout(env *Env, args []string) error {
 	}
 	if e.RefreshToken != "" {
 		if d, err := discover(env, e.Issuer); err == nil && d.Revocation != "" {
-			resp, err := env.HTTP.PostForm(d.Revocation, url.Values{"token": {e.RefreshToken}, "token_type_hint": {"refresh_token"}, "client_id": {e.ClientID}})
-			switch {
-			case err != nil:
+			if err := provider.Revoke(context.Background(), env.HTTP, d.Revocation, e.ClientID, e.RefreshToken); err != nil {
 				fmt.Fprintf(env.Stderr, "warning: the provider could not be told (%v): the refresh token lives until it expires\n", err)
-			case resp.StatusCode != http.StatusOK:
-				fmt.Fprintf(env.Stderr, "warning: the provider answered %s to the revocation: the refresh token lives until it expires\n", resp.Status)
-			}
-			if resp != nil {
-				resp.Body.Close()
 			}
 		} else {
 			fmt.Fprintln(env.Stderr, "warning: the provider names no revocation endpoint: the refresh token lives until it expires")

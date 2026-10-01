@@ -5,8 +5,9 @@
 // One static binary. It is the brain (serve), its own checker (check), the
 // hand that makes the first API token on the brain's host (token), —
 // started by itself as separate processes — its built-in plugins (plugin),
-// and the command line people ask a brain with (login, apply, and every type
-// the brain offers: internal/cli).
+// the web console on its own in front of a brain (console), and the command
+// line people ask a brain with (login, apply, and every type the brain
+// offers: internal/cli).
 package main
 
 import (
@@ -58,6 +59,12 @@ On the brain's host:
 
 The config is --config, else $HANGAR_CONFIG, else /etc/hangar/hangar.yaml.
 $HANGAR_LISTEN and $HANGAR_DATA_DIR override the file's listen and data_dir.
+
+The brain serves the web console at /console/ (the config's console block). Or,
+in front of a brain, a process of its own that holds none of the plugins' keys:
+  hangar console --brain URL [--listen :8081] [--url URL] [--house WORD] [--idle 12h]
+                                          each also $HANGAR_CONSOLE_BRAIN, _LISTEN, _URL,
+                                          _HOUSE, _IDLE; it reads no config file
 `
 
 func main() {
@@ -75,6 +82,8 @@ func main() {
 		err = token(os.Args[2:], os.Stdout)
 	case "plugin":
 		err = runPlugin(os.Args[2:])
+	case "console":
+		err = runConsole(os.Args[2:])
 	case "version", "--version":
 		fmt.Println(version)
 	case "help", "-h", "--help":

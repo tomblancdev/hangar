@@ -41,7 +41,12 @@ hypervisor (it drives yours) and not an EC2 clone.
 > `idle_after: 30m` is stopped once its engine saw it quiet that long, the
 > hours machines run are counted against a tier's month — once per core —
 > and when the month is spent what still runs is shut down; `keep_awake`
-> holds the idle stop off, for a time or until told. The console comes next. No
+> holds the idle stop off, for a time or until told. **And the console**: the
+> same catalogue in a browser — every type a list, a form drawn from its
+> schema and its actions as buttons —, signed in at your identity provider,
+> the sign-in kept by the console's server and a cookie in the browser; inside
+> the brain, or a process of its own in front of it that holds none of the
+> plugins' keys ([docs/console.md](docs/console.md)). No
 > release is cut yet. [ARCHITECTURE.md](ARCHITECTURE.md) says what is built
 > and what is designed, section by section.
 
@@ -77,6 +82,10 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST localhost:8080/v1/resources \
      -d '{"type":"box","zone":"playground","spec":{"cores":2}}'
 curl -s -H "Authorization: Bearer $TOKEN" localhost:8080/v1/limits
 ```
+
+Or in a browser: `http://localhost:8080` is the console
+([docs/console.md](docs/console.md)) — with no identity provider configured,
+it takes the token above to sign in.
 
 The same binary is the command line — every type the brain offers a
 command, its flags drawn from the type's schema ([docs/cli.md](docs/cli.md)):
@@ -129,12 +138,14 @@ internet directly — it holds the plugins' credentials.
 `/metrics` (Prometheus: plugins up, resources by type and state, operations,
 refusals by reason, calls by route) · `/openapi.json` · the audit: one JSON
 line per call on stdout, `"kind":"audit"`, with who, which credential, which
-resource, the result and, for a refusal, why.
+resource, the result and, for a refusal, why · the console's own lines,
+`"kind":"console"`: a sign-in, a sign-out, a sign-in that ended.
 
 ## Development
 
 ```sh
 go test ./...              # the whole suite, the binary's end-to-end run included
+HANGAR_BROWSER=/usr/bin/chromium go test ./internal/console/   # …and the console's app in a real browser
 sh tools/bench/bench.sh up # a throwaway Proxmox VE in a VM (podman + /dev/kvm), then:
 eval "$(sh tools/bench/bench.sh env)" && go test -p 1 ./driver/proxmox/ ./cmd/hangar/ -run Bench -v
 sh tools/no-environment.sh # this repo describes nowhere: RFC documentation reserves only

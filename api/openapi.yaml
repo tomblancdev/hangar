@@ -79,12 +79,18 @@ paths:
     get:
       tags: [house]
       summary: The front page.
+      description: |
+        With the console on (the default) the brain's address is the
+        console's: a redirect to `/console/`. The console is a door on this
+        API, not part of it — its paths are its own, under `/console/`.
       security: []
       responses:
         "200":
-          description: A page with the mark and where the API is.
+          description: With the console off — a page with the mark and where the API is.
           content:
             text/html: {}
+        "302":
+          description: To the console.
   /healthz:
     get:
       tags: [house]

@@ -59,3 +59,18 @@ func tspans(text string) string {
 	}
 	return b.String()
 }
+
+// Still renders the mark drawn whole and at rest — what a page shows as an
+// image. (Lockup's draws itself, and plays whole as a document of its own;
+// as an image, the browser the tests drive drew its ring and its bolt and
+// never its words.) It is the same mark: the asset says how it looks without
+// motion, for those who ask their browser for none, and Still asks for that
+// always.
+func Still(house string) []byte {
+	return bytes.Replace(Lockup(house), []byte(stillFrom), []byte(stillTo), 1)
+}
+
+const (
+	stillFrom = "@media (prefers-reduced-motion: reduce) {"
+	stillTo   = "@media all {"
+)

@@ -25,7 +25,8 @@ where this page and they disagree, they win.
 | The images plugin (baked from a recipe, saved from a stopped machine, shared, retired); resources shared with others | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
 | Schedules: a create on the brain's own clock, in the name of the one it names — a recipe baked again every week; `@<schedule>` names the newest usable one; the older ones let go of (§3, §4, §7) | **built** — proved on a throwaway Proxmox VE |
 | The command line generated from the schemas: sign-in by the device flow, every type's commands, `apply` of a spec file; a change's plan (§2, §4) | **built** — proved on a throwaway Proxmox VE and a throwaway identity provider ([docs/cli.md](docs/cli.md)) |
-| The console generated from the schemas; a rebuild in `apply` (a field set at birth, made again) | designed (§2) |
+| The console generated from the schemas: signed in at the provider (the sign-in kept by the console's server, a cookie in the browser), every type a list, a form and its actions — inside the brain, or a process of its own in front of it (§2, §8) | **built** — proved in a real browser, on a throwaway Proxmox VE and a throwaway identity provider ([docs/console.md](docs/console.md)) |
+| A machine's terminal in the console; a rebuild in `apply` (a field set at birth, made again) | designed (§2, §7) |
 | Names, ports, snapshots, object storage, databases; the Incus and AWS drivers | designed (§7) |
 
 ---
@@ -91,7 +92,8 @@ brain's host, before any identity provider is wired; `hangar plugin <name>`
 is a built-in plugin's process — the core starts it itself, as a separate
 process with its own credential, exactly as it starts a third party's
 program. Being compiled into the same file changes nothing about the walls
-between them.
+between them. `hangar console --brain URL` is the web console as a process
+of its own, in front of a brain.
 
 **The doors are generated.** Every type a plugin declares comes with the JSON
 Schema of its spec and of each action's params; `GET /v1/types` serves them,
@@ -111,9 +113,28 @@ resource in its type's words, a reference an id, `@<schedule>` or another entry
 `apply:name`, the caller's own resources only); what is missing is created,
 what differs brought there by **the steps its plugin names** (§4, a change's
 plan), what left the file deleted after asking; a field set at birth that
-differs stops everything before anything changes. *(Designed: the console;
-**a rebuild** — that field's resource made again, its attached volumes carried
-across, shown in the plan and asked.)*
+differs stops everything before anything changes. *(Designed: **a rebuild**
+— that field's resource made again, its attached volumes carried across,
+shown in the plan and asked.)*
+
+**The console is built** ([docs/console.md](docs/console.md)): an app a
+browser loads from `/console/` — hand-written modules, no build step, no
+dependency — and a small server behind it. Every type is a list, a form (a
+field per top-level property of its schema, the control its kind and marks
+call for: what a reference may name, the newest a schedule made, the groups
+a share may reach) and a page with **its actions as buttons**; a refusal
+lands beside the field it names, or on a notice with the numbers. **The
+console's server signs people in and keeps the sign-in**: the authorization
+code flow with PKCE at the operator's provider, with the brain's own client
+id — the one public client of every door —, the tokens kept in memory and
+never handed to the page; the browser holds a cookie no script reads, and
+what changes something carries a second token another site's page cannot
+send. Each call of the page is passed on to the API **with the person's own
+token**: the console decides nothing, and the audit names the person.
+**It knows the brain through its API alone** — so it runs inside `hangar
+serve`, or as a process of its own in front of a brain (`hangar console
+--brain URL`) that holds none of the plugins' keys: the one to put on a
+public door. *(Designed: a machine's terminal.)*
 
 ## 3. The core — what never changes when a service is added **(built)**
 
@@ -271,7 +292,10 @@ else's machine). **Only its owner (or an operator) changes or deletes it**:
 403 `shared`, « img-… is bob's, shared with you to see and use ». **A person
 shares only with groups they are in**, or with everyone — which a tier
 allows or not by the plugin's own choice dimension (the images plugin's
-`images.visibility`); an operator shares with any group. **(built)**
+`images.visibility`); an operator shares with any group. An action's param
+that sets the share list carries the same mark (the core reads it on the
+type's schema only): a door then offers the person's groups instead of a
+free text. **(built)**
 
 **A plugin sees the room a resource holds** (`Resource.room`): a resource
 whose room changes on its own — a bake borrows its builder's memory until
@@ -533,8 +557,9 @@ uses it, and a tier's room is only fair if running has a cost.
 **The machines plugin is built**, as the row below says but for four
 things. The key pair type is **`keypair`** (a type's name has the shape of an
 id prefix); a key pair is **imported, never generated** (the brain would hold
-a private key). **Console** comes with the terminal in the console (it needs
-a stream through the core the protocol does not carry yet). **The classes,
+a private key). The **`console` action** — a terminal into the machine, in the web console
+— is not built (it needs a stream through the core the protocol does not
+carry yet). **The classes,
 `floor_gb`, `cores_beside` and `resume`** are built with §6's room;
 **`idle_after`, keep awake and the hours** (`machines.vcpu_hours`, a meter)
 with §6's power — `set_idle_after`, `keep_awake`, `let_sleep`; **GPU** and
@@ -630,7 +655,7 @@ the audit says so.
 
 | wall | what holds it | status |
 |---|---|---|
-| **1. The door** | OIDC sign-in (the operator's provider and its MFA); API tokens scoped (read / write) and expiring, never able to make tokens; the brain behind the operator's gateway (it speaks plain HTTP; TLS is the gateway's) | **built** |
+| **1. The door** | OIDC sign-in (the operator's provider and its MFA); API tokens scoped (read / write) and expiring, never able to make tokens; the brain behind the operator's gateway (it speaks plain HTTP; TLS is the gateway's). **In a browser:** the provider's tokens stay with the console's server, in memory; the page holds a cookie no script reads (`HttpOnly`, `SameSite=Strict`, `Secure` behind TLS), what changes something carries a second token in a header and is refused from another site's page, and the page loads nothing from elsewhere and runs no inline code. **On a public door:** the console as a process of its own, holding no plugin's key, the brain behind it | **built** — each guard broken on purpose and caught by a test |
 | **2. The core and its plugins** | limits per tier; every call audited; **each plugin its own process, started with an empty environment, with its own credential and nothing else**; mutual TLS on its socket; a program pinned by its SHA-256; the API never returns an engine credential | **built** — the empty environment and the one-credential rule are proved by tests that run a probe plugin and read what it received |
 | **3. The engine fence** | each driver's credential fenced to the product's own guests (`fence.pool`): on Proxmox a pool and a role — it cannot touch any other guest, and sees only the power of those a zone's reservations name | **built** for Proxmox: the driver reads the token's own permissions and advertises `fence.pool` only when nothing outside its pools is reachable but `VM.Audit` on a watched guest (root's token, the control, is refused with 416 reasons); the machines plugin requires it, so an unfenced zone is not one it acts on. The hook on the node needs no hypervisor credential at all: it is the node's own root, and holds only a `room` token toward the brain |
 | **4. The network** | a zone's network is the operator's: the product assumes a lane where machines reach only what the operator allows, and each machine is alone on it unless two share a `peers` group | designed |
@@ -639,7 +664,9 @@ the audit says so.
 **What it cannot promise:** a hypervisor flaw lets a VM reach its host — so
 **untrusted users belong on hosts that run nothing else of value**; the
 brain holds the plugins' credentials — so it must never face the internet
-directly, and each credential must stay fenced.
+directly, and each credential must stay fenced. What faces people is the
+console on its own (`hangar console`): it holds their sign-ins, and nothing
+of the engines'.
 
 ## 9. Decisions, and what was set aside
 
@@ -664,6 +691,10 @@ directly, and each credential must stay fenced.
 | A failed bake holds nothing | a failure streak would otherwise fill a tier, and a schedule jam behind its own failures |
 | The command line is a client of the API, generated at run time from `GET /v1/types` | a new plugin is a new command with no release of the door; the brain checks everything, the door only turns words into JSON |
 | Sign-in by the device flow, with the brain's own client id (a public client) | the password and the second factor stay on the provider's page, in any browser; the brain holds no client secret; one client for every door |
+| The console's server keeps the sign-in (authorization code + PKCE, the same public client); the browser holds a cookie no script reads | a provider's tokens never reach a page's script, and the provider needs no cross-origin set-up — as Incus, Argo CD and Grafana do; one client for every door, still no secret |
+| A sign-in is kept in memory, never on disk | nothing at rest names a session or holds a refresh token; a restart costs people a redirect |
+| The console reaches the brain through its API alone, with the person's own token — inside the brain, or a process of its own | the audit names the person, not a door; the process on a public door holds none of the plugins' keys |
+| The console's app is hand-written modules: no build step, no dependency | what is in the repository is what runs in the browser; nothing behind the page that holds the door |
 | `apply` runs in the client; the brain is its state (two tags), only the caller's own resources counted | no state file to lose or share; the API stays one ask flow; an operator's listing of everyone's never becomes their plan |
 | What brings a resource to a spec is its plugin's say (`PlanChange`), asked beforehand and run as ordinary actions | the plugin knows which action changes which field; every step is admitted and audited as if asked by hand |
 | A resource that left the file is deleted — after asking (`--yes` for scripts; refused with no one at stdin) | the file is the whole truth, as Terraform's; nothing goes unasked |

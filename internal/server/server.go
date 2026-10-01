@@ -25,6 +25,7 @@ import (
 	"github.com/tomblancdev/hangar/api"
 	"github.com/tomblancdev/hangar/internal/audit"
 	"github.com/tomblancdev/hangar/internal/config"
+	"github.com/tomblancdev/hangar/internal/console"
 	"github.com/tomblancdev/hangar/internal/core"
 	"github.com/tomblancdev/hangar/internal/identity"
 	"github.com/tomblancdev/hangar/internal/metrics"
@@ -45,10 +46,12 @@ type Server struct {
 	log     *slog.Logger
 	version string
 	spec    []byte
+	mux     *http.ServeMux
+	console *console.Console
 }
 
-// New builds the server. It fails only if the embedded contract cannot be
-// read — a build bug.
+// New builds the server. It fails only if the embedded contract or the
+// console's app cannot be read — a build bug.
 func New(cfg *config.Config, c *core.Core, auth *identity.Authenticator, store *registry.Store, host *plugins.Host,
 	a *audit.Log, m *metrics.Set, log *slog.Logger, version string) (*Server, error) {
 	spec, err := SpecJSON(version)
@@ -56,7 +59,11 @@ func New(cfg *config.Config, c *core.Core, auth *identity.Authenticator, store *
 		return nil, err
 	}
 	m.Counter("hangar_http_requests_total", "API calls, by route and status.", "route", "code")
-	return &Server{cfg: cfg, core: c, auth: auth, store: store, host: host, audit: a, metrics: m, log: log, version: version, spec: spec}, nil
+	s := &Server{cfg: cfg, core: c, auth: auth, store: store, host: host, audit: a, metrics: m, log: log, version: version, spec: spec}
+	if err := s.routesAndConsole(); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // SpecJSON renders the embedded contract as JSON, its version filled in.
@@ -115,8 +122,28 @@ var routes = []route{
 }
 
 // Handler is the whole HTTP surface.
-func (s *Server) Handler() http.Handler {
+func (s *Server) Handler() http.Handler { return s.mux }
+
+// routesAndConsole builds the surface: the routes, and — unless the config
+// turns it off — the console under /console/. The console is a door, not
+// part of the API: it asks this very handler, as any client would, with the
+// token of whoever is signed in to it.
+func (s *Server) routesAndConsole() error {
 	mux := http.NewServeMux()
+	s.mux = mux
+	if s.cfg.Console.On() {
+		c, err := console.New(console.Options{
+			Brain: console.InProcess(mux), BrainURL: console.InProcessURL,
+			URL: s.cfg.Console.URL, Idle: s.cfg.Console.Idle,
+			Static: ui.Console(), Mark: func() []byte { return ui.Still(s.cfg.House) },
+			Version: s.version, Log: s.log,
+		})
+		if err != nil {
+			return err
+		}
+		s.console = c
+		mux.Handle(console.Prefix+"/", c.Handler())
+	}
 	for _, rt := range routes {
 		if rt.api != nil {
 			mux.Handle(rt.pattern, s.v1(rt.pattern, rt.api(s)))
@@ -124,7 +151,7 @@ func (s *Server) Handler() http.Handler {
 			mux.HandleFunc(rt.pattern, rt.h(s))
 		}
 	}
-	return mux
+	return nil
 }
 
 // ---- The /v1 middleware -----------------------------------------------------
@@ -311,7 +338,9 @@ func (s *Server) openapi(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) mark(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=300")
-	_, _ = w.Write(ui.Lockup(s.cfg.House))
+	// at rest: it is shown as an image, where a browser plays only part of
+	// the mark that draws itself
+	_, _ = w.Write(ui.Still(s.cfg.House))
 }
 
 // signin tells a door where people sign in: the identity provider, the
@@ -337,7 +366,12 @@ main{max-width:40rem;padding:2rem 1rem;text-align:center}img{width:100%;max-widt
 <p>This is a small cloud's brain. Its API is under <code>/v1</code>; the contract is <a href="/openapi.json">/openapi.json</a>.</p>
 <p>Version <code>{{.Version}}</code>.</p></main></body></html>`))
 
-func (s *Server) front(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) front(w http.ResponseWriter, r *http.Request) {
+	// with the console on, the brain's address is the console's
+	if s.console != nil {
+		http.Redirect(w, r, console.Prefix+"/", http.StatusFound)
+		return
+	}
 	title := "Le Hangar"
 	if s.cfg.House != "" {
 		title = s.cfg.House + " — le hangar"

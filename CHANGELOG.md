@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased — la console
+
+The web console: the catalogue in a browser, signed in at the provider —
+proved by tests that run each of its server's guards on the console inside
+the brain and on its own (twenty-one of them broken on purpose, each caught),
+and by a real browser clicking through every action of the three plugins: on
+the fake engine in CI, and on the repo's throwaway Proxmox VE through the
+binary ([docs/console.md](docs/console.md)).
+
+- **`/console/`** on the brain (its own address now leads there): an app of
+  hand-written modules — no build step, no dependency — drawn from `GET
+  /v1/types`. Every type a list, a form (a field per top-level property of
+  its schema: what a reference may name, `@<schedule>` — the newest, the
+  groups a share may reach, chips, boxes, numbers with their bounds), a page
+  with what it names and what names it, **its actions as buttons**, its
+  delete asked twice; your limits as gauges, the zones' room, operations,
+  API tokens. A refusal lands beside the field it names, or on a notice with
+  the numbers.
+- **Sign-in kept by the console's server.** The authorization code flow with
+  PKCE at the provider, with the brain's own client id — the command line's
+  public client, one more redirect address (`<console>/console/callback`).
+  The tokens stay in the console's memory, renewed there (one renewal at a
+  time), never on disk and never in the page; the browser holds a cookie
+  (`HttpOnly`, `SameSite=Strict`, `__Host-`/`Secure` behind TLS). What
+  changes something carries a second token in a header and is refused from
+  another site's page (`Sec-Fetch-Site`, `Origin`). A sign-in finishes only
+  in the browser that began it, once, and comes back inside the console. A
+  sign-in unused for `console.idle` (12h) ends; one the provider stops
+  renewing ends at its next call; sign-out revokes its refresh token. Without
+  a provider: an API token, pasted.
+- **The console is a client of the API**: each call of the page is passed on
+  (`/console/api/v1/…`) with the person's own token — the audit names the
+  person, `via` their own sign-in. **`hangar console --brain URL`** is the
+  same console as a process of its own in front of a brain: no config file,
+  no registry, no plugin's key — the one for a public door; `console:
+  {enabled: false}` turns the brain's own off.
+- Config: `console: {enabled, url, idle}`. New: `internal/console`,
+  `internal/provider` (a door's side of the identity provider — the command
+  line moved onto it), `internal/browsertest` (a real browser in a test, over
+  the DevTools protocol on a pipe; the standard library alone), `ui/console`.
+- **The images plugin's `share` action** marks its param `x-hangar-share`: a
+  door offers the person's groups.
+- **Fixed: the mark was never an image.** A comment in its stylesheet named
+  two tags literally, which made the file ill-formed XML — a browser draws
+  such an SVG nowhere it is used as an image (the brain's front page, a
+  README). Held by a test now. And where it is an image, **the mark is
+  served at rest** (`ui.Still`, `/mark.svg` too): the one that draws itself
+  plays whole as a document of its own, but as an image the browser the
+  tests drive drew its ring and its bolt and never its words.
+- CI runs the suite with a browser (`HANGAR_BROWSER`).
+
 ## Unreleased — les heures
 
 Power: an idle machine stopped by itself, the hours machines run counted

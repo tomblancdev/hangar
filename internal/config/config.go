@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"slices"
@@ -29,6 +30,7 @@ type Config struct {
 	DataDir string `yaml:"data_dir"`
 	// House is the operator's word for the mark; empty = the product's own.
 	House     string    `yaml:"house"`
+	Console   Console   `yaml:"console"`
 	Identity  Identity  `yaml:"identity"`
 	Tiers     []Tier    `yaml:"tiers"`
 	Zones     []Zone    `yaml:"zones"`
@@ -43,6 +45,24 @@ type Config struct {
 	// Location: the time zone, read.
 	Location *time.Location `yaml:"-"`
 }
+
+// Console is the web console the brain serves under /console/ — a door on
+// its own API, like the command line. It can also run on its own (`hangar
+// console --brain URL`), in front of a brain that serves none.
+type Console struct {
+	// Enabled: default true.
+	Enabled *bool `yaml:"enabled"`
+	// URL is the address people open it at (https://hangar.example.org): the
+	// identity provider sends them back to URL/console/callback, and an https
+	// one makes the cookie Secure. Empty: read from each request (its Host,
+	// and the gateway's X-Forwarded-Proto).
+	URL string `yaml:"url"`
+	// Idle: a sign-in unused this long ends (default 12h).
+	Idle time.Duration `yaml:"idle"`
+}
+
+// On reports whether the brain serves the console.
+func (c Console) On() bool { return c.Enabled == nil || *c.Enabled }
 
 // Identity is how a caller proves who they are.
 type Identity struct {
@@ -337,6 +357,9 @@ func (c *Config) defaults() {
 	if c.Identity.Tokens.MaxTTL == 0 {
 		c.Identity.Tokens.MaxTTL = 720 * time.Hour
 	}
+	if c.Console.Idle == 0 {
+		c.Console.Idle = 12 * time.Hour
+	}
 	if o := c.Identity.OIDC; o != nil {
 		if o.GroupsClaim == "" {
 			o.GroupsClaim = "groups"
@@ -456,6 +479,16 @@ func (c *Config) validate() error {
 		}
 		if o.Audience == "" {
 			bad("identity.oidc.audience is the client id tokens are issued to; it is required")
+		}
+	}
+	if c.Console.On() {
+		if u := c.Console.URL; u != "" {
+			if p, err := url.Parse(u); err != nil || (p.Scheme != "https" && p.Scheme != "http") || p.Host == "" || strings.Trim(p.Path, "/") != "" || p.RawQuery != "" || p.User != nil {
+				bad("console.url %q: the address people open the console at — https://host, no path", u)
+			}
+		}
+		if c.Console.Idle < time.Minute {
+			bad("console.idle must be at least 1m")
 		}
 	}
 	if c.Reconcile.Every < 5*time.Second {
