@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased — les heures
+
+Power: an idle machine stopped by itself, the hours machines run counted
+against a tier's month, keep awake — proved on the fake engine by a clock the
+test moves (controls red), and on the repo's throwaway Proxmox VE through the
+binary, in real minutes.
+
+- **`idle_after`** on a machine (`30m`, `2h` — 5m to 12h; absent or `never`:
+  never stopped for idleness). At every reconcile the plugin asks its engine
+  how long the guest has stayed quiet — its CPU and what it sends, from the
+  engine's own history, nothing installed in the guest; once that reaches its
+  `idle_after` the machine is stopped and **stays stopped** until its owner
+  starts it (`machine.idle` in the audit, `observed.quiet_for` on the way). A
+  machine whose room is held, one kept awake, one whose history cannot be
+  read are not judged. `set_idle_after` changes it (and `apply` asks for it).
+  What idle is: the plugin's `idle` settings (`cpu`, cores' worth, default
+  0.05; `sent_bps`, default 20).
+- **Keep awake, both ways**: `keep_awake` with `for: 8h` holds the idle stop
+  off until then and ends by itself; with nothing, until `let_sleep`. A stop
+  ends it.
+- **Meters**, a third kind of dimension (`DIMENSION_KIND_METER`): what is
+  *consumed* as time passes, summed per owner over the calendar month — in
+  the config's new `time_zone` (default UTC). A plan names the meters a
+  request would leave the resource drawing on (`PlanResponse.meters`); every
+  action, delete and reconcile says what it consumed (`Consumed`), added to
+  the month in the same write as the observed state it came with. A month
+  spent refuses what would draw on it — beside every other limit the request
+  is over, all named at once — 403 `limit`, reason `meter`, « 10.1
+  of 10 vCPU-hours (machines.vcpu_hours) used in October 2026: it is back on
+  1 November » — and at the next reconcile the core tells the plugin
+  (`Resource.spent`), under the tier the resource's last request was admitted
+  in (`tier` on a resource). `GET /v1/limits` shows a meter's month (`used`
+  is a number, `period`, `resets`); `hangar limits` reads « 4.2 of 80 a
+  month, back on 1 November »; `hangar_metered_total{dimension}`.
+- **`machines.vcpu_hours`**: the hours machines run, **once per core** — read
+  from the engine (since when a guest runs), counted at every look and before
+  every action as the machine was. The month spent, **what still runs is shut
+  down** (`machine.spent`) and starts are refused until it is back. **A tier
+  that lists its dimensions one by one must now name it** — a dimension a
+  tier does not name is allowed nothing; `machines.*: unlimited` covers it.
+- **Drivers**: a guest says since when it runs (`Guest.StartedAt`); the
+  **activity facet** (`driver.Activity`, capability `guest.activity`):
+  `QuietFor`. Proxmox VE reads the node's own statistics of each guest
+  (`rrddata`: a sample a minute, kept a day — read on 9.2; `status/current`'s
+  own `cpu` is a per-worker rate, not used), with the `VM.Audit` the token
+  already has ([docs/proxmox.md](docs/proxmox.md#idleness-and-hours)). The
+  fake engine has a clock of its own (`now` in its file), `started_at` on a
+  running guest and `busy_until`.
+- **Found on the bench, the second time the tests ran**: Proxmox VE keeps a
+  guest's history by its VMID and keeps it when the guest is deleted — a
+  container made on the number of a guest deleted a minute before read that
+  guest's quiet minutes as its own, and was stopped 22 seconds after it was
+  made. Nothing older than a guest's own start is read (the driver), and a
+  machine is never quiet for longer than it has run (the plugin); the bench
+  test now makes a guest on a dead one's number on purpose.
+- Registry schema 5: `meters`, `resources.tier`.
+
 ## Unreleased — la ligne de commande
 
 The command line, drawn from what the brain serves — proved on the fake

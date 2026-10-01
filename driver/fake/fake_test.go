@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tomblancdev/hangar/driver"
 )
@@ -94,5 +95,66 @@ func TestTheZoneCanExpectACredential(t *testing.T) {
 	}
 	if _, err := driver.Open(context.Background(), Name, driver.Params{Options: opts, Credential: []byte("right")}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The engine has a clock of its own, which the file moves: a guest says
+// since when it runs, every reading is stamped with that clock, and its
+// history of activity is "busy until" — quiet since it started otherwise.
+func TestTheClockAndTheActivity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "zone.json")
+	ctx := context.Background()
+	e := open(t, path, nil)
+	t0 := time.Date(2026, 10, 10, 8, 0, 0, 0, time.UTC)
+	e.SetNow(t0)
+	g, err := e.CreateGuest(ctx, driver.GuestSpec{ID: "m-1", Kind: "vm", Cores: 2, MemoryMB: 1024})
+	if err != nil || g.StartedAt == nil || !g.StartedAt.Equal(t0) || !g.At.Equal(t0) {
+		t.Fatalf("born running at the engine's time: %+v %v", g, err)
+	}
+	q := driver.Quiet{CPU: 0.05, SentBps: 20}
+	quiet := func(window time.Duration) time.Duration {
+		t.Helper()
+		d, err := e.QuietFor(ctx, "m-1", window, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	e.SetNow(t0.Add(40 * time.Minute))
+	if g, _ = e.Guest(ctx, "m-1"); !g.At.Equal(t0.Add(40*time.Minute)) || !g.StartedAt.Equal(t0) {
+		t.Fatalf("a reading is stamped with the engine's clock: %+v", g)
+	}
+	if d := quiet(time.Hour); d != 40*time.Minute {
+		t.Fatalf("quiet since it started: %s", d)
+	}
+	if d := quiet(30 * time.Minute); d != 30*time.Minute {
+		t.Fatalf("no further back than asked: %s", d)
+	}
+	e.SetBusy("m-1", t0.Add(35*time.Minute))
+	if d := quiet(time.Hour); d != 5*time.Minute {
+		t.Fatalf("quiet since it was last busy: %s", d)
+	}
+	e.FailActivity(true)
+	if _, err := e.QuietFor(ctx, "m-1", time.Hour, q); err == nil {
+		t.Fatal("an unreadable history answered")
+	}
+	e.FailActivity(false)
+	// a stopped guest is not quiet: it does not run; started again, its
+	// quiet begins anew
+	if g, _ = e.SetPower(ctx, "m-1", false); g.StartedAt != nil {
+		t.Fatalf("a stopped guest runs since: %+v", g)
+	}
+	if d := quiet(time.Hour); d != 0 {
+		t.Fatalf("a stopped guest read quiet for %s", d)
+	}
+	e.SetNow(t0.Add(2 * time.Hour))
+	if g, _ = e.SetPower(ctx, "m-1", true); g.StartedAt == nil || !g.StartedAt.Equal(t0.Add(2*time.Hour)) {
+		t.Fatalf("started again at the engine's time: %+v", g)
+	}
+	if d := quiet(time.Hour); d != 0 {
+		t.Fatalf("just started, quiet for %s", d)
+	}
+	if !e.Now().Equal(t0.Add(2 * time.Hour)) {
+		t.Fatalf("the engine's clock reads %s", e.Now())
 	}
 }

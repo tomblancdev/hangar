@@ -155,8 +155,8 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	if err := c.call(ctx, http.MethodGet, "/version", nil, &ver); err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: %w", p.Zone, err)
 	}
-	d.caps = []driver.Capability{driver.KindContainer, driver.KindVM, driver.GuestTags, driver.ResizeLiveMemoryDown,
-		driver.ResizeLiveCPUCap, driver.HookPreStart, driver.VolumeMoveBetweenGuests}
+	d.caps = []driver.Capability{driver.KindContainer, driver.KindVM, driver.GuestTags, driver.GuestActivity,
+		driver.ResizeLiveMemoryDown, driver.ResizeLiveCPUCap, driver.HookPreStart, driver.VolumeMoveBetweenGuests}
 	why, err := d.fence(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: reading what the token may do: %w", p.Zone, err)
@@ -382,11 +382,14 @@ func (d *Driver) read(ctx context.Context, r resource, id string) (driver.Guest,
 	var st struct {
 		Status string `json:"status"`
 		Mem    int64  `json:"mem"`
+		Uptime int64  `json:"uptime"`
 	}
 	if err := d.c.call(ctx, http.MethodGet, r.path()+"/status/current", nil, &st); err != nil {
 		return driver.Guest{}, d.engine(err)
 	}
+	at := time.Now()
 	g := driver.Guest{
+		At: at,
 		ID: guestID(str(cfg["tags"])), EngineRef: fmt.Sprintf("%s/%s/%d", r.Node, r.Type, r.VMID),
 		Kind: r.kind(), Node: r.Node, Running: st.Status == "running", Tags: tagMap(str(cfg["tags"])),
 		Holds: holdsOf(str(cfg["tags"])), Cores: num(cfg["cores"]), MemoryMB: memoryMB(cfg["memory"]),
@@ -394,6 +397,9 @@ func (d *Driver) read(ctx context.Context, r resource, id string) (driver.Guest,
 	}
 	if g.Running {
 		g.MemoryUsedMB = int((st.Mem + (1 << 20) - 1) >> 20)
+		// its uptime is its process's own age, whichever API worker answers
+		started := at.Add(-time.Duration(st.Uptime) * time.Second)
+		g.StartedAt = &started
 	}
 	if g.ID == "" {
 		g.ID = id // found by its marker, before its tags

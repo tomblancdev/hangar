@@ -67,6 +67,7 @@ tiers:
     zones: [bench]
     limits:
       machines.count: 1
+      machines.vcpu_hours: 1000
       machines.vcpu: 2
       machines.memory_gb: 3
       machines.disk_gb: 4

@@ -7,7 +7,8 @@
 //
 // Two types:
 //
-//   - machine (m-…): create · start · stop · reboot · resize · delete.
+//   - machine (m-…): create · start · stop · reboot · resize · set_idle_after
+//     · keep_awake · let_sleep · delete.
 //   - keypair (kp-…): a public key, imported. A pair is never generated
 //     here: the brain would then hold a private key. A machine names its key
 //     pairs by id ("x-hangar-ref"); the core checks they are the owner's own
@@ -23,6 +24,12 @@
 // size admitted are written on the guest as tags, for the engine's node to
 // act on when the brain cannot be reached.
 //
+// A machine that says idle_after is stopped once its CPU and what it sends
+// stayed quiet that long, as its engine's own history saw them (power.go);
+// keep_awake holds that stop off, for a time or until let_sleep. The hours a
+// machine runs are counted, each once per core — the meter machines.vcpu_hours,
+// a tier's limit a month — and when its owner's month is spent it is stopped.
+//
 // It requires fence.pool: a zone whose credential reaches beyond the
 // product's own guests is not one it will act on.
 //
@@ -34,9 +41,13 @@
 //	    container: local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst
 //	types:                         # aliases beside AWS's names
 //	  dev: {cores: 12, memory_gb: 40}
+//	idle:                          # under what a machine counts as idle, minute after minute
+//	  cpu: 0.05                    #   cores' worth (default 0.05: a twentieth of one core)
+//	  sent_bps: 20                 #   bytes a second it sends (default 20)
 package machines
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -49,6 +60,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tomblancdev/hangar/driver"
 	_ "github.com/tomblancdev/hangar/driver/fake"
@@ -114,7 +126,14 @@ type Spec struct {
 	Resume   bool     `json:"resume"`
 	KeyPairs []string `json:"key_pairs,omitempty"`
 	UserData string   `json:"user_data,omitempty"`
-	Running  bool     `json:"running"`
+	// IdleAfter: it is stopped once quiet this long ("30m", "1h30m"); "" =
+	// never stopped for idleness.
+	IdleAfter string `json:"idle_after,omitempty"`
+	// Awake: kept from that stop — "always" (until let_sleep), or until a
+	// time (RFC 3339); "" = not kept. keep_awake's, never a create's; a stop
+	// ends it.
+	Awake   string `json:"awake,omitempty"`
+	Running bool   `json:"running"`
 }
 
 // Observed is a machine as its engine reports it.
@@ -132,6 +151,12 @@ type Observed struct {
 	CPULimit int `json:"cpu_limit,omitempty"`
 	// Held: the reservations holding its room back, as its engine reads.
 	Held []string `json:"held,omitempty"`
+	// StartedAt: since when it runs, as its engine says.
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	// CountedAt: up to when the hours it ran are counted.
+	CountedAt *time.Time `json:"counted_at,omitempty"`
+	// QuietFor: with an idle_after, how long it has stayed quiet ("12m").
+	QuietFor string `json:"quiet_for,omitempty"`
 }
 
 // KeyPair is a key pair's spec.
@@ -183,7 +208,9 @@ const machineSchema = `{
                    "items": { "type": "string", "x-hangar-ref": "keypair" },
                    "description": "Your key pairs, by id: their public keys let you in." },
     "user_data": { "type": "string", "maxLength": 16384,
-                   "description": "Handed to its first boot (cloud-init), where its kind takes it." }
+                   "description": "Handed to its first boot (cloud-init), where its kind takes it." },
+    "idle_after": { "type": "string", "maxLength": 16,
+                   "description": "Stopped once idle this long (30m, 2h — 5m to 12h): its CPU and what it sends stayed quiet, as its engine saw them. Absent or never: it is never stopped for idleness." }
   }
 }`
 
@@ -210,10 +237,36 @@ const sizeSchema = `{
   }
 }`
 
+const idleAfterSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["idle_after"],
+  "properties": {
+    "idle_after": { "type": "string", "maxLength": 16,
+                    "description": "Stopped once idle this long (30m, 2h — 5m to 12h); never: it is not stopped for idleness." }
+  }
+}`
+
+const keepAwakeSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "for": { "type": "string", "maxLength": 16,
+             "description": "For how long, from now (8h, 90m — up to 168h); it ends by itself. Absent: until let_sleep." }
+  }
+}`
+
 // Settings are the operator's.
 type Settings struct {
 	Images map[string]map[string]string `json:"images"`
 	Types  map[string]Size              `json:"types"`
+	// Idle: under what a machine counts as idle.
+	Idle struct {
+		CPU     *float64 `json:"cpu"`
+		SentBps *float64 `json:"sent_bps"`
+	} `json:"idle"`
 }
 
 // Plugin is the machines plugin. Its zero value is not usable; call New.
@@ -250,6 +303,11 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 					{Name: "reboot", Description: "Restart it."},
 					{Name: "resize", Description: "Set its size: a type, or cores and memory_gb. A running machine changes only what its kind can change live.",
 						ParamsSchema: []byte(sizeSchema), ChangesUsage: true},
+					{Name: "set_idle_after", Description: "Set after how long idle it is stopped (30m), or never.",
+						ParamsSchema: []byte(idleAfterSchema), ChangesUsage: true, Requires: []string{driver.GuestActivity}},
+					{Name: "keep_awake", Description: "Keep it from being stopped for idleness: for a time (for: 8h), or until let_sleep. Its hours count as it runs.",
+						ParamsSchema: []byte(keepAwakeSchema), ChangesUsage: true},
+					{Name: "let_sleep", Description: "End a keep_awake: it is stopped again once idle for its idle_after."},
 				},
 			},
 			{
@@ -264,6 +322,8 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 			{Name: "machines.memory_gb", Kind: pluginpb.DimensionKind_DIMENSION_KIND_QUANTITY, Unit: "GB", Description: "Memory across every machine."},
 			{Name: "machines.disk_gb", Kind: pluginpb.DimensionKind_DIMENSION_KIND_QUANTITY, Unit: "GB", Description: "Root disks across every machine."},
 			{Name: "machines.key_pairs", Kind: pluginpb.DimensionKind_DIMENSION_KIND_QUANTITY, Description: "How many key pairs."},
+			{Name: VCPUHours, Kind: pluginpb.DimensionKind_DIMENSION_KIND_METER, Unit: "vCPU-hours",
+				Description: "The hours their machines ran this month, each hour counted once per core (4 cores for 2 hours: 8)."},
 			{Name: "machines.kind", Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "The kinds allowed: vm, container."},
 			{Name: "machines.class", Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "The classes allowed: guaranteed, spot, guaranteed+spot."},
 		},
@@ -271,7 +331,8 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 		Credential: &pluginpb.Credential{Required: false,
 			Description: "Per zone, the engine's credential fenced to the product's own guests (Proxmox: an API token, user@realm!name=secret — the least it needs is in docs/proxmox.md). None for the fake engine."},
 		Events: []string{"machine.created", "machine.deleted", "machine.started", "machine.stopped", "machine.rebooted",
-			"machine.resized", "machine.repaired", "machine.held", "machine.released", "keypair.imported", "keypair.deleted"},
+			"machine.resized", "machine.repaired", "machine.held", "machine.released", "machine.idle", "machine.spent",
+			"machine.idle_after_set", "machine.kept_awake", "machine.let_sleep", "keypair.imported", "keypair.deleted"},
 	}, nil
 }
 
@@ -286,6 +347,11 @@ func (p *Plugin) Configure(ctx context.Context, req *pluginpb.ConfigureRequest) 
 		}
 		if s.Cores < 1 || s.MemoryGB < 1 {
 			return nil, sdk.Refuse("settings: type %q needs cores and memory_gb", name)
+		}
+	}
+	for what, v := range map[string]*float64{"cpu": set.Idle.CPU, "sent_bps": set.Idle.SentBps} {
+		if v != nil && *v <= 0 {
+			return nil, sdk.Refuse("settings: idle.%s is what a machine stays under to count as idle; above 0", what)
 		}
 	}
 	for name, forms := range set.Images {
@@ -567,6 +633,32 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 		if s.UserData != "" && !g.Traits(s.Kind).UserData {
 			refuse(&pluginpb.Refusal{Field: "/user_data", Reason: fmt.Sprintf("a %s in zone %s boots no user data", kindWord(s.Kind), req.GetZone())})
 		}
+		s.Awake = ""
+		refuse(p.setIdleAfter(&s, s.IdleAfter, req.GetZone(), caps))
+	case "set_idle_after":
+		if err := sdk.Decode(req.GetCurrent().GetSpec(), &s); err != nil {
+			return nil, err
+		}
+		var ip struct {
+			IdleAfter string `json:"idle_after"`
+		}
+		if err := sdk.Decode(req.GetParams(), &ip); err != nil {
+			return nil, err
+		}
+		refuse(p.setIdleAfter(&s, ip.IdleAfter, req.GetZone(), caps))
+	case "keep_awake":
+		if err := sdk.Decode(req.GetCurrent().GetSpec(), &s); err != nil {
+			return nil, err
+		}
+		var kp struct {
+			For string `json:"for"`
+		}
+		if err := sdk.Decode(req.GetParams(), &kp); err != nil {
+			return nil, err
+		}
+		awake, r := keepAwake(s, kp.For, p.now(req.GetZone()))
+		refuse(r)
+		s.Awake = awake
 	case "resize":
 		if err := sdk.Decode(req.GetCurrent().GetSpec(), &s); err != nil {
 			return nil, err
@@ -600,10 +692,18 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 			return nil, err
 		}
 		s.Running = req.GetAction() == "start"
+		if !s.Running {
+			s.Awake = "" // a keep_awake is a running machine's: a stop ends it
+		}
 	default:
 		return nil, sdk.Refuse("no action %q to plan on a machine", req.GetAction())
 	}
+	var meters []string
+	if s.Running {
+		meters = []string{VCPUHours} // its hours count while it runs
+	}
 	return &pluginpb.PlanResponse{
+		Meters:   meters,
 		Spec:     sdk.JSON(s),
 		Usage:    map[string]int64{"machines.count": 1, "machines.vcpu": int64(s.Cores), "machines.memory_gb": int64(s.MemoryGB), "machines.disk_gb": int64(s.DiskGB)},
 		Choices:  map[string]string{"machines.kind": s.Kind, "machines.class": s.Class},
@@ -687,6 +787,13 @@ func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) 
 	fixed("/user_data", in.UserData != was.UserData, "other user data", "what a machine's first boot is handed")
 	if in.DiskGB != nil {
 		fixed("/disk_gb", *in.DiskGB != was.DiskGB, strconv.Itoa(was.DiskGB)+" GB", "a machine's root disk")
+	}
+	idle, err := parseIdleAfter(in.IdleAfter)
+	if err != nil {
+		return nil, sdk.Refuse("/idle_after: %v", err)
+	}
+	if fmtIdleAfter(idle) != was.IdleAfter {
+		out.Steps = append(out.Steps, sdk.Step("set_idle_after", map[string]any{"idle_after": or(fmtIdleAfter(idle), "never")}))
 	}
 	if want.Type != was.Type || want.Cores != was.Cores || want.MemoryGB != was.MemoryGB {
 		if want.Type != "" {
@@ -825,10 +932,15 @@ func (p *Plugin) Delete(ctx context.Context, req *pluginpb.DeleteRequest) (*plug
 	if err != nil {
 		return nil, err
 	}
+	// the hours it ran up to its delete are its owner's all the same
+	var consumed *pluginpb.Consumed
+	if guest, err := g.Guest(ctx, r.GetId()); err == nil {
+		consumed, _ = count(observedOf(r), guest)
+	}
 	if err := g.DeleteGuest(ctx, r.GetId()); err != nil && !errors.Is(err, driver.ErrNotFound) {
 		return nil, engineErr(err)
 	}
-	return &pluginpb.DeleteResponse{Events: []*pluginpb.Event{sdk.Event("machine.deleted", "", nil)}}, nil
+	return &pluginpb.DeleteResponse{Events: []*pluginpb.Event{sdk.Event("machine.deleted", "", nil)}, Consumed: consumed}, nil
 }
 
 func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.ActResponse, error) {
@@ -838,24 +950,38 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 		return nil, err
 	}
 	hold := r.GetHold()
-	var guest driver.Guest
+	// read first: the hours it ran up to here are counted as it was, before
+	// the action changes it
+	guest, err := g.Guest(ctx, r.GetId())
+	if err != nil {
+		return nil, engineErr(err)
+	}
+	consumed, counted := count(observedOf(r), guest)
 	var ev *pluginpb.Event
 	switch req.GetAction() {
 	case "start":
 		if hold != "" && s.Class == Spot {
 			return nil, sdk.NotNow("its room is held for %s: it starts when the room is back", hold)
 		}
-		s.Running = true
-		guest, err = g.Guest(ctx, r.GetId())
-		if err == nil {
-			// started as the zone's room allows: at its floor, capped, while held
-			guest, _, _, err = converge(ctx, g, r.GetId(), s, hold, guest)
+		if slices.Contains(r.GetSpent(), VCPUHours) {
+			return nil, sdk.NotNow("its owner's vCPU-hours for the month are used: it starts when they are back")
 		}
+		s.Running = true
+		// started as the zone's room allows: at its floor, capped, while held
+		guest, _, _, err = converge(ctx, g, r.GetId(), s, hold, guest)
 		ev = sdk.Event("machine.started", "", nil)
 	case "stop":
-		s.Running = false
+		s.Running, s.Awake = false, ""
 		guest, err = g.SetPower(ctx, r.GetId(), false)
 		ev = sdk.Event("machine.stopped", "", nil)
+	case "set_idle_after":
+		// planned: the spec carries it already
+		ev = sdk.Event("machine.idle_after_set", "", map[string]string{"idle_after": cmp.Or(s.IdleAfter, "never")})
+	case "keep_awake":
+		ev = sdk.Event("machine.kept_awake", "", map[string]string{"until": s.Awake})
+	case "let_sleep":
+		s.Awake = ""
+		ev = sdk.Event("machine.let_sleep", "", nil)
 	case "reboot":
 		guest, err = g.Reboot(ctx, r.GetId())
 		ev = sdk.Event("machine.rebooted", "", nil)
@@ -873,10 +999,7 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 		// a grown size is written on the guest before it takes effect, a
 		// shrunk one after: a node reading "admitted" never refuses a size
 		// the brain admitted
-		before, rerr := g.Guest(ctx, r.GetId())
-		if rerr != nil {
-			return nil, engineErr(rerr)
-		}
+		before := guest
 		grows := s.MemoryGB*1024 > before.MemoryMB
 		if grows {
 			if _, err := g.Retag(ctx, r.GetId(), tagsOf(s), before.Holds); err != nil {
@@ -894,7 +1017,9 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 	if err != nil {
 		return nil, engineErr(err)
 	}
-	return &pluginpb.ActResponse{Spec: sdk.JSON(s), Observed: sdk.JSON(observe(guest)), Events: []*pluginpb.Event{ev}}, nil
+	obs := observe(guest)
+	obs.CountedAt = &counted
+	return &pluginpb.ActResponse{Spec: sdk.JSON(s), Observed: sdk.JSON(obs), Events: []*pluginpb.Event{ev}, Consumed: consumed}, nil
 }
 
 // converge brings a guest to its spec bent by a hold. Entering a hold, the
@@ -983,12 +1108,55 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 		return nil, engineErr(err)
 	}
 	hold := r.GetHold()
-	resp := &pluginpb.ReconcileResponse{}
+	// the hours it ran since the last look, as it was read — before anything
+	// below stops it
+	consumed, counted := count(observedOf(r), guest)
+	resp := &pluginpb.ReconcileResponse{Consumed: consumed}
 	var events []*pluginpb.Event
-	if hold != "" && s.Class == Spot && s.Running && !s.Resume {
-		// stopped for good: it does not come back when the room does
-		s.Running = false
+	quiet, why := "", ""
+	stopped := func() {
+		// stopped for good: it does not come back by itself
+		s.Running, s.Awake = false, ""
 		resp.Spec, resp.Room = sdk.JSON(s), room(s)
+	}
+	switch idle, _ := parseIdleAfter(s.IdleAfter); {
+	case !s.Running:
+	case hold != "" && s.Class == Spot && !s.Resume:
+		stopped() // it does not come back when the room does
+	case slices.Contains(r.GetSpent(), VCPUHours):
+		stopped()
+		why = "its owner's vCPU-hours for the month are used: it is stopped, and starts again when they are back"
+		events = append(events, sdk.Event("machine.spent", why, nil))
+	case idle > 0 && guest.Running && wanted(s, hold).running:
+		// its engine's own history says how long it has been quiet; one that
+		// cannot be read says nothing, and nothing is stopped on it
+		act, reads := p.Driver(r.GetZone()).(driver.Activity)
+		if !reads {
+			break
+		}
+		calm, qerr := act.QuietFor(ctx, r.GetId(), idle, p.quiet())
+		if qerr != nil {
+			break
+		}
+		// never longer than it has run: an engine's history may be older
+		// than this run of the guest, or than the guest itself
+		if guest.StartedAt != nil {
+			calm = min(calm, readAt(guest).Sub(*guest.StartedAt))
+		}
+		quiet = fmtQuiet(calm)
+		if calm >= idle && !keptAwake(s, readAt(guest)) {
+			stopped()
+			why = fmt.Sprintf("quiet for %s, its idle_after: it is stopped — start it when it is needed", s.IdleAfter)
+			events = append(events, sdk.Event("machine.idle", why, map[string]string{"idle_after": s.IdleAfter}))
+		}
+	}
+	observed := func(g driver.Guest) []byte {
+		o := observe(g)
+		o.CountedAt = &counted
+		if g.Running {
+			o.QuietFor = quiet
+		}
+		return sdk.JSON(o)
 	}
 	wasHeld := len(guest.Holds) > 0
 	guest, fixed, short, err := converge(ctx, g, r.GetId(), s, hold, guest)
@@ -996,11 +1164,12 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 		return nil, engineErr(err) // not reached: the core tries again at its next pass
 	}
 	if err != nil {
-		resp.Drift, resp.Observed = pluginpb.Drift_DRIFT_DRIFTED, sdk.JSON(observe(guest))
+		resp.Drift, resp.Observed = pluginpb.Drift_DRIFT_DRIFTED, observed(guest)
 		resp.Detail = fmt.Sprintf("it could not be brought to what it should be (%s): %v", strings.Join(append(fixed, "…"), ", "), err)
+		resp.Events = events
 		return resp, nil
 	}
-	resp.Observed = sdk.JSON(observe(guest))
+	resp.Observed = observed(guest)
 	switch held := len(guest.Holds) > 0; {
 	case held && !wasHeld:
 		events = append(events, sdk.Event("machine.held", fmt.Sprintf("its room is held for %s", hold), map[string]string{"hold": hold}))
@@ -1012,6 +1181,10 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_DRIFTED, short
 	case len(fixed) == 0:
 		resp.Drift = pluginpb.Drift_DRIFT_IN_SYNC
+	case why != "":
+		// stopped for its idleness or its owner's spent month: nothing was
+		// put back, and its own event says so
+		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_REPAIRED, why
 	default:
 		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_REPAIRED, fmt.Sprintf("put back: %v", fixed)
 		if hold != "" {
@@ -1084,8 +1257,20 @@ func (p *Plugin) machine(r *pluginpb.Resource) (driver.Guests, Spec, error) {
 }
 
 func observe(g driver.Guest) Observed {
-	return Observed{EngineRef: g.EngineRef, Node: g.Node, Kind: g.Kind, Name: g.Name, Cores: g.Cores,
+	o := Observed{EngineRef: g.EngineRef, Node: g.Node, Kind: g.Kind, Name: g.Name, Cores: g.Cores,
 		MemoryMB: g.MemoryMB, DiskGB: g.DiskGB, Running: g.Running, Addresses: g.Addresses, CPULimit: g.CPULimit, Held: g.Holds}
+	if g.Running && g.StartedAt != nil {
+		at := g.StartedAt.UTC().Truncate(time.Second)
+		o.StartedAt = &at
+	}
+	return o
+}
+
+// observedOf is a machine as it was last observed.
+func observedOf(r *pluginpb.Resource) Observed {
+	var o Observed
+	_ = sdk.Decode(r.GetObserved(), &o)
+	return o
 }
 
 // engineErr: a refusal or a missing guest will not change by trying again;

@@ -118,13 +118,19 @@ enum DimensionKind {
   DIMENSION_KIND_QUANTITY = 1;
   // A value picked from a set the tier allows: a kind, a class, an image.
   DIMENSION_KIND_CHOICE = 2;
+  // An amount CONSUMED as time passes, summed per owner over the calendar
+  // month: the hours a machine ran. A tier's limit is the month's; a delete
+  // gives nothing back; the next month starts at nothing. The plugin says
+  // what a resource consumed (Consumed) and which meters a request would
+  // leave it drawing on (PlanResponse.meters).
+  DIMENSION_KIND_METER = 3;
 }
 
 message Dimension {
   // "<plugin>.<name>", e.g. "machines.memory_gb".
   string name = 1;
   DimensionKind kind = 2;
-  // "GB", "vCPU"; empty for a count or a choice.
+  // "GB", "vCPU", "vCPU-hours"; empty for a count or a choice.
   string unit = 3;
   string description = 4;
 }
@@ -193,6 +199,11 @@ message Resource {
   // for a plugin whose resource's room changes on its own (a bake borrows
   // its builder's memory until the image is made, then takes none).
   Room room = 9;
+  // This plugin's METER dimensions whose month its owner has spent, under
+  // the tier its last request was admitted in. A plugin brings the resource
+  // to what that means in Reconcile — a running machine is stopped, and stays
+  // so — and refuses in Act what would draw on one.
+  repeated string spent = 10;
 }
 
 message PlanRequest {
@@ -225,6 +236,10 @@ message PlanResponse {
   // What the resource would take from its zone's room; absent = nothing
   // (a key pair, a record).
   Room room = 5;
+  // The METER dimensions it would draw on once the request is done (a
+  // machine that runs: its hours). The core refuses a request that leaves a
+  // resource drawing on a meter whose month is spent, with the numbers.
+  repeated string meters = 6;
 }
 
 // Room is what a resource takes from its zone's memory, the way the zone's
@@ -309,6 +324,8 @@ message DeleteRequest {
 
 message DeleteResponse {
   repeated Event events = 1;
+  // What it consumed up to its delete, not yet reported.
+  Consumed consumed = 2;
 }
 
 message ActRequest {
@@ -329,6 +346,8 @@ message ActResponse {
   repeated Event events = 4;
   // Whether a new request may name it after the action; absent = it may.
   Usability usability = 5;
+  // What it consumed up to the action, not yet reported.
+  Consumed consumed = 6;
 }
 
 enum Drift {
@@ -365,6 +384,19 @@ message ReconcileResponse {
   // core keeps the smaller amount, dimension by dimension: growth is
   // admitted, never reported.
   Usage usage = 8;
+  // What it consumed since the plugin last said. Read with the verdicts in
+  // sync, repaired and drifted.
+  Consumed consumed = 9;
+}
+
+// Consumed is what a resource used up, per METER dimension, since the plugin
+// last reported it — in the dimension's unit (hours: 0.25 for a quarter).
+// The core adds it to its owner's month in the same write as the observed
+// state the plugin returns with it: a plugin keeps how far it has counted
+// THERE (observed), so an answer the core could not write is counted again
+// from the same point, and never twice.
+message Consumed {
+  map<string, double> amounts = 1;
 }
 
 // Usage is what a resource holds per QUANTITY dimension.

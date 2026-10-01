@@ -39,7 +39,7 @@ func TestMigrationsRunOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if v, _ := s.Version(context.Background()); v != 4 {
+		if v, _ := s.Version(context.Background()); v != 5 {
 			t.Fatalf("schema version %d", v)
 		}
 		_ = s.Close()
@@ -310,5 +310,47 @@ func TestZoneUse(t *testing.T) {
 	_ = s.Tx(ctx, func(tx *Tx) error { return tx.DeleteClaim("z", "priority") })
 	if cs, _ = s.Claims(ctx); len(cs) != 0 {
 		t.Fatalf("a released claim stays: %+v", cs)
+	}
+}
+
+// A meter only grows, month by month and owner by owner — a deleted
+// resource takes nothing back; and a resource keeps the tier it was admitted
+// under.
+func TestMetersAndTheAdmittedTier(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	add := func(owner, period string, n float64) {
+		t.Helper()
+		if err := s.Tx(ctx, func(tx *Tx) error { return tx.AddMeter(owner, "machines.vcpu_hours", period, n) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("alice", "2026-10", 1.5)
+	add("alice", "2026-10", 0.25)
+	add("alice", "2026-11", 4)
+	add("bob", "2026-10", 9)
+	for period, want := range map[string]float64{"2026-10": 1.75, "2026-11": 4, "2026-12": 0} {
+		got, err := s.Metered(ctx, "alice", period)
+		if err != nil || got["machines.vcpu_hours"] != want {
+			t.Fatalf("%s: %v %v, want %v", period, got, err, want)
+		}
+	}
+	if err := s.Tx(ctx, func(tx *Tx) error { return tx.AddMeter("alice", "machines.vcpu_hours", "2026-10", -5) }); err == nil {
+		t.Fatal("a meter went below nothing")
+	}
+
+	put(t, s, "m-00000000000000001", "alice", Ready, nil, nil)
+	r, _ := s.Resource(ctx, "m-00000000000000001")
+	if r.Tier != "" {
+		t.Fatalf("no tier was written: %q", r.Tier)
+	}
+	if err := s.Tx(ctx, func(tx *Tx) error { return tx.Update(r.ID, Change{Tier: "users"}) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Tx(ctx, func(tx *Tx) error { return tx.Update(r.ID, Change{Drift: new(string)}) }); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ = s.Resource(ctx, r.ID); r.Tier != "users" {
+		t.Fatalf("the tier stays until another request is admitted: %q", r.Tier)
 	}
 }

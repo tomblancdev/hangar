@@ -87,6 +87,9 @@ type Resource struct {
 	// HoldSince ("" = none).
 	Hold      string     `json:"hold,omitempty"`
 	HoldSince *time.Time `json:"hold_since,omitempty"`
+	// Tier: the tier its last request was admitted under — whose limits a
+	// reconcile holds it to (its owner's month of a meter spent).
+	Tier      string     `json:"tier,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
@@ -311,11 +314,11 @@ func (t *Tx) InsertResource(r *Resource) error {
 	}
 	_, err := t.q.ExecContext(t.ctx, `INSERT INTO resources
 		(id, type, plugin, owner, zone, state, spec, observed, choices, room_guaranteed, room_spot, running, hold, hold_since,
-		 unusable, pending, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 unusable, pending, tier, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.Type, r.Plugin, r.Owner, r.Zone, r.State, rawOr(r.Spec, "{}"), rawOr(r.Observed, "{}"),
 		mustJSON(nonNilS(r.Choices)), r.Room.GuaranteedMB, r.Room.SpotMB, r.Room.Running, r.Hold, since,
-		r.Unusable, r.Pending, ts(t.now), ts(t.now))
+		r.Unusable, r.Pending, r.Tier, ts(t.now), ts(t.now))
 	if err != nil {
 		return err
 	}
@@ -439,6 +442,8 @@ type Change struct {
 	// Hold: the reservation's key now holding its room ("" lifts it); the
 	// time it began is kept while the key stays the same.
 	Hold *string
+	// Tier: the tier the request that makes this change was admitted under.
+	Tier string
 	// IfState: apply only while the resource is still in this state
 	// (ErrMoved otherwise).
 	IfState string
@@ -489,6 +494,10 @@ func (t *Tx) update(id string, c Change) error {
 		sets = append(sets, "unusable = ?", "pending = ?")
 		args = append(args, c.Usability.Unusable, c.Usability.Pending)
 	}
+	if c.Tier != "" {
+		sets = append(sets, "tier = ?")
+		args = append(args, c.Tier)
+	}
 	if c.Hold != nil {
 		var since any
 		if *c.Hold != "" {
@@ -528,7 +537,7 @@ func (s *Store) Resource(ctx context.Context, id string) (*Resource, error) {
 }
 
 const resourceCols = `seq, id, type, plugin, owner, zone, state, spec, observed, choices, drift,
-	room_guaranteed, room_spot, running, hold, hold_since, unusable, pending, created_at, updated_at, deleted_at`
+	room_guaranteed, room_spot, running, hold, hold_since, unusable, pending, tier, created_at, updated_at, deleted_at`
 
 func scanResource(sc interface{ Scan(...any) error }) (*Resource, int64, error) {
 	var r Resource
@@ -536,7 +545,7 @@ func scanResource(sc interface{ Scan(...any) error }) (*Resource, int64, error) 
 	var spec, observed, choices, created, updated string
 	var deleted, since sql.NullString
 	if err := sc.Scan(&seq, &r.ID, &r.Type, &r.Plugin, &r.Owner, &r.Zone, &r.State, &spec, &observed, &choices,
-		&r.Drift, &r.Room.GuaranteedMB, &r.Room.SpotMB, &r.Room.Running, &r.Hold, &since, &r.Unusable, &r.Pending,
+		&r.Drift, &r.Room.GuaranteedMB, &r.Room.SpotMB, &r.Room.Running, &r.Hold, &since, &r.Unusable, &r.Pending, &r.Tier,
 		&created, &updated, &deleted); err != nil {
 		return nil, 0, err
 	}
@@ -746,6 +755,43 @@ func zoneUse(ctx context.Context, q querier, zone, except string) (booked, spot 
 		FROM resources WHERE zone = ? AND id != ? AND state IN (`+strings.TrimSuffix(strings.Repeat("?, ", len(Live)), ", ")+`)`,
 		args...).Scan(&booked, &spot)
 	return booked, spot, err
+}
+
+// ---- Meters -----------------------------------------------------------------
+
+// AddMeter adds what an owner consumed to their month of a meter.
+func (t *Tx) AddMeter(owner, dimension, period string, amount float64) error {
+	_, err := t.q.ExecContext(t.ctx, `INSERT INTO meters (owner, dimension, period, used) VALUES (?, ?, ?, ?)
+		ON CONFLICT (owner, dimension, period) DO UPDATE SET used = used + excluded.used`, owner, dimension, period, amount)
+	return err
+}
+
+// Metered is what an owner consumed in a month, per meter.
+func (t *Tx) Metered(owner, period string) (map[string]float64, error) {
+	return meteredOf(t.ctx, t.q, owner, period)
+}
+
+// Metered is what an owner consumed in a month, per meter.
+func (s *Store) Metered(ctx context.Context, owner, period string) (map[string]float64, error) {
+	return meteredOf(ctx, s.db, owner, period)
+}
+
+func meteredOf(ctx context.Context, q querier, owner, period string) (map[string]float64, error) {
+	rows, err := q.QueryContext(ctx, `SELECT dimension, used FROM meters WHERE owner = ? AND period = ?`, owner, period)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var d string
+		var n float64
+		if err := rows.Scan(&d, &n); err != nil {
+			return nil, err
+		}
+		out[d] = n
+	}
+	return out, rows.Err()
 }
 
 // ---- Claims -----------------------------------------------------------------

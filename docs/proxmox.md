@@ -135,6 +135,48 @@ set a container's feature flags other than `nesting`; pass a device through.
   is refused, naming them (the core refuses it first; this is the engine's
   own guard).
 
+## Idleness and hours
+
+Both are read from the node itself, with the `VM.Audit` the token already
+has on its pool — nothing is installed in a guest.
+
+- **Since when a guest runs** is its `uptime` in `status/current`: the age of
+  its own process (a VM's QEMU, a container's init), the same whichever API
+  worker answers. A machine's hours are counted from it, once per core.
+- **Whether it is idle** is read from the history the node keeps of every
+  guest by itself: `GET /nodes/<node>/<kind>/<vmid>/rrddata`. On 9.2 it
+  answers **one sample a minute** for the last hour (`timeframe=hour`, 60
+  samples) and for the last day (`timeframe=day`, 1439); a week is
+  half-hours — which is why an `idle_after` goes up to twelve hours. A sample
+  is its minute's average, stamped with the minute's end: `cpu` as a share of
+  the guest's cores (× `maxcpu` = cores' worth), `netout` in bytes a second.
+  It is there within seconds of its minute's end. **A minute the guest did
+  not run whole has no sample** — so a guest just started has no history, and
+  is never idle before its first whole minutes.
+- **The history is kept by VMID, and outlives the guest**
+  (`/var/lib/rrdcached/db/pve-vm-9.0/<vmid>`, one file a number, never removed
+  with the guest): a guest made on the number of one deleted a minute before
+  finds that guest's samples under its own name. Read on the bench — a
+  container 22 seconds old read quiet for five minutes, and was stopped for
+  it. **Nothing older than the guest's own start is read** (its `uptime`
+  says when that was), and the machines plugin never counts a machine quiet
+  for longer than it has run.
+- The driver walks the history back from the newest sample, for as long as
+  each minute is under the thresholds, follows the next, and began after the
+  guest started: a busy minute, a hole or the guest's start ends the walk. A newest sample older than five minutes is a history
+  no longer written (the node's statistics daemon down): it says nothing, and
+  nothing is stopped on it.
+- **`status/current`'s own `cpu` is not used**: it is a rate since the same
+  API worker last looked at that guest — three calls in a row answered `0`
+  for a VM the node's statistics saw at 0.97.
+- Read on a Debian 13 guest: an idle VM sits at **0.008 cores** and sends
+  nothing, an idle container at 0 and 1 to 3 bytes a second (its DHCP and
+  ARP); twenty seconds of one busy core read **0.33** in their minute; one
+  ping a second, **50 to 100 bytes a second** sent. The defaults — 0.05
+  cores' worth, 20 bytes a second sent — sit between; a guest that ships
+  logs or metrics by itself sends more, and its operator raises `idle.sent_bps`
+  (the machines plugin's settings) to what an idle one of theirs reads.
+
 ## Volumes
 
 Proxmox VE keeps **no disk without a guest**: a disk is a line of a guest's

@@ -57,6 +57,12 @@ const (
 	DimensionKind_DIMENSION_KIND_QUANTITY DimensionKind = 1
 	// A value picked from a set the tier allows: a kind, a class, an image.
 	DimensionKind_DIMENSION_KIND_CHOICE DimensionKind = 2
+	// An amount CONSUMED as time passes, summed per owner over the calendar
+	// month: the hours a machine ran. A tier's limit is the month's; a delete
+	// gives nothing back; the next month starts at nothing. The plugin says
+	// what a resource consumed (Consumed) and which meters a request would
+	// leave it drawing on (PlanResponse.meters).
+	DimensionKind_DIMENSION_KIND_METER DimensionKind = 3
 )
 
 // Enum value maps for DimensionKind.
@@ -65,11 +71,13 @@ var (
 		0: "DIMENSION_KIND_UNSPECIFIED",
 		1: "DIMENSION_KIND_QUANTITY",
 		2: "DIMENSION_KIND_CHOICE",
+		3: "DIMENSION_KIND_METER",
 	}
 	DimensionKind_value = map[string]int32{
 		"DIMENSION_KIND_UNSPECIFIED": 0,
 		"DIMENSION_KIND_QUANTITY":    1,
 		"DIMENSION_KIND_CHOICE":      2,
+		"DIMENSION_KIND_METER":       3,
 	}
 )
 
@@ -489,7 +497,7 @@ type Dimension struct {
 	// "<plugin>.<name>", e.g. "machines.memory_gb".
 	Name string        `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Kind DimensionKind `protobuf:"varint,2,opt,name=kind,proto3,enum=hangar.plugin.v1.DimensionKind" json:"kind,omitempty"`
-	// "GB", "vCPU"; empty for a count or a choice.
+	// "GB", "vCPU", "vCPU-hours"; empty for a count or a choice.
 	Unit          string `protobuf:"bytes,3,opt,name=unit,proto3" json:"unit,omitempty"`
 	Description   string `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -877,7 +885,12 @@ type Resource struct {
 	// What it takes from its zone's pools now, as last admitted or reported —
 	// for a plugin whose resource's room changes on its own (a bake borrows
 	// its builder's memory until the image is made, then takes none).
-	Room          *Room `protobuf:"bytes,9,opt,name=room,proto3" json:"room,omitempty"`
+	Room *Room `protobuf:"bytes,9,opt,name=room,proto3" json:"room,omitempty"`
+	// This plugin's METER dimensions whose month its owner has spent, under
+	// the tier its last request was admitted in. A plugin brings the resource
+	// to what that means in Reconcile — a running machine is stopped, and stays
+	// so — and refuses in Act what would draw on one.
+	Spent         []string `protobuf:"bytes,10,rep,name=spent,proto3" json:"spent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -971,6 +984,13 @@ func (x *Resource) GetHold() string {
 func (x *Resource) GetRoom() *Room {
 	if x != nil {
 		return x.Room
+	}
+	return nil
+}
+
+func (x *Resource) GetSpent() []string {
+	if x != nil {
+		return x.Spent
 	}
 	return nil
 }
@@ -1087,7 +1107,11 @@ type PlanResponse struct {
 	Refusals []*Refusal `protobuf:"bytes,4,rep,name=refusals,proto3" json:"refusals,omitempty"`
 	// What the resource would take from its zone's room; absent = nothing
 	// (a key pair, a record).
-	Room          *Room `protobuf:"bytes,5,opt,name=room,proto3" json:"room,omitempty"`
+	Room *Room `protobuf:"bytes,5,opt,name=room,proto3" json:"room,omitempty"`
+	// The METER dimensions it would draw on once the request is done (a
+	// machine that runs: its hours). The core refuses a request that leaves a
+	// resource drawing on a meter whose month is spent, with the numbers.
+	Meters        []string `protobuf:"bytes,6,rep,name=meters,proto3" json:"meters,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1153,6 +1177,13 @@ func (x *PlanResponse) GetRefusals() []*Refusal {
 func (x *PlanResponse) GetRoom() *Room {
 	if x != nil {
 		return x.Room
+	}
+	return nil
+}
+
+func (x *PlanResponse) GetMeters() []string {
+	if x != nil {
+		return x.Meters
 	}
 	return nil
 }
@@ -1675,8 +1706,10 @@ func (x *DeleteRequest) GetResource() *Resource {
 }
 
 type DeleteResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Events        []*Event               `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Events []*Event               `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	// What it consumed up to its delete, not yet reported.
+	Consumed      *Consumed `protobuf:"bytes,2,opt,name=consumed,proto3" json:"consumed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1714,6 +1747,13 @@ func (*DeleteResponse) Descriptor() ([]byte, []int) {
 func (x *DeleteResponse) GetEvents() []*Event {
 	if x != nil {
 		return x.Events
+	}
+	return nil
+}
+
+func (x *DeleteResponse) GetConsumed() *Consumed {
+	if x != nil {
+		return x.Consumed
 	}
 	return nil
 }
@@ -1797,7 +1837,9 @@ type ActResponse struct {
 	Result []byte   `protobuf:"bytes,3,opt,name=result,proto3" json:"result,omitempty"`
 	Events []*Event `protobuf:"bytes,4,rep,name=events,proto3" json:"events,omitempty"`
 	// Whether a new request may name it after the action; absent = it may.
-	Usability     *Usability `protobuf:"bytes,5,opt,name=usability,proto3" json:"usability,omitempty"`
+	Usability *Usability `protobuf:"bytes,5,opt,name=usability,proto3" json:"usability,omitempty"`
+	// What it consumed up to the action, not yet reported.
+	Consumed      *Consumed `protobuf:"bytes,6,opt,name=consumed,proto3" json:"consumed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1867,6 +1909,13 @@ func (x *ActResponse) GetUsability() *Usability {
 	return nil
 }
 
+func (x *ActResponse) GetConsumed() *Consumed {
+	if x != nil {
+		return x.Consumed
+	}
+	return nil
+}
+
 type ReconcileRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Resource      *Resource              `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
@@ -1929,7 +1978,10 @@ type ReconcileResponse struct {
 	// holds nothing, as a create that did not happen. Absent = unchanged. The
 	// core keeps the smaller amount, dimension by dimension: growth is
 	// admitted, never reported.
-	Usage         *Usage `protobuf:"bytes,8,opt,name=usage,proto3" json:"usage,omitempty"`
+	Usage *Usage `protobuf:"bytes,8,opt,name=usage,proto3" json:"usage,omitempty"`
+	// What it consumed since the plugin last said. Read with the verdicts in
+	// sync, repaired and drifted.
+	Consumed      *Consumed `protobuf:"bytes,9,opt,name=consumed,proto3" json:"consumed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2020,6 +2072,63 @@ func (x *ReconcileResponse) GetUsage() *Usage {
 	return nil
 }
 
+func (x *ReconcileResponse) GetConsumed() *Consumed {
+	if x != nil {
+		return x.Consumed
+	}
+	return nil
+}
+
+// Consumed is what a resource used up, per METER dimension, since the plugin
+// last reported it — in the dimension's unit (hours: 0.25 for a quarter).
+// The core adds it to its owner's month in the same write as the observed
+// state the plugin returns with it: a plugin keeps how far it has counted
+// THERE (observed), so an answer the core could not write is counted again
+// from the same point, and never twice.
+type Consumed struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Amounts       map[string]float64     `protobuf:"bytes,1,rep,name=amounts,proto3" json:"amounts,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"fixed64,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Consumed) Reset() {
+	*x = Consumed{}
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Consumed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Consumed) ProtoMessage() {}
+
+func (x *Consumed) ProtoReflect() protoreflect.Message {
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Consumed.ProtoReflect.Descriptor instead.
+func (*Consumed) Descriptor() ([]byte, []int) {
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *Consumed) GetAmounts() map[string]float64 {
+	if x != nil {
+		return x.Amounts
+	}
+	return nil
+}
+
 // Usage is what a resource holds per QUANTITY dimension.
 type Usage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -2030,7 +2139,7 @@ type Usage struct {
 
 func (x *Usage) Reset() {
 	*x = Usage{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[27]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2042,7 +2151,7 @@ func (x *Usage) String() string {
 func (*Usage) ProtoMessage() {}
 
 func (x *Usage) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[27]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2055,7 +2164,7 @@ func (x *Usage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Usage.ProtoReflect.Descriptor instead.
 func (*Usage) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{27}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *Usage) GetAmounts() map[string]int64 {
@@ -2076,7 +2185,7 @@ type SurveyRequest struct {
 
 func (x *SurveyRequest) Reset() {
 	*x = SurveyRequest{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[28]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2088,7 +2197,7 @@ func (x *SurveyRequest) String() string {
 func (*SurveyRequest) ProtoMessage() {}
 
 func (x *SurveyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[28]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2101,7 +2210,7 @@ func (x *SurveyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SurveyRequest.ProtoReflect.Descriptor instead.
 func (*SurveyRequest) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{28}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SurveyRequest) GetZone() string {
@@ -2131,7 +2240,7 @@ type Condition struct {
 
 func (x *Condition) Reset() {
 	*x = Condition{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[29]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2143,7 +2252,7 @@ func (x *Condition) String() string {
 func (*Condition) ProtoMessage() {}
 
 func (x *Condition) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[29]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2156,7 +2265,7 @@ func (x *Condition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Condition.ProtoReflect.Descriptor instead.
 func (*Condition) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{29}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *Condition) GetWhat() isCondition_What {
@@ -2219,7 +2328,7 @@ type SurveyResponse struct {
 
 func (x *SurveyResponse) Reset() {
 	*x = SurveyResponse{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[30]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2231,7 +2340,7 @@ func (x *SurveyResponse) String() string {
 func (*SurveyResponse) ProtoMessage() {}
 
 func (x *SurveyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[30]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2244,7 +2353,7 @@ func (x *SurveyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SurveyResponse.ProtoReflect.Descriptor instead.
 func (*SurveyResponse) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{30}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SurveyResponse) GetConditions() []*ConditionState {
@@ -2280,7 +2389,7 @@ type ConditionState struct {
 
 func (x *ConditionState) Reset() {
 	*x = ConditionState{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[31]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2292,7 +2401,7 @@ func (x *ConditionState) String() string {
 func (*ConditionState) ProtoMessage() {}
 
 func (x *ConditionState) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[31]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2305,7 +2414,7 @@ func (x *ConditionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConditionState.ProtoReflect.Descriptor instead.
 func (*ConditionState) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{31}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ConditionState) GetMet() bool {
@@ -2334,7 +2443,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[32]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2346,7 +2455,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[32]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2359,7 +2468,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{32}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *Event) GetName() string {
@@ -2447,7 +2556,7 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"ZoneReport\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\"\n" +
 	"\fcapabilities\x18\x02 \x03(\tR\fcapabilities\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\xbb\x02\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\xd1\x02\n" +
 	"\bResource\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
@@ -2457,7 +2566,9 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\bobserved\x18\x06 \x01(\fR\bobserved\x128\n" +
 	"\x04tags\x18\a \x03(\v2$.hangar.plugin.v1.Resource.TagsEntryR\x04tags\x12\x12\n" +
 	"\x04hold\x18\b \x01(\tR\x04hold\x12*\n" +
-	"\x04room\x18\t \x01(\v2\x16.hangar.plugin.v1.RoomR\x04room\x1a7\n" +
+	"\x04room\x18\t \x01(\v2\x16.hangar.plugin.v1.RoomR\x04room\x12\x14\n" +
+	"\x05spent\x18\n" +
+	" \x03(\tR\x05spent\x1a7\n" +
 	"\tTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdf\x01\n" +
@@ -2468,13 +2579,14 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x04spec\x18\x04 \x01(\fR\x04spec\x12\x16\n" +
 	"\x06params\x18\x05 \x01(\fR\x06params\x124\n" +
 	"\acurrent\x18\x06 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\acurrent\x12.\n" +
-	"\x04refs\x18\a \x03(\v2\x1a.hangar.plugin.v1.ResourceR\x04refs\"\x83\x03\n" +
+	"\x04refs\x18\a \x03(\v2\x1a.hangar.plugin.v1.ResourceR\x04refs\"\x9b\x03\n" +
 	"\fPlanResponse\x12\x12\n" +
 	"\x04spec\x18\x01 \x01(\fR\x04spec\x12?\n" +
 	"\x05usage\x18\x02 \x03(\v2).hangar.plugin.v1.PlanResponse.UsageEntryR\x05usage\x12E\n" +
 	"\achoices\x18\x03 \x03(\v2+.hangar.plugin.v1.PlanResponse.ChoicesEntryR\achoices\x125\n" +
 	"\brefusals\x18\x04 \x03(\v2\x19.hangar.plugin.v1.RefusalR\brefusals\x12*\n" +
-	"\x04room\x18\x05 \x01(\v2\x16.hangar.plugin.v1.RoomR\x04room\x1a8\n" +
+	"\x04room\x18\x05 \x01(\v2\x16.hangar.plugin.v1.RoomR\x04room\x12\x16\n" +
+	"\x06meters\x18\x06 \x03(\tR\x06meters\x1a8\n" +
 	"\n" +
 	"UsageEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -2510,23 +2622,25 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\bunusable\x18\x01 \x01(\tR\bunusable\x12\x18\n" +
 	"\apending\x18\x02 \x01(\bR\apending\"G\n" +
 	"\rDeleteRequest\x126\n" +
-	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\"A\n" +
+	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\"y\n" +
 	"\x0eDeleteResponse\x12/\n" +
-	"\x06events\x18\x01 \x03(\v2\x17.hangar.plugin.v1.EventR\x06events\"\xa4\x01\n" +
+	"\x06events\x18\x01 \x03(\v2\x17.hangar.plugin.v1.EventR\x06events\x126\n" +
+	"\bconsumed\x18\x02 \x01(\v2\x1a.hangar.plugin.v1.ConsumedR\bconsumed\"\xa4\x01\n" +
 	"\n" +
 	"ActRequest\x126\n" +
 	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\x12\x16\n" +
 	"\x06action\x18\x02 \x01(\tR\x06action\x12\x16\n" +
 	"\x06params\x18\x03 \x01(\fR\x06params\x12.\n" +
-	"\x04refs\x18\x04 \x03(\v2\x1a.hangar.plugin.v1.ResourceR\x04refs\"\xc1\x01\n" +
+	"\x04refs\x18\x04 \x03(\v2\x1a.hangar.plugin.v1.ResourceR\x04refs\"\xf9\x01\n" +
 	"\vActResponse\x12\x12\n" +
 	"\x04spec\x18\x01 \x01(\fR\x04spec\x12\x1a\n" +
 	"\bobserved\x18\x02 \x01(\fR\bobserved\x12\x16\n" +
 	"\x06result\x18\x03 \x01(\fR\x06result\x12/\n" +
 	"\x06events\x18\x04 \x03(\v2\x17.hangar.plugin.v1.EventR\x06events\x129\n" +
-	"\tusability\x18\x05 \x01(\v2\x1b.hangar.plugin.v1.UsabilityR\tusability\"J\n" +
+	"\tusability\x18\x05 \x01(\v2\x1b.hangar.plugin.v1.UsabilityR\tusability\x126\n" +
+	"\bconsumed\x18\x06 \x01(\v2\x1a.hangar.plugin.v1.ConsumedR\bconsumed\"J\n" +
 	"\x10ReconcileRequest\x126\n" +
-	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\"\xd1\x02\n" +
+	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\"\x89\x03\n" +
 	"\x11ReconcileResponse\x12-\n" +
 	"\x05drift\x18\x01 \x01(\x0e2\x17.hangar.plugin.v1.DriftR\x05drift\x12\x16\n" +
 	"\x06detail\x18\x02 \x01(\tR\x06detail\x12\x1a\n" +
@@ -2535,7 +2649,13 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x04spec\x18\x05 \x01(\fR\x04spec\x12*\n" +
 	"\x04room\x18\x06 \x01(\v2\x16.hangar.plugin.v1.RoomR\x04room\x129\n" +
 	"\tusability\x18\a \x01(\v2\x1b.hangar.plugin.v1.UsabilityR\tusability\x12-\n" +
-	"\x05usage\x18\b \x01(\v2\x17.hangar.plugin.v1.UsageR\x05usage\"\x83\x01\n" +
+	"\x05usage\x18\b \x01(\v2\x17.hangar.plugin.v1.UsageR\x05usage\x126\n" +
+	"\bconsumed\x18\t \x01(\v2\x1a.hangar.plugin.v1.ConsumedR\bconsumed\"\x89\x01\n" +
+	"\bConsumed\x12A\n" +
+	"\aamounts\x18\x01 \x03(\v2'.hangar.plugin.v1.Consumed.AmountsEntryR\aamounts\x1a:\n" +
+	"\fAmountsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\x83\x01\n" +
 	"\x05Usage\x12>\n" +
 	"\aamounts\x18\x01 \x03(\v2$.hangar.plugin.v1.Usage.AmountsEntryR\aamounts\x1a:\n" +
 	"\fAmountsEntry\x12\x10\n" +
@@ -2569,11 +2689,12 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x06fields\x18\x03 \x03(\v2#.hangar.plugin.v1.Event.FieldsEntryR\x06fields\x1a9\n" +
 	"\vFieldsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*g\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*\x81\x01\n" +
 	"\rDimensionKind\x12\x1e\n" +
 	"\x1aDIMENSION_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17DIMENSION_KIND_QUANTITY\x10\x01\x12\x19\n" +
-	"\x15DIMENSION_KIND_CHOICE\x10\x02*k\n" +
+	"\x15DIMENSION_KIND_CHOICE\x10\x02\x12\x18\n" +
+	"\x14DIMENSION_KIND_METER\x10\x03*k\n" +
 	"\x05Drift\x12\x15\n" +
 	"\x11DRIFT_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rDRIFT_IN_SYNC\x10\x01\x12\x12\n" +
@@ -2605,7 +2726,7 @@ func file_hangar_plugin_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_hangar_plugin_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_hangar_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_hangar_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_hangar_plugin_v1_plugin_proto_goTypes = []any{
 	(DimensionKind)(0),         // 0: hangar.plugin.v1.DimensionKind
 	(Drift)(0),                 // 1: hangar.plugin.v1.Drift
@@ -2636,19 +2757,21 @@ var file_hangar_plugin_v1_plugin_proto_goTypes = []any{
 	(*ActResponse)(nil),        // 26: hangar.plugin.v1.ActResponse
 	(*ReconcileRequest)(nil),   // 27: hangar.plugin.v1.ReconcileRequest
 	(*ReconcileResponse)(nil),  // 28: hangar.plugin.v1.ReconcileResponse
-	(*Usage)(nil),              // 29: hangar.plugin.v1.Usage
-	(*SurveyRequest)(nil),      // 30: hangar.plugin.v1.SurveyRequest
-	(*Condition)(nil),          // 31: hangar.plugin.v1.Condition
-	(*SurveyResponse)(nil),     // 32: hangar.plugin.v1.SurveyResponse
-	(*ConditionState)(nil),     // 33: hangar.plugin.v1.ConditionState
-	(*Event)(nil),              // 34: hangar.plugin.v1.Event
-	nil,                        // 35: hangar.plugin.v1.ZoneConfig.OptionsEntry
-	nil,                        // 36: hangar.plugin.v1.Resource.TagsEntry
-	nil,                        // 37: hangar.plugin.v1.PlanResponse.UsageEntry
-	nil,                        // 38: hangar.plugin.v1.PlanResponse.ChoicesEntry
-	nil,                        // 39: hangar.plugin.v1.Usage.AmountsEntry
-	nil,                        // 40: hangar.plugin.v1.SurveyResponse.HoldsEntry
-	nil,                        // 41: hangar.plugin.v1.Event.FieldsEntry
+	(*Consumed)(nil),           // 29: hangar.plugin.v1.Consumed
+	(*Usage)(nil),              // 30: hangar.plugin.v1.Usage
+	(*SurveyRequest)(nil),      // 31: hangar.plugin.v1.SurveyRequest
+	(*Condition)(nil),          // 32: hangar.plugin.v1.Condition
+	(*SurveyResponse)(nil),     // 33: hangar.plugin.v1.SurveyResponse
+	(*ConditionState)(nil),     // 34: hangar.plugin.v1.ConditionState
+	(*Event)(nil),              // 35: hangar.plugin.v1.Event
+	nil,                        // 36: hangar.plugin.v1.ZoneConfig.OptionsEntry
+	nil,                        // 37: hangar.plugin.v1.Resource.TagsEntry
+	nil,                        // 38: hangar.plugin.v1.PlanResponse.UsageEntry
+	nil,                        // 39: hangar.plugin.v1.PlanResponse.ChoicesEntry
+	nil,                        // 40: hangar.plugin.v1.Consumed.AmountsEntry
+	nil,                        // 41: hangar.plugin.v1.Usage.AmountsEntry
+	nil,                        // 42: hangar.plugin.v1.SurveyResponse.HoldsEntry
+	nil,                        // 43: hangar.plugin.v1.Event.FieldsEntry
 }
 var file_hangar_plugin_v1_plugin_proto_depIdxs = []int32{
 	4,  // 0: hangar.plugin.v1.DescribeResponse.types:type_name -> hangar.plugin.v1.ResourceType
@@ -2657,14 +2780,14 @@ var file_hangar_plugin_v1_plugin_proto_depIdxs = []int32{
 	5,  // 3: hangar.plugin.v1.ResourceType.actions:type_name -> hangar.plugin.v1.Action
 	0,  // 4: hangar.plugin.v1.Dimension.kind:type_name -> hangar.plugin.v1.DimensionKind
 	9,  // 5: hangar.plugin.v1.ConfigureRequest.zones:type_name -> hangar.plugin.v1.ZoneConfig
-	35, // 6: hangar.plugin.v1.ZoneConfig.options:type_name -> hangar.plugin.v1.ZoneConfig.OptionsEntry
+	36, // 6: hangar.plugin.v1.ZoneConfig.options:type_name -> hangar.plugin.v1.ZoneConfig.OptionsEntry
 	11, // 7: hangar.plugin.v1.ConfigureResponse.zones:type_name -> hangar.plugin.v1.ZoneReport
-	36, // 8: hangar.plugin.v1.Resource.tags:type_name -> hangar.plugin.v1.Resource.TagsEntry
+	37, // 8: hangar.plugin.v1.Resource.tags:type_name -> hangar.plugin.v1.Resource.TagsEntry
 	15, // 9: hangar.plugin.v1.Resource.room:type_name -> hangar.plugin.v1.Room
 	12, // 10: hangar.plugin.v1.PlanRequest.current:type_name -> hangar.plugin.v1.Resource
 	12, // 11: hangar.plugin.v1.PlanRequest.refs:type_name -> hangar.plugin.v1.Resource
-	37, // 12: hangar.plugin.v1.PlanResponse.usage:type_name -> hangar.plugin.v1.PlanResponse.UsageEntry
-	38, // 13: hangar.plugin.v1.PlanResponse.choices:type_name -> hangar.plugin.v1.PlanResponse.ChoicesEntry
+	38, // 12: hangar.plugin.v1.PlanResponse.usage:type_name -> hangar.plugin.v1.PlanResponse.UsageEntry
+	39, // 13: hangar.plugin.v1.PlanResponse.choices:type_name -> hangar.plugin.v1.PlanResponse.ChoicesEntry
 	19, // 14: hangar.plugin.v1.PlanResponse.refusals:type_name -> hangar.plugin.v1.Refusal
 	15, // 15: hangar.plugin.v1.PlanResponse.room:type_name -> hangar.plugin.v1.Room
 	12, // 16: hangar.plugin.v1.PlanChangeRequest.current:type_name -> hangar.plugin.v1.Resource
@@ -2673,48 +2796,52 @@ var file_hangar_plugin_v1_plugin_proto_depIdxs = []int32{
 	19, // 19: hangar.plugin.v1.PlanChangeResponse.fixed:type_name -> hangar.plugin.v1.Refusal
 	12, // 20: hangar.plugin.v1.CreateRequest.resource:type_name -> hangar.plugin.v1.Resource
 	12, // 21: hangar.plugin.v1.CreateRequest.refs:type_name -> hangar.plugin.v1.Resource
-	34, // 22: hangar.plugin.v1.CreateResponse.events:type_name -> hangar.plugin.v1.Event
+	35, // 22: hangar.plugin.v1.CreateResponse.events:type_name -> hangar.plugin.v1.Event
 	22, // 23: hangar.plugin.v1.CreateResponse.usability:type_name -> hangar.plugin.v1.Usability
 	12, // 24: hangar.plugin.v1.DeleteRequest.resource:type_name -> hangar.plugin.v1.Resource
-	34, // 25: hangar.plugin.v1.DeleteResponse.events:type_name -> hangar.plugin.v1.Event
-	12, // 26: hangar.plugin.v1.ActRequest.resource:type_name -> hangar.plugin.v1.Resource
-	12, // 27: hangar.plugin.v1.ActRequest.refs:type_name -> hangar.plugin.v1.Resource
-	34, // 28: hangar.plugin.v1.ActResponse.events:type_name -> hangar.plugin.v1.Event
-	22, // 29: hangar.plugin.v1.ActResponse.usability:type_name -> hangar.plugin.v1.Usability
-	12, // 30: hangar.plugin.v1.ReconcileRequest.resource:type_name -> hangar.plugin.v1.Resource
-	1,  // 31: hangar.plugin.v1.ReconcileResponse.drift:type_name -> hangar.plugin.v1.Drift
-	34, // 32: hangar.plugin.v1.ReconcileResponse.events:type_name -> hangar.plugin.v1.Event
-	15, // 33: hangar.plugin.v1.ReconcileResponse.room:type_name -> hangar.plugin.v1.Room
-	22, // 34: hangar.plugin.v1.ReconcileResponse.usability:type_name -> hangar.plugin.v1.Usability
-	29, // 35: hangar.plugin.v1.ReconcileResponse.usage:type_name -> hangar.plugin.v1.Usage
-	39, // 36: hangar.plugin.v1.Usage.amounts:type_name -> hangar.plugin.v1.Usage.AmountsEntry
-	31, // 37: hangar.plugin.v1.SurveyRequest.conditions:type_name -> hangar.plugin.v1.Condition
-	33, // 38: hangar.plugin.v1.SurveyResponse.conditions:type_name -> hangar.plugin.v1.ConditionState
-	40, // 39: hangar.plugin.v1.SurveyResponse.holds:type_name -> hangar.plugin.v1.SurveyResponse.HoldsEntry
-	41, // 40: hangar.plugin.v1.Event.fields:type_name -> hangar.plugin.v1.Event.FieldsEntry
-	2,  // 41: hangar.plugin.v1.PluginService.Describe:input_type -> hangar.plugin.v1.DescribeRequest
-	8,  // 42: hangar.plugin.v1.PluginService.Configure:input_type -> hangar.plugin.v1.ConfigureRequest
-	13, // 43: hangar.plugin.v1.PluginService.Plan:input_type -> hangar.plugin.v1.PlanRequest
-	16, // 44: hangar.plugin.v1.PluginService.PlanChange:input_type -> hangar.plugin.v1.PlanChangeRequest
-	20, // 45: hangar.plugin.v1.PluginService.Create:input_type -> hangar.plugin.v1.CreateRequest
-	23, // 46: hangar.plugin.v1.PluginService.Delete:input_type -> hangar.plugin.v1.DeleteRequest
-	25, // 47: hangar.plugin.v1.PluginService.Act:input_type -> hangar.plugin.v1.ActRequest
-	27, // 48: hangar.plugin.v1.PluginService.Reconcile:input_type -> hangar.plugin.v1.ReconcileRequest
-	30, // 49: hangar.plugin.v1.PluginService.Survey:input_type -> hangar.plugin.v1.SurveyRequest
-	3,  // 50: hangar.plugin.v1.PluginService.Describe:output_type -> hangar.plugin.v1.DescribeResponse
-	10, // 51: hangar.plugin.v1.PluginService.Configure:output_type -> hangar.plugin.v1.ConfigureResponse
-	14, // 52: hangar.plugin.v1.PluginService.Plan:output_type -> hangar.plugin.v1.PlanResponse
-	17, // 53: hangar.plugin.v1.PluginService.PlanChange:output_type -> hangar.plugin.v1.PlanChangeResponse
-	21, // 54: hangar.plugin.v1.PluginService.Create:output_type -> hangar.plugin.v1.CreateResponse
-	24, // 55: hangar.plugin.v1.PluginService.Delete:output_type -> hangar.plugin.v1.DeleteResponse
-	26, // 56: hangar.plugin.v1.PluginService.Act:output_type -> hangar.plugin.v1.ActResponse
-	28, // 57: hangar.plugin.v1.PluginService.Reconcile:output_type -> hangar.plugin.v1.ReconcileResponse
-	32, // 58: hangar.plugin.v1.PluginService.Survey:output_type -> hangar.plugin.v1.SurveyResponse
-	50, // [50:59] is the sub-list for method output_type
-	41, // [41:50] is the sub-list for method input_type
-	41, // [41:41] is the sub-list for extension type_name
-	41, // [41:41] is the sub-list for extension extendee
-	0,  // [0:41] is the sub-list for field type_name
+	35, // 25: hangar.plugin.v1.DeleteResponse.events:type_name -> hangar.plugin.v1.Event
+	29, // 26: hangar.plugin.v1.DeleteResponse.consumed:type_name -> hangar.plugin.v1.Consumed
+	12, // 27: hangar.plugin.v1.ActRequest.resource:type_name -> hangar.plugin.v1.Resource
+	12, // 28: hangar.plugin.v1.ActRequest.refs:type_name -> hangar.plugin.v1.Resource
+	35, // 29: hangar.plugin.v1.ActResponse.events:type_name -> hangar.plugin.v1.Event
+	22, // 30: hangar.plugin.v1.ActResponse.usability:type_name -> hangar.plugin.v1.Usability
+	29, // 31: hangar.plugin.v1.ActResponse.consumed:type_name -> hangar.plugin.v1.Consumed
+	12, // 32: hangar.plugin.v1.ReconcileRequest.resource:type_name -> hangar.plugin.v1.Resource
+	1,  // 33: hangar.plugin.v1.ReconcileResponse.drift:type_name -> hangar.plugin.v1.Drift
+	35, // 34: hangar.plugin.v1.ReconcileResponse.events:type_name -> hangar.plugin.v1.Event
+	15, // 35: hangar.plugin.v1.ReconcileResponse.room:type_name -> hangar.plugin.v1.Room
+	22, // 36: hangar.plugin.v1.ReconcileResponse.usability:type_name -> hangar.plugin.v1.Usability
+	30, // 37: hangar.plugin.v1.ReconcileResponse.usage:type_name -> hangar.plugin.v1.Usage
+	29, // 38: hangar.plugin.v1.ReconcileResponse.consumed:type_name -> hangar.plugin.v1.Consumed
+	40, // 39: hangar.plugin.v1.Consumed.amounts:type_name -> hangar.plugin.v1.Consumed.AmountsEntry
+	41, // 40: hangar.plugin.v1.Usage.amounts:type_name -> hangar.plugin.v1.Usage.AmountsEntry
+	32, // 41: hangar.plugin.v1.SurveyRequest.conditions:type_name -> hangar.plugin.v1.Condition
+	34, // 42: hangar.plugin.v1.SurveyResponse.conditions:type_name -> hangar.plugin.v1.ConditionState
+	42, // 43: hangar.plugin.v1.SurveyResponse.holds:type_name -> hangar.plugin.v1.SurveyResponse.HoldsEntry
+	43, // 44: hangar.plugin.v1.Event.fields:type_name -> hangar.plugin.v1.Event.FieldsEntry
+	2,  // 45: hangar.plugin.v1.PluginService.Describe:input_type -> hangar.plugin.v1.DescribeRequest
+	8,  // 46: hangar.plugin.v1.PluginService.Configure:input_type -> hangar.plugin.v1.ConfigureRequest
+	13, // 47: hangar.plugin.v1.PluginService.Plan:input_type -> hangar.plugin.v1.PlanRequest
+	16, // 48: hangar.plugin.v1.PluginService.PlanChange:input_type -> hangar.plugin.v1.PlanChangeRequest
+	20, // 49: hangar.plugin.v1.PluginService.Create:input_type -> hangar.plugin.v1.CreateRequest
+	23, // 50: hangar.plugin.v1.PluginService.Delete:input_type -> hangar.plugin.v1.DeleteRequest
+	25, // 51: hangar.plugin.v1.PluginService.Act:input_type -> hangar.plugin.v1.ActRequest
+	27, // 52: hangar.plugin.v1.PluginService.Reconcile:input_type -> hangar.plugin.v1.ReconcileRequest
+	31, // 53: hangar.plugin.v1.PluginService.Survey:input_type -> hangar.plugin.v1.SurveyRequest
+	3,  // 54: hangar.plugin.v1.PluginService.Describe:output_type -> hangar.plugin.v1.DescribeResponse
+	10, // 55: hangar.plugin.v1.PluginService.Configure:output_type -> hangar.plugin.v1.ConfigureResponse
+	14, // 56: hangar.plugin.v1.PluginService.Plan:output_type -> hangar.plugin.v1.PlanResponse
+	17, // 57: hangar.plugin.v1.PluginService.PlanChange:output_type -> hangar.plugin.v1.PlanChangeResponse
+	21, // 58: hangar.plugin.v1.PluginService.Create:output_type -> hangar.plugin.v1.CreateResponse
+	24, // 59: hangar.plugin.v1.PluginService.Delete:output_type -> hangar.plugin.v1.DeleteResponse
+	26, // 60: hangar.plugin.v1.PluginService.Act:output_type -> hangar.plugin.v1.ActResponse
+	28, // 61: hangar.plugin.v1.PluginService.Reconcile:output_type -> hangar.plugin.v1.ReconcileResponse
+	33, // 62: hangar.plugin.v1.PluginService.Survey:output_type -> hangar.plugin.v1.SurveyResponse
+	54, // [54:63] is the sub-list for method output_type
+	45, // [45:54] is the sub-list for method input_type
+	45, // [45:45] is the sub-list for extension type_name
+	45, // [45:45] is the sub-list for extension extendee
+	0,  // [0:45] is the sub-list for field type_name
 }
 
 func init() { file_hangar_plugin_v1_plugin_proto_init() }
@@ -2722,7 +2849,7 @@ func file_hangar_plugin_v1_plugin_proto_init() {
 	if File_hangar_plugin_v1_plugin_proto != nil {
 		return
 	}
-	file_hangar_plugin_v1_plugin_proto_msgTypes[29].OneofWrappers = []any{
+	file_hangar_plugin_v1_plugin_proto_msgTypes[30].OneofWrappers = []any{
 		(*Condition_GuestRunning)(nil),
 		(*Condition_NodeDown)(nil),
 	}
@@ -2732,7 +2859,7 @@ func file_hangar_plugin_v1_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hangar_plugin_v1_plugin_proto_rawDesc), len(file_hangar_plugin_v1_plugin_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   40,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

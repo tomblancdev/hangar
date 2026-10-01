@@ -84,6 +84,7 @@ func New(life context.Context, cfg *config.Config, store *registry.Store, host *
 	m.Counter("hangar_requests_refused_total", "Requests refused, by reason.", "reason")
 	m.Counter("hangar_operations_total", "Operations finished, by kind and result.", "kind", "result")
 	m.Counter("hangar_reconcile_total", "Reconcile verdicts, by type and verdict.", "type", "verdict")
+	m.Counter("hangar_metered_total", "What the resources consumed, by meter (a machine's hours), in the meter's unit.", "dimension")
 	m.Counter("hangar_schedule_runs_total", "Schedules' runs, by schedule and result (asked, skipped, refused, failed).", "schedule", "result")
 	return &Core{
 		cfg: cfg, store: store, host: host, audit: a, log: log, metrics: m,
@@ -321,7 +322,7 @@ func (c *Core) create(ctx context.Context, who *Caller, typeName string, in Crea
 	r = &registry.Resource{
 		ID: ids.New(t.Prefix), Type: t.Name, Plugin: t.Plugin, Owner: who.Subject, Zone: in.Zone,
 		State: registry.Creating, Spec: plan.GetSpec(), Choices: plan.GetChoices(), Usage: plan.GetUsage(), Tags: in.Tags,
-		Room: roomOf(plan.GetRoom()),
+		Room: roomOf(plan.GetRoom()), Tier: who.Tier.Name,
 	}
 	op = &registry.Operation{
 		ID: ids.New(ids.Operation), Owner: who.Subject, ResourceID: r.ID, Kind: registry.OpCreate,
@@ -344,7 +345,13 @@ func (c *Core) create(ctx context.Context, who *Caller, typeName string, in Crea
 		if err != nil {
 			return err
 		}
-		if refusals = limits.Admit(who.Tier, c.host.Dimensions(), used, nil, r.Usage, nil, r.Choices); len(refusals) > 0 {
+		refusals = limits.Admit(who.Tier, c.host.Dimensions(), used, nil, r.Usage, nil, r.Choices)
+		// the month's meters: nothing is born drawing on one that is spent
+		spent, err := c.admitMeters(tx, who.Tier, who.Subject, plan.GetMeters())
+		if err != nil {
+			return err
+		}
+		if refusals = append(refusals, spent...); len(refusals) > 0 {
 			return errRefused
 		}
 		// the zone's pools: a machine born while the room is held is born held
@@ -486,6 +493,11 @@ func (c *Core) plan(ctx context.Context, t *plugins.Type, req *pluginpb.PlanRequ
 	for d := range plan.GetChoices() {
 		if dm, ok := dims[d]; !ok || dm.Plugin != t.Plugin || dm.Kind != limits.Choice {
 			return nil, problem(502, KindDown, "plugin %s planned %q, a choice it never declared", t.Plugin, d)
+		}
+	}
+	for _, d := range plan.GetMeters() {
+		if dm, ok := dims[d]; !ok || dm.Plugin != t.Plugin || dm.Kind != limits.Meter {
+			return nil, problem(502, KindDown, "plugin %s planned %q, a meter it never declared", t.Plugin, d)
 		}
 	}
 	if !json.Valid(plan.GetSpec()) {
@@ -695,11 +707,14 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 		if err != nil {
 			return nil, nil, false, problem(500, KindInternal, "%v", err)
 		}
-		plan, p = c.plan(ctx, t, &pluginpb.PlanRequest{Type: t.Name, Zone: r.Zone, Action: a.Name, Params: in.Params, Current: toProto(r), Refs: refs})
+		plan, p = c.plan(ctx, t, &pluginpb.PlanRequest{Type: t.Name, Zone: r.Zone, Action: a.Name, Params: in.Params, Current: c.proto(ctx, r), Refs: refs})
 		if p != nil {
 			return nil, nil, false, c.refused(ctx, p)
 		}
 		change.Spec, change.Usage, change.Choices = plan.GetSpec(), plan.GetUsage(), plan.GetChoices()
+		// the tier this request is admitted under is the one a reconcile
+		// holds the resource to from now on
+		change.Tier = who.Tier.Name
 		if who.Subject == r.Owner {
 			if p := shareProblem(who, t.SharedWith(change.Spec)); p != nil {
 				return nil, nil, false, c.refused(ctx, p)
@@ -728,7 +743,14 @@ func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActIn
 			if err != nil {
 				return err
 			}
-			if refusals = limits.Admit(who.Tier, c.host.Dimensions(), used, r.Usage, change.Usage, r.Choices, change.Choices); len(refusals) > 0 {
+			refusals = limits.Admit(who.Tier, c.host.Dimensions(), used, r.Usage, change.Usage, r.Choices, change.Choices)
+			// the month's meters, the owner's: what would leave it drawing
+			// on one that is spent is refused (a stop draws on none)
+			spent, err := c.admitMeters(tx, who.Tier, r.Owner, plan.GetMeters())
+			if err != nil {
+				return err
+			}
+			if refusals = append(refusals, spent...); len(refusals) > 0 {
 				return errRefused
 			}
 			after := roomOf(plan.GetRoom())
@@ -968,8 +990,12 @@ func (c *Core) Zones(ctx context.Context, who *Caller) ([]ZoneView, error) {
 type LimitView struct {
 	limits.Dimension
 	// Limit is a number, "unlimited", or the list of values allowed.
-	Limit any   `json:"limit"`
-	Used  int64 `json:"used"`
+	Limit any `json:"limit"`
+	// Used: what they hold now — or, for a meter, what the month consumed.
+	Used float64 `json:"used"`
+	// A meter's month, and when the next one begins.
+	Period string     `json:"period,omitempty"`
+	Resets *time.Time `json:"resets,omitempty"`
 }
 
 // Limits lists every dimension with the caller's limit and usage.
@@ -978,11 +1004,20 @@ func (c *Core) Limits(ctx context.Context, who *Caller) (string, []LimitView, er
 	if err != nil {
 		return "", nil, err
 	}
+	m := c.month()
+	consumed, err := c.store.Metered(ctx, who.Subject, m.Key)
+	if err != nil {
+		return "", nil, err
+	}
 	dims := c.host.Dimensions()
 	out := []LimitView{}
 	for _, name := range slices.Sorted(maps.Keys(dims)) {
 		d := dims[name]
-		v := LimitView{Dimension: d, Used: used[name]}
+		v := LimitView{Dimension: d, Used: float64(used[name])}
+		if d.Kind == limits.Meter {
+			next := m.Next
+			v.Used, v.Period, v.Resets = consumed[name], m.Key, &next
+		}
 		l, named := limits.Of(who.Tier, name)
 		switch {
 		case named && l.Unlimited:
@@ -1136,6 +1171,7 @@ type outcome struct {
 	spec, observed, result json.RawMessage
 	events                 []*pluginpb.Event
 	usability              *pluginpb.Usability
+	consumed               *pluginpb.Consumed
 }
 
 func (c *Core) call(ctx context.Context, p *plugins.Plugin, op *registry.Operation, r *registry.Resource) (outcome, error) {
@@ -1161,19 +1197,19 @@ func (c *Core) call(ctx context.Context, p *plugins.Plugin, op *registry.Operati
 		if err != nil {
 			return outcome{}, err
 		}
-		resp, err := client.Create(cctx, &pluginpb.CreateRequest{Resource: toProto(r), Refs: rs})
+		resp, err := client.Create(cctx, &pluginpb.CreateRequest{Resource: c.proto(ctx, r), Refs: rs})
 		return outcome{observed: resp.GetObserved(), events: resp.GetEvents(), usability: resp.GetUsability()}, err
 	case registry.OpDelete:
 		resp, err := client.Delete(cctx, &pluginpb.DeleteRequest{Resource: toProto(r)})
-		return outcome{events: resp.GetEvents()}, err
+		return outcome{events: resp.GetEvents(), consumed: resp.GetConsumed()}, err
 	default:
 		rs, err := c.loadRefs(ctx, refs, op.Params)
 		if err != nil {
 			return outcome{}, err
 		}
-		resp, err := client.Act(cctx, &pluginpb.ActRequest{Resource: toProto(r), Action: op.Action, Params: op.Params, Refs: rs})
+		resp, err := client.Act(cctx, &pluginpb.ActRequest{Resource: c.proto(ctx, r), Action: op.Action, Params: op.Params, Refs: rs})
 		return outcome{spec: resp.GetSpec(), observed: resp.GetObserved(), result: resp.GetResult(), events: resp.GetEvents(),
-			usability: resp.GetUsability()}, err
+			usability: resp.GetUsability(), consumed: resp.GetConsumed()}, err
 	}
 }
 
@@ -1214,7 +1250,7 @@ func (c *Core) finish(op *registry.Operation, r *registry.Resource, out *outcome
 			if len(prev) > 0 && prev[0] != nil {
 				// give back what the admission reserved
 				change.Spec, change.Usage, change.Choices = prev[0].Spec, prev[0].Usage, prev[0].Choices
-				change.Room = &prev[0].Room
+				change.Room, change.Tier = &prev[0].Room, prev[0].Tier
 				if change.Usage == nil {
 					change.Usage = map[string]int64{}
 				}
@@ -1228,6 +1264,13 @@ func (c *Core) finish(op *registry.Operation, r *registry.Resource, out *outcome
 			}
 			if op.Kind != registry.OpDelete {
 				if err := c.followSpec(tx, r); err != nil {
+					return err
+				}
+			}
+			// what it consumed up to here, in the write that keeps how far
+			// its plugin has counted (the observed state)
+			if out != nil && err == nil {
+				if err := c.meter(tx, r, out.consumed); err != nil {
 					return err
 				}
 			}
@@ -1580,7 +1623,7 @@ func (c *Core) reconcileLocked(ctx context.Context, r *registry.Resource) (strin
 	}
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	resp, err := client.Reconcile(cctx, &pluginpb.ReconcileRequest{Resource: toProto(r)})
+	resp, err := client.Reconcile(cctx, &pluginpb.ReconcileRequest{Resource: c.proto(ctx, r)})
 	if err != nil {
 		c.log.Warn("reconcile: the plugin could not answer", "resource", r.ID, "err", err)
 		return "skipped", status.Convert(err).Message()
@@ -1633,7 +1676,10 @@ func (c *Core) reconcileLocked(ctx context.Context, r *registry.Resource) (strin
 		return verdict, resp.GetDetail()
 	}
 	err = c.store.Tx(ctx, func(tx *registry.Tx) error {
-		if err := tx.Update(r.ID, change); err != nil || len(change.Spec) == 0 {
+		if err := tx.Update(r.ID, change); err != nil {
+			return err
+		}
+		if err := c.meter(tx, r, resp.GetConsumed()); err != nil || len(change.Spec) == 0 {
 			return err
 		}
 		return c.followSpec(tx, r)

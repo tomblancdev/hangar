@@ -19,7 +19,7 @@ where this page and they disagree, they win.
 | The plugin protocol and its SDK; the fake driver; the toy plugin | **built** |
 | The API (`/v1`), `/healthz`, `/metrics`, `/openapi.json` | **built** |
 | Zones' capacity: pools, classes, reservations, holds, the claim, waking; the Proxmox VE hook (`hangar-hook`) | **built** (§6) — proved on a throwaway Proxmox VE |
-| Idle machines put to sleep, awake hours counted against a tier, keep awake | designed (§6, power) |
+| Power: an idle machine stopped at its `idle_after`, the hours machines run counted against a tier's month (a **meter**), keep awake | **built** (§6 power, §3, §4) — proved on a throwaway Proxmox VE |
 | The machines plugin (machines, key pairs); the Proxmox VE driver; references between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md)) |
 | The volumes plugin (volumes, parked on a shelf where the engine keeps no disk without a guest); attachments between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
 | The images plugin (baked from a recipe, saved from a stopped machine, shared, retired); resources shared with others | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
@@ -41,7 +41,7 @@ self-service, an API first, resources with IDs, types, images, user data,
 tags, on-demand and spot — no EC2 API clone.
 
 **Not in scope, said plainly:** not a hypervisor (it drives yours); not an
-AWS API clone; no money billing (the unit of cost is *awake hours*); no
+AWS API clone; no money billing (the unit of cost is the *hours machines run*, once per core); no
 highly-available brain (one brain, its database backed up).
 
 **Why Go:** the engines' client libraries are Go (Incus's own client, the
@@ -120,7 +120,7 @@ across, shown in the plan and asked.)*
 | piece | what it does | built with |
 |---|---|---|
 | **Identity** | a bearer token signed by the operator's OIDC provider for the configured client id (its `groups` claim maps a person to a **tier**), or an API token `hgr_…` for automation — only its hash kept, expiring, read-only or read-write, carrying its owner's groups as they were when it was made; **a token cannot make tokens**. The provider is reached on the first token, never at start-up | `coreos/go-oidc` |
-| **Tiers and limits** | a tier = a line of limits per plugin dimension (§7); the **first** tier in the file whose groups a person is in is theirs; a dimension a tier does not name is allowed **nothing**; the core counts usage and refuses what exceeds it, **with the numbers** | data (YAML) |
+| **Tiers and limits** | a tier = a line of limits per plugin dimension (§7); the **first** tier in the file whose groups a person is in is theirs; a dimension a tier does not name is allowed **nothing**; the core counts usage and refuses what exceeds it, **with the numbers**. Three kinds of dimension: a **quantity** (what one holds now: a delete gives it back), a **choice** (a value from a set), a **meter** (what is *consumed* as time passes — the hours machines run — summed per owner over the **calendar month**, in the file's `time_zone`: the limit is the month's, a delete gives nothing back, the next month begins at nothing) | data (YAML) |
 | **Registry** | every resource: an ID in AWS's style (`box-0123456789abcdef0`: a prefix, seventeen hex digits), type, owner, zone, state, desired spec, observed state, tags, what it holds per dimension, relations; a deleted resource keeps its row | SQLite (WAL, pure Go) |
 | **The API** | REST + JSON, OpenAPI 3.1, spec first; **client tokens** on every create, delete and action (AWS's `ClientToken`: a retry returns the first operation, a reused token for another request is refused); long actions return an **operation** to poll or wait on; every refusal an RFC 9457 problem | `net/http` |
 | **Operations + reconcile** | an operation is written before the plugin is called and ended after; one the brain died during is **run again at the next start** (plugins are idempotent on the resource id); a loop compares every settled resource with its engine: in sync, **repaired**, **drifted** (reported) or **lost** (and found again) | the core |
@@ -141,7 +141,7 @@ flowchart LR
   valid -- no --> r4["422, field by field"]
   valid -- yes --> lim{"within the tier's limits?"}
   lim -- no --> r2["403, with the numbers:<br/>« 2 of 2 toy.boxes used; this asks for 1 more »"]
-  lim -- yes --> room{"room in the zone's pool?<br/>(designed, §6)"}
+  lim -- yes --> room{"room in the zone's pool?<br/>(§6)"}
   room -- no --> r3["refused, with the arithmetic:<br/>« ask for spot, or less »"]
   room -- yes --> make["202: an operation;<br/>the plugin makes it (its own key, its driver)"]
   make --> ready["ready: an ID, audit lines,<br/>the observed state"]
@@ -155,6 +155,19 @@ admitted (shrinking always fits, even over a limit lowered since), and only a
 **changed** choice is checked (a start is never refused because the tier's
 list moved). A resource holds what it holds while it is `creating`, `ready`,
 `updating`, `deleting` or `lost`; `deleted` and `failed` hold nothing.
+
+**A meter is admitted differently: by what was consumed, not by what is
+held.** The plugin's plan names the meters a request would leave the
+resource drawing on (a machine that runs: its hours); when the owner's month
+of one is spent, the request is refused in the same transaction — 403
+`limit`, reason `meter`: « 10.1 of 10 vCPU-hours (machines.vcpu_hours) used
+in October 2026: it is back on 1 November ». A request that draws on nothing
+(a stop, a stopped machine's settings) is never refused for it. **The month
+running out while a resource runs asks nobody**: each resource keeps the tier
+its last request was admitted under, and at every reconcile the core tells
+its plugin which meters that tier's month has spent — the plugin brings it to
+what that means (a running machine is stopped, and stays so). An operator who
+starts someone's machine starts it under the operator's own limits.
 
 ## 4. The plugin contract **(built)**
 
@@ -178,6 +191,17 @@ capabilities) · `Plan` (what a create or an action would hold — no side
 effects) · `PlanChange` (the steps that bring a resource to another spec, or
 the fields set at its birth — no side effects; optional) · `Create`,
 `Delete`, `Act` · `Reconcile` (desired against actual).
+
+**Meters.** A plugin that declares a meter says three things: in its plan,
+**which meters the request would leave the resource drawing on**; with every
+action, delete and reconcile, **how much the resource consumed** since it
+last said (`Consumed`, in the dimension's unit — a fraction of an hour is
+0.25); and, in reconcile, what a spent month means for a resource the core
+says is `spent`. The core adds what was consumed to its owner's month **in
+the same write as the observed state the plugin returns with it** — so a
+plugin keeps how far it has counted *there*, holds no state of its own, and
+an answer the core could not write is counted again from the same point,
+never twice. **(built)**
 
 **Four rules a plugin keeps:** (1) `Create`, `Delete` and `Act` are
 **idempotent on the resource id** — the id is minted by the core before the
@@ -296,6 +320,7 @@ advertise the documented flags.
 | `volume.move_between_guests` | yes (`target-vmid`, both guests on one node) | yes | yes (EBS) | yes |
 | `guest.suspend_to_disk` | VMs without a passed-through device | yes | hibernate | yes |
 | `guest.tags` | yes | yes (config keys) | yes | yes |
+| `guest.activity` (the engine's own history of a guest's CPU and network) | yes (a sample a minute, kept a day) | yes (metrics) | yes (CloudWatch) | yes |
 | `hook.pre_start` | yes (hookscript; **a failing one aborts the start**) | no (the core admits instead) | no | yes |
 | `gpu.shared` / `gpu.passthrough` | device nodes / PCI mapping | yes / yes | instance types | — |
 | `fence.pool` (a credential limited to the product's guests) | yes (a pool + a role) | yes (a project) | yes (IAM + tags) | yes |
@@ -316,6 +341,15 @@ running guest holds. **`Traits(kind)`** says what a
 guest of one kind takes (user data) and changes while it runs (cores, memory
 up, memory down) — finer than a flag, which speaks for the whole engine: on
 Proxmox a container changes everything live and a VM only grows its memory.
+A guest says **since when it runs**, where its engine does — what its hours
+are counted from. **The activity facet** (`driver.Activity`, `guest.activity`)
+answers one question from the engine's own history, with nothing installed
+in the guest: **how long has this guest stayed quiet** — its CPU and what it
+sends under the operator's thresholds, sample after sample up to now. What
+the history cannot say (no reading yet, a hole, a history no longer written)
+is never quiet, **and a guest is never quiet for longer than it has run** —
+an engine may keep a history by a number it gives to the next guest. What it *receives* is not counted: a network's broadcasts
+reach every guest, whatever it does.
 **The watcher facet** (`driver.Watcher`) reads what a zone's reservations
 wait on: a watched guest's power, a node's state, whether the zone is awake.
 **The volumes facet** (`driver.Volumes`: create, find, place, resize, set
@@ -341,7 +375,10 @@ seed disc the driver writes and uploads; every long call waits for its task
 (a refused start is a `200` and a failed task). It advertises `kind.*`,
 `guest.tags`, `resize.live.memory_down` (containers, above what they hold),
 `resize.live.cpu_cap` (`cpulimit`, live on both kinds), `hook.pre_start` (its
-hook, `hangar-hook`, §6), `volume.move_between_guests` (the volumes facet: a
+hook, `hangar-hook`, §6), `guest.activity` (the node's own statistics of each
+guest, one sample a minute kept for a day, read with the `VM.Audit` the token
+already has — [docs/proxmox.md](docs/proxmox.md#idleness-and-hours)),
+`volume.move_between_guests` (the volumes facet: a
 guest's description says which disk is which volume, since a disk is renamed
 after each guest it moves to; a volume leaving a running VM rests on its
 shelf, where its options are written back; one leaving a running container
@@ -448,10 +485,46 @@ zones:
   the webhook when it is not, and waits for it to answer (`timeout`). A
   reconcile never wakes a zone: while it sleeps its resources are not
   judged.
-- **Power — designed:** the core stops each machine idle for its
-  `idle_after` (read from the engine's own counters: CPU and network), and
-  counts **awake hours** against the owner's tier (a limit per month); a
-  machine can be kept awake, at that cost.
+
+### Power: the hours, and the idle stop **(built)**
+
+A zone that sleeps is only worth it if what runs there stops when nobody
+uses it, and a tier's room is only fair if running has a cost.
+
+- **`idle_after`** (the machines plugin's: `30m`, `2h` — five minutes to
+  twelve hours; absent or `never`: never). At every reconcile the plugin asks
+  its driver how long the guest has stayed quiet (§5, the activity facet);
+  once that reaches its `idle_after` the machine is **stopped, and stays
+  stopped** — its spec says so, its borrowed room is given back, the audit
+  has `machine.idle` — until its owner starts it (which wakes a sleeping
+  zone). **Never unless it asks**: a machine that names no `idle_after` is
+  not judged. Not judged either: one whose room is held (it is stopped for
+  another reason, and comes back), one kept awake, one whose history cannot
+  be read. A machine just started has no quiet yet: it is never quiet for
+  longer than it has run, whatever its engine remembers.
+- **What idle is** is the operator's (the plugin's `idle` settings): under
+  **0.05 cores' worth** of CPU and **20 bytes a second sent**, minute after
+  minute, unless said otherwise. Read on a Debian 13 guest of Proxmox VE: an
+  idle VM sits at 0.008 cores and sends under 3 bytes a second; twenty
+  seconds of one busy core read 0.33 in their minute; one small packet a
+  second, 50 to 100. An ssh session left open and silent is idle — as a
+  browser tab left open on a cloud workspace is.
+- **Keep awake** — both ways: `keep_awake` with `for: 8h` holds the idle
+  stop off until then and ends by itself; with nothing, until `let_sleep`. A
+  stop ends it. It suspends the idle stop and nothing else: the hours count
+  as the machine runs, and a spent month still stops it.
+- **The hours** — the meter **`machines.vcpu_hours`**: the time a machine
+  runs, **counted once per core** (four cores for two hours: eight), read
+  from the engine (since when the guest runs, and when it was read), summed
+  per owner and calendar month (§3). A tier's limit is the month's. A
+  stopped machine consumes nothing; a held one, nothing while its hold has
+  it stopped; a deleted one keeps what it consumed. What ran while the brain
+  was away is counted at its next look, as long as the guest still runs.
+- **The month spent**: nothing more is drawn on it — a start, a new machine
+  are refused with the numbers and the day it is back —, and **what still
+  runs is shut down** at the next reconcile (`machine.spent`), to be started
+  again when the month is. A limit that only refused starts would never bind
+  a machine that never stops.
 
 ## 7. Every plugin — capabilities and limits (the first three **built**)
 
@@ -462,8 +535,9 @@ things. The key pair type is **`keypair`** (a type's name has the shape of an
 id prefix); a key pair is **imported, never generated** (the brain would hold
 a private key). **Console** comes with the terminal in the console (it needs
 a stream through the core the protocol does not carry yet). **The classes,
-`floor_gb`, `cores_beside` and `resume`** are built with §6's room; **awake
-hours, keep awake and `idle_after`** come with §6's power; **GPU** and
+`floor_gb`, `cores_beside` and `resume`** are built with §6's room;
+**`idle_after`, keep awake and the hours** (`machines.vcpu_hours`, a meter)
+with §6's power — `set_idle_after`, `keep_awake`, `let_sleep`; **GPU** and
 **`peers`** later. A machine holds its size against its tier while it
 exists, running or not; against its zone, as its class says (§6).
 
@@ -506,7 +580,7 @@ numbers), and its spec written at its admission.
 
 | plugin | resources | actions | limit dimensions (per tier) | driver needs |
 |---|---|---|---|---|
-| **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · console (serial / terminal) · delete · keep awake (costs awake hours) | count · vCPU · memory GB · awake hours a month · kinds allowed · classes allowed · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `hook.pre_start` or core admission |
+| **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · set_idle_after · keep_awake (for a time, or until let_sleep) · let_sleep · console (serial / terminal) · delete | count · vCPU · memory GB · **vCPU-hours a month** (a meter) · kinds allowed · classes allowed · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `guest.activity` for `idle_after`, `hook.pre_start` or core admission |
 | **volumes** | **`vol-…`**: size, content (block / filesystem), backup yes/no, the machine it is attached to and its path there, tags | create · attach · detach · **move** (to another machine of the same owner) · resize (grow) · set_backup · delete | count · total GB · **backed-up GB** | `volume.move_between_guests`, `fence.pool`; where the engine keeps no disk without a guest, an unattached volume parks on a stopped **« shelf » guest** of its owner |
 | **images** | **`img-…`**: name, family, kind, size, whom it is shared with (`shared_with`: groups, `*` = everyone), retired, the recipe it came from (`from`) or the machine it was saved from; observed: `pending` → `available` \| `failed` (its words), `waiting` while the zone's room is held, its engine form per kind | **bake** (create from a `recipe`) · **save** (create from a stopped `machine`) · share · retire · rebake · delete | `images.count` · `images.size_gb` (one's own) · choices `images.source` (recipe, machine) and `images.visibility` (private, shared, public) | the images facet (`driver.Images`): a bake moved forward call by call, a save, a delete refused under linked clones — Proxmox VE: VM templates in the images pool, a builder VM per bake |
 
@@ -594,6 +668,13 @@ directly, and each credential must stay fenced.
 | What brings a resource to a spec is its plugin's say (`PlanChange`), asked beforehand and run as ordinary actions | the plugin knows which action changes which field; every step is admitted and audited as if asked by hand |
 | A resource that left the file is deleted — after asking (`--yes` for scripts; refused with no one at stdin) | the file is the whole truth, as Terraform's; nothing goes unasked |
 | A field set at birth that differs stops the whole apply before anything changes; a rebuild is designed, not built | nothing is lost by surprise (a machine's disk is data); a rebuild must carry the volumes across |
+| Idleness is read from the engine's own history of a guest — CPU, and what it sends | nothing to install in a guest, and nothing a guest could lie about; what it receives says nothing (broadcasts reach everyone) |
+| A machine is stopped for idleness only if it says `idle_after` | nothing stops unasked: the forgetful case is bounded by the month's hours instead |
+| The hours are counted once per core, per owner and calendar month — a meter, a third kind of dimension | a big machine costs more than a small one, as the clouds bill; a holding that a delete gives back cannot count time |
+| The month spent, what still runs is shut down | a limit that only refused starts would never bind a machine that never stops |
+| Keep awake both ways: for a time that ends by itself, or until told | a long job needs a number; a day of work needs a switch — and a stop ends either |
+| A resource keeps the tier its last request was admitted under | at the month's end nobody is asking, and the core knows a person's groups only when they ask |
+| A plugin counts consumption in its observed state, written with the amount | a plugin holds no state: what the core could not write is counted again from the same point, never twice |
 
 **Set aside:** an EC2 API clone (nothing maintained speaks it for the engines
 this targets — OpenStack's EC2 layer, CloudStack's `ec2stack`, Eucalyptus and

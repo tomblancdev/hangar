@@ -618,7 +618,15 @@ components:
       required: [name, kind, plugin, limit, used]
       properties:
         name: { type: string, examples: ["toy.boxes"] }
-        kind: { type: string, enum: [quantity, choice] }
+        kind:
+          type: string
+          enum: [quantity, choice, meter]
+          description: |
+            A `quantity` is what you hold now (a delete gives it back); a
+            `choice`, a value from a set; a `meter`, what is consumed as time
+            passes — the hours your machines ran — summed over the calendar
+            month in the brain's time zone: its limit is the month's, and a
+            delete gives nothing back.
         unit: { type: string }
         description: { type: string }
         plugin: { type: string }
@@ -628,7 +636,12 @@ components:
             - { type: integer, minimum: 0 }
             - { const: unlimited }
             - { type: array, items: { type: string } }
-        used: { type: integer, minimum: 0 }
+        used:
+          type: number
+          minimum: 0
+          description: What you hold now — or, for a meter, what the month has consumed.
+        period: { type: string, examples: ["2026-10"], description: A meter's month. }
+        resets: { type: string, format: date-time, description: When a meter's next month begins. }
     Resource:
       type: object
       required: [id, type, plugin, owner, zone, state, spec, observed, choices, usage, tags, created_at, updated_at]
@@ -644,6 +657,12 @@ components:
         choices: { type: object, additionalProperties: { type: string } }
         usage: { type: object, additionalProperties: { type: integer } }
         tags: { type: object, additionalProperties: { type: string } }
+        tier:
+          type: string
+          description: |
+            The tier its last request was admitted under: whose limits the
+            brain holds it to when nobody is asking (its owner's month of a
+            meter spent — a running machine is then stopped).
         shared_with:
           type: array
           items: { type: string }
@@ -837,18 +856,25 @@ components:
               reason: { type: string }
         refusals:
           type: array
-          description: For `limit` — every dimension the request exceeds, with the numbers.
+          description: |
+            For `limit` — every dimension the request exceeds, with the
+            numbers; or the meter whose month is spent ("10.1 of 10
+            vCPU-hours (machines.vcpu_hours) used in October 2026: it is back
+            on 1 November").
           items:
             type: object
             required: [reason, dimension, message]
             properties:
-              reason: { type: string, enum: [limit, choice] }
+              reason: { type: string, enum: [limit, choice, meter] }
               dimension: { type: string }
               limit: { type: integer }
               used: { type: integer }
               asked: { type: integer }
               value: { type: string }
               allowed: { type: array, items: { type: string } }
+              consumed: { type: number, description: For `meter` — what the month has consumed. }
+              period: { type: string, description: For `meter` — the month. }
+              resets: { type: string, format: date-time, description: For `meter` — when the next month begins. }
               message: { type: string }
         room:
           type: object

@@ -46,6 +46,7 @@ func TestRefusals(t *testing.T) {
 		"no tier":                         "zones: []\n",
 		"an issuer without its audience":  base + "identity:\n  oidc:\n    issuer: https://id.example.com/\n",
 		"a reconcile loop faster than 5s": base + "reconcile:\n  every: 1s\n",
+		"a time zone that is none":        base + "time_zone: Mars/Olympus\n",
 	}
 	for name, doc := range cases {
 		if _, err := Parse([]byte(doc)); err == nil {
@@ -107,6 +108,19 @@ func TestDefaults(t *testing.T) {
 	}
 	if c.Listen != ":8080" || c.DataDir != "/data" || c.Identity.OIDC.GroupsClaim != "groups" || c.Reconcile.Every.Seconds() != 60 {
 		t.Fatalf("%+v", c)
+	}
+	// the meters' months are counted in UTC unless the file names a zone
+	if c.TimeZone != "UTC" || c.Location != time.UTC {
+		t.Fatalf("the months' calendar: %q %v", c.TimeZone, c.Location)
+	}
+	if c, err = Parse([]byte(base + "time_zone: Europe/Paris\n")); err != nil || c.Location.String() != "Europe/Paris" {
+		t.Fatalf("%v %v", c, err)
+	}
+	if _, ok := c.Tier("users"); !ok {
+		t.Fatal("a tier is found by its name")
+	}
+	if _, ok := c.Tier("nobody"); ok {
+		t.Fatal("a tier nobody declared was found")
 	}
 }
 

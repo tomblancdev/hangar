@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -210,11 +212,13 @@ func limitsCmd(env *Env, args []string) error {
 	var out struct {
 		Tier   string `json:"tier"`
 		Limits []struct {
-			Name  string `json:"name"`
-			Unit  string `json:"unit"`
-			Limit any    `json:"limit"`
-			Used  int    `json:"used"`
-			Kind  string `json:"kind"`
+			Name   string    `json:"name"`
+			Unit   string    `json:"unit"`
+			Limit  any       `json:"limit"`
+			Used   float64   `json:"used"`
+			Kind   string    `json:"kind"`
+			Period string    `json:"period"`
+			Resets time.Time `json:"resets"`
 		} `json:"limits"`
 	}
 	if err := c.do("GET", "/v1/limits", nil, &out); err != nil {
@@ -233,9 +237,17 @@ func limitsCmd(env *Env, args []string) error {
 			}
 			lim = strings.Join(parts, ", ")
 		}
-		used := fmt.Sprint(l.Used)
-		if l.Kind == "choice" {
+		used := strconv.FormatFloat(l.Used, 'f', -1, 64)
+		switch l.Kind {
+		case "choice":
 			used = ""
+		case "meter":
+			// consumed, not held: this month's, to a decimal, and when the next begins
+			used = strconv.FormatFloat(math.Floor(l.Used*10)/10, 'f', -1, 64)
+			lim += " a month"
+			if !l.Resets.IsZero() {
+				lim += ", back on " + l.Resets.Format("2 January")
+			}
 		}
 		rows = append(rows, []string{l.Name, used, lim, l.Unit})
 	}

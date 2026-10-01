@@ -17,7 +17,7 @@ ids (`m-0123456789abcdef0`), types, images, user data, tags, client tokens,
 on-demand and spot — for a home lab, a club, a small office. It is not a
 hypervisor (it drives yours) and not an EC2 clone.
 
-> **Status: the command line.** The core is built and proved end to end —
+> **Status: the hours.** The core is built and proved end to end —
 > identity, tiers and limits, the registry, operations, reconcile, the audit,
 > the plugin host, the API. **The machines plugin and the Proxmox VE driver
 > are built**, proved on a throwaway Proxmox VE the repo installs itself
@@ -37,7 +37,11 @@ hypervisor (it drives yours) and not an EC2 clone.
 > line**, drawn from what the brain serves: signed in by the device flow at
 > your identity provider, every type a command, and `hangar apply` making a
 > spec file true — created, changed by the steps each plugin names, deleted
-> after asking ([docs/cli.md](docs/cli.md)). The console comes next. No
+> after asking ([docs/cli.md](docs/cli.md)). **And power**: a machine that says
+> `idle_after: 30m` is stopped once its engine saw it quiet that long, the
+> hours machines run are counted against a tier's month — once per core —
+> and when the month is spent what still runs is shut down; `keep_awake`
+> holds the idle stop off, for a time or until told. The console comes next. No
 > release is cut yet. [ARCHITECTURE.md](ARCHITECTURE.md) says what is built
 > and what is designed, section by section.
 

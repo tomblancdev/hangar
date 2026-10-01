@@ -36,6 +36,12 @@ type Config struct {
 	Reconcile Reconcile `yaml:"reconcile"`
 	// Schedules: requests the brain makes by itself, on a clock.
 	Schedules []Schedule `yaml:"schedules"`
+	// TimeZone: the calendar the meters' months are counted in (default UTC)
+	// — a tier's hours a month begin anew at its first midnight.
+	TimeZone string `yaml:"time_zone"`
+
+	// Location: the time zone, read.
+	Location *time.Location `yaml:"-"`
 }
 
 // Identity is how a caller proves who they are.
@@ -345,6 +351,9 @@ func (c *Config) defaults() {
 	if c.Reconcile.Every == 0 {
 		c.Reconcile.Every = time.Minute
 	}
+	if c.TimeZone == "" {
+		c.TimeZone = "UTC"
+	}
 	for i := range c.Schedules {
 		sc := &c.Schedules[i]
 		if sc.TimeZone == "" {
@@ -451,6 +460,11 @@ func (c *Config) validate() error {
 	}
 	if c.Reconcile.Every < 5*time.Second {
 		bad("reconcile.every must be at least 5s")
+	}
+	var err error
+	if c.Location, err = time.LoadLocation(c.TimeZone); err != nil {
+		c.Location = time.UTC
+		bad("time_zone %q: %v", c.TimeZone, err)
 	}
 
 	zones := map[string]bool{}
@@ -566,6 +580,16 @@ func (c *Config) validateSchedules(zones map[string]bool, bad func(string, ...an
 			bad("schedule %s: keep: at least 1 — the newest usable one stays", sc.Name)
 		}
 	}
+}
+
+// Tier returns the named tier.
+func (c *Config) Tier(name string) (*Tier, bool) {
+	for i := range c.Tiers {
+		if c.Tiers[i].Name == name {
+			return &c.Tiers[i], true
+		}
+	}
+	return nil, false
 }
 
 // tierFor is the first tier, in the file's order, one of the groups reaches.

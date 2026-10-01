@@ -479,6 +479,7 @@ func (h *Host) accept(pc config.Plugin, d *pluginpb.DescribeResponse) error {
 		kind := map[pluginpb.DimensionKind]string{
 			pluginpb.DimensionKind_DIMENSION_KIND_QUANTITY: limits.Quantity,
 			pluginpb.DimensionKind_DIMENSION_KIND_CHOICE:   limits.Choice,
+			pluginpb.DimensionKind_DIMENSION_KIND_METER:    limits.Meter,
 		}[dm.GetKind()]
 		if kind == "" {
 			bad("dimension %q has no kind", name)

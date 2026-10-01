@@ -19,6 +19,13 @@
 // a zone that sleeps answers no guest call until the file says otherwise, as
 // a webhook that wakes it would.
 //
+// And it holds the engine's clock and its guests' activity: "now" freezes
+// the engine's time there (absent: the real time) — a running guest says
+// since when it runs ("started_at") and every reading is stamped with that
+// clock, so moving "now" forward is hours passing; "busy_until" says up to
+// when each guest was last busy (absent: quiet since it started), which is
+// all the fake keeps of a history of CPU and network.
+//
 // Zone options:
 //
 //	capabilities              comma-separated flags; default: every documented
@@ -43,6 +50,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tomblancdev/hangar/driver"
 )
@@ -85,6 +93,30 @@ type state struct {
 	// BuildersFail: every builder's first boot reports errors, whatever its
 	// recipe (a package mirror down that day).
 	BuildersFail bool `json:"builders_fail,omitempty"`
+	// Now: the engine's clock, frozen there; nil = the real time.
+	Now *time.Time `json:"now,omitempty"`
+	// BusyUntil: up to when each guest was last busy, by the engine's clock;
+	// absent = quiet since it started.
+	BusyUntil map[string]time.Time `json:"busy_until,omitempty"`
+	// ActivityFails: the guests' history cannot be read.
+	ActivityFails bool `json:"activity_fails,omitempty"`
+}
+
+// now is the engine's clock. Called with e.mu held, the file read.
+func (e *Engine) now() time.Time {
+	if e.state.Now != nil {
+		return e.state.Now.UTC()
+	}
+	return time.Now().UTC()
+}
+
+// Now is the engine's clock: a plugin on the fake engine reads its time
+// there, so a test moves the hours by the file alone.
+func (e *Engine) Now() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_ = e.load()
+	return e.now()
 }
 
 // errAsleep is what a sleeping zone answers: an engine that cannot be reached
@@ -216,7 +248,7 @@ func (e *Engine) CreateGuest(_ context.Context, s driver.GuestSpec) (driver.Gues
 		return driver.Guest{}, err
 	}
 	if g, ok := e.state.Guests[s.ID]; ok {
-		return clone(g), nil
+		return e.clone(g), nil
 	}
 	switch s.Kind {
 	case "container":
@@ -243,12 +275,16 @@ func (e *Engine) CreateGuest(_ context.Context, s driver.GuestSpec) (driver.Gues
 		Cores: s.Cores, MemoryMB: s.MemoryMB, DiskGB: s.DiskGB, Running: !s.Stopped, Tags: maps.Clone(s.Tags),
 		Holds: sortedHolds(s.Holds), CPULimit: s.CPULimit,
 	}
+	if g.Running {
+		at := e.now()
+		g.StartedAt = &at
+	}
 	e.state.Guests[s.ID] = g
 	if e.state.Specs == nil {
 		e.state.Specs = map[string]driver.GuestSpec{}
 	}
 	e.state.Specs[s.ID] = s
-	return clone(g), e.save()
+	return e.clone(g), e.save()
 }
 
 func (e *Engine) Guest(_ context.Context, id string) (driver.Guest, error) {
@@ -261,7 +297,7 @@ func (e *Engine) Guest(_ context.Context, id string) (driver.Guest, error) {
 	if !ok {
 		return driver.Guest{}, driver.ErrNotFound
 	}
-	return clone(g), nil
+	return e.clone(g), nil
 }
 
 func (e *Engine) Guests(_ context.Context) ([]driver.Guest, error) {
@@ -272,7 +308,7 @@ func (e *Engine) Guests(_ context.Context) ([]driver.Guest, error) {
 	}
 	out := make([]driver.Guest, 0, len(e.state.Guests))
 	for _, g := range e.state.Guests {
-		out = append(out, clone(g))
+		out = append(out, e.clone(g))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
@@ -302,8 +338,15 @@ func (e *Engine) SetPower(_ context.Context, id string, on bool) (driver.Guest, 
 	if !ok {
 		return driver.Guest{}, driver.ErrNotFound
 	}
+	switch {
+	case on && !g.Running:
+		at := e.now()
+		g.StartedAt = &at
+	case !on:
+		g.StartedAt = nil
+	}
 	g.Running = on
-	return clone(g), e.save()
+	return e.clone(g), e.save()
 }
 
 func (e *Engine) Reboot(_ context.Context, id string) (driver.Guest, error) {
@@ -319,7 +362,7 @@ func (e *Engine) Reboot(_ context.Context, id string) (driver.Guest, error) {
 	if !g.Running {
 		return driver.Guest{}, fmt.Errorf("%w: a stopped guest does not reboot", driver.ErrRefused)
 	}
-	return clone(g), nil
+	return e.clone(g), nil
 }
 
 // Traits: every kind takes user data and changes live, memory down only
@@ -346,7 +389,7 @@ func (e *Engine) ResizeGuest(_ context.Context, id string, cores, memoryMB int) 
 			driver.ErrRefused, g.MemoryUsedMB, g.MemoryUsedMB+64)
 	}
 	g.Cores, g.MemoryMB = cores, memoryMB
-	return clone(g), e.save()
+	return e.clone(g), e.save()
 }
 
 func (e *Engine) SetCPULimit(_ context.Context, id string, cores int) (driver.Guest, error) {
@@ -363,7 +406,7 @@ func (e *Engine) SetCPULimit(_ context.Context, id string, cores int) (driver.Gu
 		return driver.Guest{}, fmt.Errorf("%w: this zone caps no CPU", driver.ErrRefused)
 	}
 	g.CPULimit = cores
-	return clone(g), e.save()
+	return e.clone(g), e.save()
 }
 
 func (e *Engine) Retag(_ context.Context, id string, tags map[string]string, holds []string) (driver.Guest, error) {
@@ -377,7 +420,7 @@ func (e *Engine) Retag(_ context.Context, id string, tags map[string]string, hol
 		return driver.Guest{}, driver.ErrNotFound
 	}
 	g.Tags, g.Holds = maps.Clone(tags), sortedHolds(holds)
-	return clone(g), e.save()
+	return e.clone(g), e.save()
 }
 
 func sortedHolds(h []string) []string {
@@ -426,6 +469,34 @@ func (e *Engine) Awake(context.Context) (bool, error) {
 	return !e.state.Asleep, nil
 }
 
+// ---- The activity facet -----------------------------------------------------
+
+// QuietFor: how long a running guest has been quiet — since it started, or
+// since the file's busy_until — by the engine's clock, no further back than
+// window. The thresholds are not read: the file says when it was busy.
+func (e *Engine) QuietFor(_ context.Context, id string, window time.Duration, _ driver.Quiet) (time.Duration, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.fail(); err != nil {
+		return 0, err
+	}
+	if e.state.ActivityFails {
+		return 0, errors.New("the engine's history did not answer")
+	}
+	g, ok := e.state.Guests[id]
+	if !ok {
+		return 0, driver.ErrNotFound
+	}
+	if !g.Running || g.StartedAt == nil {
+		return 0, nil
+	}
+	since := *g.StartedAt
+	if busy, ok := e.state.BusyUntil[id]; ok && busy.After(since) {
+		since = busy
+	}
+	return max(0, min(e.now().Sub(since), window)), nil
+}
+
 // ---- What tests do to the engine behind the registry's back ----------------
 
 // Forget drops a guest as if someone deleted it on the engine directly.
@@ -448,6 +519,37 @@ func (e *Engine) Tamper(id string, f func(*driver.Guest)) {
 	}
 }
 
+// SetNow freezes the engine's clock at a time; hours pass when a test moves it.
+func (e *Engine) SetNow(at time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_ = e.load()
+	at = at.UTC()
+	e.state.Now = &at
+	_ = e.save()
+}
+
+// SetBusy says up to when a guest was last busy, by the engine's clock.
+func (e *Engine) SetBusy(id string, until time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_ = e.load()
+	if e.state.BusyUntil == nil {
+		e.state.BusyUntil = map[string]time.Time{}
+	}
+	e.state.BusyUntil[id] = until.UTC()
+	_ = e.save()
+}
+
+// FailActivity makes the guests' history unreadable, or readable again.
+func (e *Engine) FailActivity(fails bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_ = e.load()
+	e.state.ActivityFails = fails
+	_ = e.save()
+}
+
 // Spec returns what a guest was created with.
 func (e *Engine) Spec(id string) (driver.GuestSpec, bool) {
 	e.mu.Lock()
@@ -464,15 +566,23 @@ func (e *Engine) FailNext(err error) {
 	e.failNext = err
 }
 
-func clone(g *driver.Guest) driver.Guest {
+// clone is a guest as a reading: a copy, stamped with the engine's clock.
+// Called with e.mu held.
+func (e *Engine) clone(g *driver.Guest) driver.Guest {
 	c := *g
 	c.Tags = maps.Clone(g.Tags)
 	c.Holds = slices.Clone(g.Holds)
+	if g.StartedAt != nil {
+		at := *g.StartedAt
+		c.StartedAt = &at
+	}
+	c.At = e.now()
 	return c
 }
 
 var (
-	_ driver.Guests  = (*Engine)(nil)
-	_ driver.Watcher = (*Engine)(nil)
-	_ driver.Volumes = (*Engine)(nil)
+	_ driver.Guests   = (*Engine)(nil)
+	_ driver.Watcher  = (*Engine)(nil)
+	_ driver.Volumes  = (*Engine)(nil)
+	_ driver.Activity = (*Engine)(nil)
 )

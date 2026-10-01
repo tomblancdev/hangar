@@ -23,6 +23,7 @@
 listen: ":8080"
 data_dir: ./data
 house: ""                     # your word for the mark; empty = the product's own
+time_zone: UTC                # the calendar the meters' months are counted in (a tier's hours a month)
 
 identity:
   # oidc:                     # the identity provider people already sign in with
@@ -51,6 +52,8 @@ tiers:
       toy.memory_gb: 8
       toy.kind: [container]    # a choice: the values allowed
       machines.count: 2
+      machines.vcpu_hours: 80  # a meter: the hours their machines run a month, once per core —
+                               #   spent, they are stopped until the next month begins
       machines.vcpu: 4
       machines.memory_gb: 8
       machines.disk_gb: 32
@@ -70,7 +73,7 @@ zones:
     driver: fake
     endpoint: ./data/playground.json   # the fake engine's state: edit it to make it drift
     options:
-      capabilities: kind.container,kind.vm,guest.tags,resize.live.cpu_cap,fence.pool,volume.move_between_guests
+      capabilities: kind.container,kind.vm,guest.tags,guest.activity,resize.live.cpu_cap,fence.pool,volume.move_between_guests
     # room:                    # count the zone's memory in two pools (ARCHITECTURE.md §6)
     #   memory_gb: 16          #   what its resources may count on
     #   reservations:          #   room kept for others: always, or on a condition
@@ -94,6 +97,9 @@ plugins:
         debian-13: {vm: debian-13, container: "local:vztmpl/debian-13-standard.tar.zst"}
       types:                   # aliases beside AWS's names (t3.micro … r5.2xlarge)
         dev: {cores: 4, memory_gb: 8}
+      # idle:                  # under what a machine with an idle_after counts as idle,
+      #   cpu: 0.05            #   minute after minute: cores' worth of CPU,
+      #   sent_bps: 20         #   bytes a second it sends (the fake engine: "busy_until" in its file)
   - name: volumes              # disks of their own: attach, detach, move, grow
     builtin: volumes
     zones: [playground]

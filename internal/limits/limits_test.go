@@ -3,6 +3,7 @@ package limits
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tomblancdev/hangar/internal/config"
 )
@@ -132,6 +133,68 @@ func TestCheckRefusesATypo(t *testing.T) {
 	}
 	ok := map[string]config.Limit{"toy.boxes": n(1), "toy.kind": {Unlimited: true}, "toy.*": n(2), "*": {Unlimited: true}}
 	if err := Check([]config.Tier{*tier(ok)}, dims, []string{"toy"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A meter is admitted by what the month has consumed, not by what is held:
+// spent at its limit, refused with the numbers and the day it is back; a
+// tier that does not name it allows none of it; unlimited is never spent.
+func TestAMeterIsTheMonths(t *testing.T) {
+	paris, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meters := map[string]Dimension{"toy.hours": {Name: "toy.hours", Kind: Meter, Unit: "hours", Plugin: "toy"}}
+	// 23:30 UTC on the 31st is already November in Paris
+	m := MonthOf(time.Date(2026, 10, 31, 23, 30, 0, 0, time.UTC), paris)
+	if m.Key != "2026-11" || m.Name != "November 2026" || !m.Next.Equal(time.Date(2026, 11, 30, 23, 0, 0, 0, time.UTC)) {
+		t.Fatalf("the month in Paris: %+v", m)
+	}
+	if utc := MonthOf(time.Date(2026, 10, 31, 23, 30, 0, 0, time.UTC), time.UTC); utc.Key != "2026-10" || !utc.Next.Equal(time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("the month in UTC: %+v", utc)
+	}
+	// December's next is January of the next year
+	if dec := MonthOf(time.Date(2026, 12, 15, 12, 0, 0, 0, time.UTC), time.UTC); dec.Key != "2026-12" || !dec.Next.Equal(time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("December: %+v", dec)
+	}
+	ten := tier(map[string]config.Limit{"toy.hours": n(10)})
+	for used, spent := range map[float64]bool{0: false, 9.99: false, 10: true, 10.133: true} {
+		got := Spent(ten, map[string]float64{"toy.hours": used}, []string{"toy.hours"})
+		if (len(got) == 1) != spent {
+			t.Errorf("%v of 10: spent %v", used, got)
+		}
+	}
+	rs := AdmitMeters(ten, meters, map[string]float64{"toy.hours": 10.133}, []string{"toy.hours"}, m)
+	if len(rs) != 1 || rs[0].Reason != "meter" || *rs[0].Limit != 10 || rs[0].Period != "2026-11" || !rs[0].Resets.Equal(m.Next) ||
+		rs[0].Message != "10.1 of 10 hours (toy.hours) used in November 2026: it is back on 1 December" {
+		t.Fatalf("%+v", rs)
+	}
+	if rs := AdmitMeters(ten, meters, map[string]float64{"toy.hours": 9.99}, []string{"toy.hours"}, m); len(rs) != 0 {
+		t.Fatalf("hours left, and refused: %+v", rs)
+	}
+	if rs := AdmitMeters(ten, meters, map[string]float64{"toy.hours": 50}, nil, m); len(rs) != 0 {
+		t.Fatalf("a request that draws on nothing was refused: %+v", rs)
+	}
+	if rs := AdmitMeters(tier(nil), meters, nil, []string{"toy.hours"}, m); len(rs) != 1 || rs[0].Message != "tier users allows no toy.hours" {
+		t.Fatalf("a meter the tier does not name: %+v", rs)
+	}
+	for _, open := range []map[string]config.Limit{{"toy.hours": {Unlimited: true}}, {"toy.*": {Unlimited: true}}, {"*": {Unlimited: true}}} {
+		if rs := AdmitMeters(tier(open), meters, map[string]float64{"toy.hours": 1e6}, []string{"toy.hours"}, m); len(rs) != 0 {
+			t.Fatalf("unlimited, and spent: %+v", rs)
+		}
+	}
+	for v, want := range map[float64]string{0: "0", 4: "4", 4.25: "4.2", 9.99: "9.9", 10.133: "10.1", 1023.96: "1023.9"} {
+		if got := Amount(v); got != want {
+			t.Errorf("%v reads %q, want %q", v, got, want)
+		}
+	}
+	// a meter's limit is a number or unlimited, never a list
+	err = Check([]config.Tier{*tier(map[string]config.Limit{"toy.hours": {IsChoice: true, Allowed: []string{"x"}}})}, meters, []string{"toy"})
+	if err == nil || !strings.Contains(err.Error(), "is a meter") {
+		t.Fatalf("a list for a meter: %v", err)
+	}
+	if err := Check([]config.Tier{*tier(map[string]config.Limit{"toy.hours": n(40)})}, meters, []string{"toy"}); err != nil {
 		t.Fatal(err)
 	}
 }

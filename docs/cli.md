@@ -82,6 +82,7 @@ hangar <type> create [--zone Z] [FIELDS] [-f spec.yaml] [--tag k=v] [--no-wait] 
 hangar <type> list [--zone Z] [--tag k=v] [--state S] [--owner SUBJECT] [-o …]
 hangar <type> get ID | delete ID
 hangar <type> <action> ID [PARAMS]           e.g. hangar volume set-backup vol-… --backup
+                                                  hangar machine keep-awake m-… --for 8h
 hangar <type> --help                         its fields and actions, from its schema
 ```
 

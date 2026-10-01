@@ -44,6 +44,17 @@ func (s *Set) Inc(name string, values ...string) {
 	f.values[strings.Join(values, "\x00")]++
 }
 
+// Add adds an amount to a counter's series.
+func (s *Set) Add(name string, v float64, values ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, ok := s.counters[name]
+	if !ok || len(values) != len(f.labels) || v < 0 {
+		return
+	}
+	f.values[strings.Join(values, "\x00")] += v
+}
+
 // Get reads a counter's series (tests).
 func (s *Set) Get(name string, values ...string) float64 {
 	s.mu.Lock()

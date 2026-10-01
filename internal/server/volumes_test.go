@@ -18,6 +18,7 @@ tiers:
     zones: [v]
     limits:
       machines.count: 4
+      machines.vcpu_hours: 1000
       machines.vcpu: 8
       machines.memory_gb: 16
       machines.disk_gb: 64

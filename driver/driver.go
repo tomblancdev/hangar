@@ -34,6 +34,7 @@ const (
 	VolumeMoveBetweenGuests Capability = "volume.move_between_guests"
 	GuestSuspendToDisk      Capability = "guest.suspend_to_disk"
 	GuestTags               Capability = "guest.tags"
+	GuestActivity           Capability = "guest.activity"
 	HookPreStart            Capability = "hook.pre_start"
 	GPUShared               Capability = "gpu.shared"
 	GPUPassthrough          Capability = "gpu.passthrough"
@@ -43,7 +44,7 @@ const (
 // Known lists every flag, in the order the documentation gives them.
 var Known = []Capability{
 	KindContainer, KindVM, ResizeLiveMemoryDown, ResizeLiveCPUCap,
-	VolumeMoveBetweenGuests, GuestSuspendToDisk, GuestTags, HookPreStart,
+	VolumeMoveBetweenGuests, GuestSuspendToDisk, GuestTags, GuestActivity, HookPreStart,
 	GPUShared, GPUPassthrough, FencePool,
 }
 
@@ -186,6 +187,29 @@ type Watcher interface {
 	Awake(ctx context.Context) (bool, error)
 }
 
+// Activity is the facet of a driver whose engine keeps its own history of
+// each guest's CPU and network (guest.activity): what a machine's idle_after
+// is read from, with nothing installed in the guest. A driver that has none
+// does not implement it, and no machine is stopped for idleness in its zones.
+type Activity interface {
+	// QuietFor: how long a running guest has stayed quiet up to its newest
+	// reading — its CPU and what it sends under q, sample after sample — as
+	// far back as window asks (and no further). Zero: it is not quiet now, or
+	// the history cannot say (no reading yet, a hole, a guest that does not
+	// run) — what cannot be read is never taken for idleness.
+	QuietFor(ctx context.Context, id string, window time.Duration, q Quiet) (time.Duration, error)
+}
+
+// Quiet is what a guest stays under to count as idle, sample after sample of
+// its engine's history.
+type Quiet struct {
+	// CPU: cores' worth (0.1 = a tenth of one core).
+	CPU float64
+	// SentBps: bytes a second it sends. What it receives is not counted: a
+	// network's broadcasts reach every guest, whatever it does.
+	SentBps float64
+}
+
 // Traits is what a guest of one kind can take on one engine — finer than a
 // capability flag, which speaks for the whole engine.
 type Traits struct {
@@ -245,6 +269,11 @@ type Guest struct {
 	// MemoryUsedMB: what a running guest holds now, where the engine says
 	// (a limit written below it is refused); 0 = unknown or stopped.
 	MemoryUsedMB int `json:"memory_used_mb,omitempty"`
+	// StartedAt: since when a running guest runs, where the engine says; nil
+	// = stopped, or unknown. The hours it ran are counted from it.
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	// At: when this was read, by the clock the reading was made with.
+	At time.Time `json:"-"`
 }
 
 // ---- The volumes facet ------------------------------------------------------

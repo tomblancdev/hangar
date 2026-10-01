@@ -43,6 +43,7 @@ tiers:
     zones: [lab]
     limits:
       machines.count: 4
+      machines.vcpu_hours: 1000
       machines.vcpu: 16
       machines.memory_gb: 32
       machines.disk_gb: 64
@@ -466,5 +467,48 @@ func TestSignInByTheDeviceFlow(t *testing.T) {
 	dave.stdin = ""
 	if out, _ := dave.ok("whoami"); !strings.Contains(out, "dave") || !strings.Contains(out, "via token:") {
 		t.Fatalf("whoami: %s", out)
+	}
+}
+
+// The hours at the command line: idle_after is a flag of the type, its
+// actions are commands drawn from the plugin's schema, and `limits` shows the
+// month's meter — what was consumed, of how much a month, and when it is back.
+func TestTheHoursAtTheCommandLine(t *testing.T) {
+	s := stacktest.New(t, labConfig, "machines", "volumes")
+	alice := newCmd(t, s.URL, s.Token(t, "alice", "users"))
+	id, _ := alice.ok("machine", "create", "--kind", "container", "--image", "debian-13", "--cores", "2", "--memory-gb", "1", "--idle-after", "45m", "-o", "id")
+	id = strings.TrimSpace(id)
+	if out, _ := alice.ok("machine", "get", id, "-o", "json"); !strings.Contains(out, `"idle_after": "45m"`) {
+		t.Fatalf("born with its idle_after: %s", out)
+	}
+	if _, errs, code := alice.run("machine", "create", "--image", "debian-13", "--idle-after", "1m"); code == 0 || !strings.Contains(errs, "between 5m and 12h") {
+		t.Fatalf("an idle_after of a minute: %d %s", code, errs)
+	}
+	alice.ok("machine", "keep-awake", id, "--for", "2h")
+	if out, _ := alice.ok("machine", "get", id, "-o", "json"); !strings.Contains(out, `"awake": "20`) {
+		t.Fatalf("kept awake until a time: %s", out)
+	}
+	alice.ok("machine", "keep-awake", id)
+	if out, _ := alice.ok("machine", "get", id, "-o", "json"); !strings.Contains(out, `"awake": "always"`) {
+		t.Fatalf("kept awake until let-sleep: %s", out)
+	}
+	alice.ok("machine", "let-sleep", id)
+	alice.ok("machine", "set-idle-after", id, "--idle-after", "never")
+	if out, _ := alice.ok("machine", "get", id, "-o", "json"); strings.Contains(out, "idle_after") || strings.Contains(out, `"awake"`) {
+		t.Fatalf("let sleep, never idle: %s", out)
+	}
+	if out, _ := alice.ok("machine", "--help"); !strings.Contains(out, "keep-awake") || !strings.Contains(out, "--idle-after") {
+		t.Fatalf("the type's help: %s", out)
+	}
+	out, _ := alice.ok("limits")
+	var meter string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "machines.vcpu_hours") {
+			meter = strings.Join(strings.Fields(line), " ")
+		}
+	}
+	next := time.Now().UTC().AddDate(0, 1, -time.Now().UTC().Day()+1).Format("2 January")
+	if want := "machines.vcpu_hours 0 1000 a month, back on " + next + " vCPU-hours"; meter != want {
+		t.Fatalf("the month's line reads %q, want %q\n%s", meter, want, out)
 	}
 }

@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tomblancdev/hangar/internal/config"
 )
@@ -21,6 +23,9 @@ import (
 const (
 	Quantity = "quantity"
 	Choice   = "choice"
+	// Meter: an amount consumed as time passes, summed per owner over the
+	// calendar month; a tier's limit is the month's.
+	Meter = "meter"
 )
 
 // Dimension is one thing a plugin counts or lets a tier choose.
@@ -68,14 +73,71 @@ func ZoneOpen(t *config.Tier, zone string) bool {
 
 // Refusal says why a request does not fit, with the numbers.
 type Refusal struct {
-	Reason    string   `json:"reason"` // "limit" or "choice"
+	Reason    string   `json:"reason"` // "limit", "choice" or "meter"
 	Dimension string   `json:"dimension"`
 	Limit     *int64   `json:"limit,omitempty"`
 	Used      int64    `json:"used,omitempty"`
 	Asked     int64    `json:"asked,omitempty"`
 	Value     string   `json:"value,omitempty"`
 	Allowed   []string `json:"allowed,omitempty"`
-	Message   string   `json:"message"`
+	// A meter's: what the month has consumed, which month, and when the
+	// next one begins.
+	Consumed float64    `json:"consumed,omitempty"`
+	Period   string     `json:"period,omitempty"`
+	Resets   *time.Time `json:"resets,omitempty"`
+	Message  string     `json:"message"`
+}
+
+// Month is the calendar month the meters count in.
+type Month struct {
+	Key  string    // "2026-10": what the registry sums under
+	Name string    // "October 2026"
+	Next time.Time // when the next one begins
+}
+
+// MonthOf is the month now falls in, in the operator's time zone.
+func MonthOf(now time.Time, loc *time.Location) Month {
+	now = now.In(loc)
+	first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+	return Month{Key: now.Format("2006-01"), Name: now.Format("January 2006"), Next: first.AddDate(0, 1, 0)}
+}
+
+// Amount writes a consumed amount as people read one: 12, 12.5.
+func Amount(v float64) string { return strconv.FormatFloat(float64(int64(v*10))/10, 'f', -1, 64) }
+
+// Spent lists which of the meters named a tier's month has used up: what
+// was consumed has reached the limit. A meter the tier does not name allows
+// nothing, as any dimension.
+func Spent(t *config.Tier, consumed map[string]float64, meters []string) []string {
+	var out []string
+	for _, name := range meters {
+		if l, named := Of(t, name); named && l.Unlimited {
+			continue
+		} else if consumed[name] >= float64(l.Max) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// AdmitMeters refuses a request that would leave a resource drawing on a
+// meter whose month is spent — with the numbers, and when the next begins.
+func AdmitMeters(t *config.Tier, dims map[string]Dimension, consumed map[string]float64, meters []string, m Month) []Refusal {
+	var out []Refusal
+	for _, name := range Spent(t, consumed, slices.Sorted(slices.Values(meters))) {
+		l, _ := Of(t, name)
+		limit, next := l.Max, m.Next
+		unit := name
+		if u := dims[name].Unit; u != "" {
+			unit = u + " (" + name + ")"
+		}
+		msg := fmt.Sprintf("%s of %d %s used in %s: it is back on %s", Amount(consumed[name]), limit, unit, m.Name, next.Format("2 January"))
+		if limit == 0 {
+			msg = fmt.Sprintf("tier %s allows no %s", t.Name, name)
+		}
+		out = append(out, Refusal{Reason: "meter", Dimension: name, Limit: &limit, Consumed: consumed[name], Period: m.Key, Resets: &next, Message: msg})
+	}
+	return out
 }
 
 // Admit checks one request against a tier. used is what the owner holds now
@@ -161,6 +223,8 @@ func Check(tiers []config.Tier, dims map[string]Dimension, plugins []string) err
 				errs = append(errs, fmt.Errorf("tier %s: %q is no dimension an enabled plugin declared", t.Name, key))
 			case d.Kind == Quantity && l.IsChoice:
 				errs = append(errs, fmt.Errorf("tier %s: %s is a quantity: a number or unlimited, not a list", t.Name, key))
+			case d.Kind == Meter && l.IsChoice:
+				errs = append(errs, fmt.Errorf("tier %s: %s is a meter: how much a month, or unlimited, not a list", t.Name, key))
 			case d.Kind == Choice && !l.IsChoice && !l.Unlimited:
 				errs = append(errs, fmt.Errorf("tier %s: %s is a choice: the list of values allowed, or unlimited", t.Name, key))
 			}
