@@ -1,6 +1,8 @@
 /* Le Hangar — the console's tokens: colours, faces, corners. Everything
-   app.css builds on. The family's ground: tar and concrete, chalk for what is
-   read, one acid accent, a stencil for what is named. */
+   app.css builds on. A console as consoles are laid out, an old one's screen
+   in its panels, and the street on top: tar and concrete, chalk for what is
+   read, one acid accent, a stencil for what is named, a hand for what is
+   sprayed over it. */
 @font-face { font-family: "Big Shoulders Stencil"; font-weight: 900; font-display: swap; src: url(fonts/BigShouldersStencilDisplay-900.woff2) format("woff2"); }
 @font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap; src: url(fonts/IBMPlexMono-400.woff2) format("woff2"); }
 @font-face { font-family: "Sedgwick Ave Display"; font-weight: 400; font-display: swap; src: url(fonts/SedgwickAveDisplay-Regular.ttf) format("truetype"); }
@@ -16,6 +18,11 @@
   --hazard: #ff3c5a;     /* danger, a refusal, a limit nearly spent */
   --signal: #19e6ff;     /* something is being made */
   --tape: rgba(200, 255, 0, .55);
+  --steel: #0e1014;      /* the side, the bars: a plate beside the ground */
+  --key: #1b1f26;        /* a key you press */
+  --glass: #06070a;      /* a screen: what the machine reports sits behind it */
+  --glow: rgba(200, 255, 0, .38);   /* what a lit number sheds */
+  --lines: rgba(255, 255, 255, .028);  /* a screen's scanlines; transparent: none */
   --display: "Big Shoulders Stencil", Impact, "Arial Narrow", sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
   --hand: "Sedgwick Ave Display", "Comic Sans MS", cursive;   /* what is written by hand over the stencil */

@@ -36,6 +36,14 @@ binary ([docs/console.md](docs/console.md)).
   same console as a process of its own in front of a brain: no config file,
   no registry, no plugin's key — the one for a public door; `console:
   {enabled: false}` turns the brain's own off.
+- **Its look**: a console as consoles are laid out (a side listing the
+  catalogue's types, a bar that says where you are as a prompt, lists as
+  tables), an old one's screen (what is reported behind glass — lit numbers,
+  gauges of lit segments, a lamp and a word for a state, a status line last)
+  and the street on top (the stencil, a taped paper notice for what is said
+  to you, a stamp on a resource's own page, one sprayed word, a sticker for
+  the button that asks). Two stylesheets: `theme.css` the tokens, `app.css`
+  the rest.
 - Config: `console: {enabled, url, idle}`. New: `internal/console`,
   `internal/provider` (a door's side of the identity provider — the command
   line moved onto it), `internal/browsertest` (a real browser in a test, over

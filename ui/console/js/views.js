@@ -37,6 +37,16 @@ function stamp(r) {
   return h('span', {class: 'stamp ' + cls}, word);
 }
 
+// lamp: a state as a console shows it in a list — a light, and its word.
+function lamp(word, cls) {
+  return h('span', {class: 'state ' + cls}, h('span', {class: 'lamp ' + cls, 'aria-hidden': 'true'}), word);
+}
+
+// rowsHead names a list's columns.
+function rowsHead(...names) {
+  return h('div', {class: 'row head', 'aria-hidden': 'true'}, names.map((n) => h('div', {}, n)));
+}
+
 function row(ctx, r, {owner = false} = {}) {
   const t = ctx.type(r.type);
   const what = t ? summary(t.fields, r.spec, ['name']) : '';
@@ -46,7 +56,7 @@ function row(ctx, r, {owner = false} = {}) {
   if (r.owner !== ctx.me.subject) notes.push(owner ? 'owner ' + r.owner : 'shared with you by ' + r.owner);
   return h('a', {class: 'row', href: '#/r/' + r.id},
     h('div', {class: 'row-name'}, h('div', {class: 'name'}, nameOf(r)), h('div', {class: 'tiny muted'}, (t ? t.title : r.type) + ' · ' + r.id)),
-    h('div', {class: 'row-stamp'}, stamp(r)),
+    h('div', {class: 'row-stamp'}, lamp(...stampOf(r))),
     h('div', {class: 'row-what'}, what || h('span', {class: 'muted'}, '—'), notes.length ? h('div', {class: 'tiny muted'}, notes.join(' · ')) : null),
     h('div', {class: 'row-when tiny muted'}, r.zone + ' · ' + ago(r.created_at)));
 }
@@ -130,20 +140,20 @@ function gauge(l) {
   const near = !unlimited && max > 0 && l.used / max >= 0.85;
   let note = '';
   if (l.kind === 'meter') note = (l.period ? 'this month' : '') + (l.resets ? ' — back on ' + day(l.resets) : '');
-  return h('div', {class: 'gauge' + (near ? ' near' : '')},
+  return h('div', {class: 'gauge screen' + (near ? ' near' : '')},
     h('div', {class: 'gauge-head'}, h('div', {class: 'lbl'}, label(l.name.replace('.', ' ')))),
     h('div', {class: 'gauge-num'}, h('span', {class: 'num'}, fmtNumber(l.used)), h('span', {class: 'muted'}, unlimited ? ' — no limit' : ` of ${fmtNumber(max)} ${l.unit || ''}`)),
     unlimited ? null : bar(l.used, max),
-    h('div', {class: 'tiny muted gauge-note'}, note ? h('div', {class: near ? 'bad' : ''}, note) : null, l.description));
+    h('div', {class: 'tiny muted gauge-note'}, note ? h('div', {class: near ? 'bad' : ''}, note) : null, h('div', {class: 'clamp', title: l.description || null}, l.description)));
 }
 
 function zone(z) {
   const gb = (mb) => fmtNumber(Math.round(mb / 102.4) / 10);
   const broken = Object.entries(z.plugins || {}).filter(([, st]) => st.error).map(([p, st]) => h('div', {class: 'tiny bad'}, `${p}: ${st.error}`));
   const room = z.room;
-  return h('div', {class: 'panel zone'},
+  return h('div', {class: 'screen zone'},
     h('div', {class: 'zone-head'}, h('div', {class: 'name'}, z.name),
-      z.awake === undefined ? null : h('div', {class: 'tiny ' + (z.awake ? 'on' : 'muted')}, z.awake ? 'AWAKE' : 'ASLEEP — woken when something starts')),
+      z.awake === undefined ? null : lamp(z.awake ? 'awake' : 'asleep — woken when something starts', z.awake ? 'on' : 'off')),
     room ? [
       h('div', {class: 'meter-line'}, h('span', {class: 'muted'}, 'guaranteed — yours whatever happens'), h('span', {}, `${gb(room.booked_mb)} of ${gb(room.guaranteed_mb)} GB booked`)),
       bar(room.booked_mb, room.guaranteed_mb),
@@ -171,7 +181,7 @@ export function list(ctx, typeName) {
     if (filter.zone) q += '&zone=' + encodeURIComponent(filter.zone);
     const res = await api('GET', q);
     clear(head, title(`a type the ${t.plugin} plugin declares`, plural(t.title).toUpperCase(), '', res.resources.length ? '×' + res.resources.length : ''));
-    clear(rows, res.resources.length ? res.resources.map((r) => row(ctx, r, {owner: ctx.me.operator})) :
+    clear(rows, res.resources.length ? [rowsHead('name', 'state', 'what it is', 'where · when'), res.resources.map((r) => row(ctx, r, {owner: ctx.me.operator}))] :
       h('p', {class: 'muted empty'}, filter.state || filter.zone ? 'None like that.' : `No ${t.title.toLowerCase()} yet.`));
     return res.resources.some((r) => moving.includes(r.state) || r.pending);
   }
@@ -267,7 +277,7 @@ export function create(ctx, typeName) {
   }
 
   const node = h('div', {class: 'page'},
-    h('div', {class: 'page-head'}, h('div', {}, title(h('a', {href: '#/t/' + t.name}, plural(t.title).toLowerCase()), /^[aeiou]/i.test(t.title) ? 'ASK FOR AN' : 'ASK FOR A', t.title.toUpperCase()), t.description ? h('p', {class: 'lede muted'}, t.description) : null)),
+    h('div', {class: 'page-head'}, h('div', {}, title(`a type the ${t.plugin} plugin declares`, /^[aeiou]/i.test(t.title) ? 'ASK FOR AN' : 'ASK FOR A', t.title.toUpperCase()), t.description ? h('p', {class: 'lede muted'}, t.description) : null)),
     h('div', {class: 'two form-and-notice'}, holder, aside));
   ctx.now(draw);
   return node;
@@ -292,7 +302,7 @@ export function resource(ctx, id) {
   const panel = h('div', {});
   const said = h('div', {class: 'said', 'aria-live': 'polite'});
   const asked = h('div', {class: 'kv panel'});
-  const seen = h('div', {class: 'kv panel'});
+  const seen = h('div', {class: 'kv screen'});
   const names = h('div', {class: 'rows'});
   const namedBy = h('div', {class: 'rows'});
   const history = h('div', {class: 'ops'});
@@ -314,7 +324,7 @@ export function resource(ctx, id) {
     const t = ctx.type(r.type);
     const own = r.owner === ctx.me.subject || ctx.me.operator;
     clear(head, h('div', {class: 'page-head'}, h('div', {},
-      title([h('a', {href: '#/t/' + r.type}, t ? plural(t.title).toLowerCase() : r.type), ' / ' + r.id], nameOf(r).toUpperCase()),
+      title((t ? t.title : r.type) + ' · ' + r.id, nameOf(r).toUpperCase()),
       h('div', {class: 'under'}, stamp(r), h('span', {class: 'muted'},
         `zone ${r.zone} · ${r.owner === ctx.me.subject ? 'yours' : 'owner ' + r.owner} · made ${ago(r.created_at)}` +
         (r.hold ? ` · its room is held for ${r.hold}` : '') + (r.drift ? ` · ${r.drift}` : ''))))));
@@ -491,7 +501,7 @@ export function tokens(ctx) {
       const dead = t.revoked_at ? 'revoked' : Date.parse(t.expires_at) <= now ? 'expired' : '';
       return h('div', {class: 'row token' + (dead ? ' dead' : '')},
         h('div', {class: 'row-name'}, h('div', {class: 'name'}, t.name), h('div', {class: 'tiny muted'}, t.id)),
-        h('div', {class: 'row-stamp'}, h('span', {class: 'stamp ' + (dead ? 'off' : 'on')}, dead || 'live')),
+        h('div', {class: 'row-stamp'}, lamp(dead || 'live', dead ? 'off' : 'on')),
         h('div', {class: 'row-what'}, t.scopes.join(', '), h('div', {class: 'tiny muted'}, `expires ${day(t.expires_at)}` + (t.last_used ? ` · last used ${ago(t.last_used)}` : ' · never used'))),
         h('div', {class: 'row-when'}, dead ? null : h('button', {type: 'button', class: 'btn small hazard', onclick: async () => {
           try { await api('DELETE', '/v1/tokens/' + t.id); } catch (p) { clear(made, problemNode(p)); }

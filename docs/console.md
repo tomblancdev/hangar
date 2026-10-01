@@ -156,11 +156,23 @@ when it has one (its id otherwise), and one whose plugin reports a boolean
 `ui/console/` holds the app as it is served: hand-written ES modules, no
 build step, no dependency — what is in the directory is what runs.
 `theme.css` holds the tokens (colours, faces, corners, how much a notice
-tilts); `app.css` builds on them. Two rules run through it: a dark panel is
-the machine reporting; a paper notice taped over it is something said to you
-— a refusal, a question, a secret shown once. The faces are Big Shoulders
-Stencil, IBM Plex Mono and Sedgwick Ave Display, embedded with their
-licences (SIL OFL).
+tilts, a screen's lines); `app.css` builds on them. Three things, in this
+order:
+
+- **A console as consoles are laid out**: a side that lists what may be
+  asked for (the catalogue's types), a bar that says where you are, lists as
+  tables.
+- **An old one's screen**: what the machine reports sits behind glass — lit
+  numbers, faint lines, gauges of lit segments —, a state in a list is a
+  lamp and its word, where you are is written as a prompt, and the last line
+  of the screen is a status line.
+- **The street, on top**: a stencil names things; a paper notice taped over
+  a panel is something said to you — a refusal, a question, a secret shown
+  once —; a resource's own state is stamped; one word a page is sprayed by
+  hand; a stripe marks the edge; the button that asks is a sticker.
+
+The faces are Big Shoulders Stencil, IBM Plex Mono and Sedgwick Ave Display,
+embedded with their licences (SIL OFL).
 
 ## Proving it
 
