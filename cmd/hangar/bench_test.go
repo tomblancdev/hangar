@@ -180,8 +180,8 @@ reconcile: {every: 5s}
 	await("the key pair", code, acc)
 	kp := acc["resource"].(map[string]any)["id"].(string)
 
-	code, acc = call("POST", "/v1/resources", map[string]any{"type": "machine", "zone": "bench", "spec": map[string]any{
-		"name": "api-ct", "kind": "container", "image": "debian-13", "type": "t3.micro", "disk_gb": 4, "key_pairs": []string{kp}}})
+	code, acc = call("POST", "/v1/resources", map[string]any{"type": "machine", "zone": "bench", "name": "api-ct", "spec": map[string]any{
+		"kind": "container", "image": "debian-13", "type": "t3.micro", "disk_gb": 4, "key_pairs": []string{kp}}})
 	await("the machine", code, acc)
 	id := acc["resource"].(map[string]any)["id"].(string)
 	t.Cleanup(func() { call("DELETE", "/v1/resources/"+id, nil) })

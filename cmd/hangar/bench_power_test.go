@@ -202,11 +202,11 @@ reconcile: {every: 10s}
 	})
 	create := func(who, name string, spec map[string]any) (id, vmid string) {
 		t.Helper()
-		full := map[string]any{"name": name, "kind": "container", "class": "guaranteed", "image": "debian-13", "cores": 1, "memory_gb": 1, "disk_gb": 2}
+		full := map[string]any{"kind": "container", "class": "guaranteed", "image": "debian-13", "cores": 1, "memory_gb": 1, "disk_gb": 2}
 		for k, v := range spec {
 			full[k] = v
 		}
-		code, acc := call(who, "POST", "/v1/resources", map[string]any{"type": "machine", "zone": "bench", "spec": full})
+		code, acc := call(who, "POST", "/v1/resources", map[string]any{"type": "machine", "zone": "bench", "name": name, "spec": full})
 		await(who, name, code, acc)
 		id = acc["resource"].(map[string]any)["id"].(string)
 		made = append(made, who+" "+id)

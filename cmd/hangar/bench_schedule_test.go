@@ -269,8 +269,9 @@ reconcile: {every: 10s}
 		}
 	}
 	machine := func(image string) (int, map[string]any) {
+		// unnamed: it is asked for more than once, and a name is one thing
 		return call(user, "POST", "/v1/resources", map[string]any{"type": "machine", "zone": "bench",
-			"spec": map[string]any{"name": "latest", "image_id": image, "type": "t3.micro"}})
+			"spec": map[string]any{"image_id": image, "type": "t3.micro"}})
 	}
 	var m string
 	t.Cleanup(func() {
@@ -307,8 +308,8 @@ reconcile: {every: 10s}
 	})
 
 	// an image baked by hand from the same recipe: never the schedule's
-	code, acc := call(ops, "POST", "/v1/resources", map[string]any{"type": "image", "zone": "bench",
-		"spec": map[string]any{"recipe": "debian", "name": "by-hand", "shared_with": []string{"*"}}})
+	code, acc := call(ops, "POST", "/v1/resources", map[string]any{"type": "image", "zone": "bench", "name": "by-hand",
+		"spec": map[string]any{"recipe": "debian", "shared_with": []string{"*"}}})
 	hand := ok(ops, "the bake by hand", code, acc)
 
 	// armed at start; asked at the next minute, in the schedule's name

@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 — unreleased
+## v0.2.0 — 2026-10-02
 
 **Names.** A resource a person can read, and call: what the first look at a
 real console asked for — a list showed an id, `ready` on a stopped machine,
@@ -48,7 +48,7 @@ a 64-character owner and the raw spec. The image:
   people, of their own: nothing is found by one, and an older driver reads
   past them. The notes' two writers each hold the config's digest: a write
   on notes that changed since they were read is refused by Proxmox itself.
-  Proved on the bench, twice.
+  Proved on the bench, three times in a row.
 - **What moves for whoever writes requests by hand.** A machine's and an
   image's `name` left their spec: it is the request's own `name`. The
   registry converts itself at the first start (schema 6): each resource is

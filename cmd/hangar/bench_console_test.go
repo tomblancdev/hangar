@@ -384,7 +384,7 @@ reconcile: {every: 10s}
 		p.Fill("mount", "/home/dev")
 		p.Submit()
 		vol = made(p)
-		p.Reads(stamp, "READY")
+		p.Reads(stamp, "ATTACHED") // the word a volume wears, plugged in
 	})
 	must("pct exec " + boxID + " -- sh -c 'mountpoint -q /home/dev && echo le-hangar > /home/dev/proof'")
 	act(p, "resize", func() { p.Fill("size gb", "2") })
@@ -394,7 +394,7 @@ reconcile: {every: 10s}
 		p.Submit()
 		p.Sees("FAILED") // the operation, on a notice — the volume itself stays as it was
 		p.Sees("a volume's backup flag changes only while it is stopped")
-		p.Reads(stamp, "READY")
+		p.Reads(stamp, "ATTACHED")
 	})
 	step(p, "the machine's page names its volume; its delete is refused", func() {
 		p.Open("#/r/" + box)
@@ -468,7 +468,7 @@ reconcile: {every: 10s}
 		p.Pick("machine", "vm")
 		p.Submit()
 		img = made(p)
-		p.Reads(stamp, "READY")
+		p.Reads(stamp, "AVAILABLE")
 	})
 	act(p, "share", func() { p.Choose("shared with", "users", true) })
 	step(p, "the VM deleted, a machine born from the image", func() {

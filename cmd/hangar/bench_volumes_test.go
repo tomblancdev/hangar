@@ -204,8 +204,8 @@ reconcile: {every: 10s}
 		ok(what, code, acc)
 	}
 	machine := func(name string) (string, string) {
-		code, acc := call("POST", "/v1/resources", map[string]any{"type": "machine", "zone": "bench", "spec": map[string]any{
-			"name": name, "kind": "container", "image": "debian-13", "type": "t3.micro", "disk_gb": 2}})
+		code, acc := call("POST", "/v1/resources", map[string]any{"type": "machine", "zone": "bench", "name": name, "spec": map[string]any{
+			"kind": "container", "image": "debian-13", "type": "t3.micro", "disk_gb": 2}})
 		ok(name, code, acc)
 		id := acc["resource"].(map[string]any)["id"].(string)
 		ref := obs(id, "engine_ref").(string)

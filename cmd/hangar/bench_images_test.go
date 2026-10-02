@@ -229,7 +229,13 @@ reconcile: {every: 10s}
 		return v
 	}
 	create := func(who, typ string, spec map[string]any) (int, map[string]any) {
-		return call(who, "POST", "/v1/resources", map[string]any{"type": typ, "zone": "bench", "spec": spec})
+		// what it is called is the request's own, never the spec's
+		body := map[string]any{"type": typ, "zone": "bench", "spec": spec}
+		if n, named := spec["name"]; named {
+			delete(spec, "name")
+			body["name"] = n
+		}
+		return call(who, "POST", "/v1/resources", body)
 	}
 	act := func(who, id, action string, params map[string]any) (int, map[string]any) {
 		return call(who, "POST", "/v1/resources/"+id+"/actions/"+action, map[string]any{"params": params})

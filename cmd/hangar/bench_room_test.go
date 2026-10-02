@@ -232,7 +232,13 @@ reconcile: {every: 10s}
 	}
 	machine := func(spec map[string]any) (int, map[string]any) {
 		spec["image"] = "debian-13"
-		return call("POST", "/v1/resources", map[string]any{"type": "machine", "zone": "bench", "spec": spec})
+		// what it is called is the request's own, never the spec's
+		body := map[string]any{"type": "machine", "zone": "bench", "spec": spec}
+		if n, named := spec["name"]; named {
+			delete(spec, "name")
+			body["name"] = n
+		}
+		return call("POST", "/v1/resources", body)
 	}
 
 	key, _ := os.ReadFile(os.Getenv("HANGAR_BENCH_SSH_KEY") + ".pub")
