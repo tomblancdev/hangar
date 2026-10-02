@@ -25,6 +25,7 @@ type api struct {
 	mu    sync.Mutex
 	perms map[string]map[string]int
 	res   []resource
+	nodes []nodeEntry          // the cluster's list of its nodes
 	tasks map[string][2]string // upid -> exit status, log line
 	calls []string
 	h     map[string]http.HandlerFunc
@@ -66,6 +67,8 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		data(w, map[string]string{"version": "9.2"})
 	case p == "/access/permissions":
 		data(w, a.perms)
+	case p == "/cluster/resources" && r.URL.Query().Get("type") == "node":
+		data(w, a.nodes)
 	case p == "/cluster/resources":
 		data(w, a.res)
 	case strings.HasSuffix(p, "/status") && strings.Contains(p, "/tasks/"):

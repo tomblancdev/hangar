@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.1.1 — 2026-10-02
+
+What the first deployment on a real cluster found, the same day: a zone that
+sleeps, and an image that trusted nobody. The image:
+`ghcr.io/tomblancdev/hangar:0.1.1`.
+
+- **A sleeping zone is known at once** (Proxmox VE driver). A call the API
+  hands to a node that is powered off comes back `595` only after 30 s —
+  the survey's whole time. So every pass over a sleeping zone logged
+  `survey: the plugin could not answer`, went on to judge the zone's
+  resources one 30 s call at a time, and a start asked of a sleeping zone
+  waited behind both before its wake was called: 1 min 34 s to a running
+  container, of which the wake itself was 44 s. Now the cluster's own list
+  is read first — `offline` there is asleep, said in milliseconds, the node
+  not asked; a watched guest of an offline node does not run — and a node
+  that is asked is given 5 s of its own. Awake is still the node's own
+  answer, never its line in the list
+  ([docs/proxmox.md](docs/proxmox.md), « A zone that sleeps, known at
+  once »). Proved against an API that answers as the cluster did (a node
+  that says nothing, then `595`), nine ways of breaking it each caught.
+- **The image carries the certificate authorities.** It is `scratch`, and
+  carried no trust store: the brain could not verify its identity provider's
+  certificate, and a deployment had to mount its host's bundle. The bundle
+  is in the image now; a mounted one, or `SSL_CERT_FILE`, still wins.
+  `tools/image-test.sh` builds the image and asks the binary inside it — and
+  builds the same image without the bundle, which must be refused.
+- **`hangar check` refuses what it could never verify.** On a system that
+  trusts no certificate authority, a config that reaches its identity
+  provider or a zone's wake over https is refused, naming them — it used to
+  be found sound, and fail at the first sign-in. `hangar serve` says the
+  same in a warning, and serves: API tokens need no provider.
+
 ## v0.1.0 — 2026-10-02
 
 The first release. It gathers everything built since the product was born,

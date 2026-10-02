@@ -49,8 +49,18 @@ jobs:
         with: { go-version-file: tools/go.mod }
       - run: sh tools/protogen.sh --check
 
+  # What the image carries beside the binary — the certificate authorities it
+  # verifies https with — asked of the binary inside it, and of the same
+  # image built without them (the control).
+  image-test:
+    needs: [no-environment]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh tools/image-test.sh
+
   image:
-    needs: [no-environment, go, protocol]
+    needs: [no-environment, go, protocol, image-test]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:

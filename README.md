@@ -149,6 +149,7 @@ go test ./...              # the whole suite, the binary's end-to-end run includ
 HANGAR_BROWSER=/usr/bin/chromium go test ./internal/console/   # …and the console's app in a real browser
 sh tools/bench/bench.sh up # a throwaway Proxmox VE in a VM (podman + /dev/kvm), then:
 eval "$(sh tools/bench/bench.sh env)" && go test -p 1 ./driver/proxmox/ ./cmd/hangar/ -run Bench -v
+sh tools/image-test.sh     # the image, asked through its own checker — and the same image without its CA bundle (docker or podman)
 sh tools/no-environment.sh # this repo describes nowhere: RFC documentation reserves only
 sh tools/protogen.sh       # regenerate the plugin protocol's Go code (tools pinned in tools/go.mod)
 ```

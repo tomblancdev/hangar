@@ -350,8 +350,28 @@ cluster's membership says so, and `unknown` otherwise (`API2Tools.pm`,
 `extract_node_stats`) — a lone node, or one too busy to report, reads
 `unknown` (read on the bench, a loaded nested node, the same afternoon it
 read `online`). So a reservation `while_down` counts a node down only on
-`offline`, and a zone is awake when its node answers `/nodes/<node>/version`
-— never on its line in the list.
+`offline`, and a zone is awake only when its node answers
+`/nodes/<node>/version` — its line in the list never says awake.
+
+**A zone that sleeps, known at once.** `offline` is the one line of that list
+that is a verdict, and the list gives it in milliseconds — where a call the
+API hands to a node that is gone comes back `595 Connection timed out` only
+when the node it was asked through gives up: **30 s**, read on a three-node
+cluster with one node powered off (a node shutting down refuses at once,
+`595 Connection refused`; six seconds later the list read `offline`). So:
+
+- a zone whose node reads `offline` is asleep, and its node is not asked;
+- a guest a reservation watches, on a node that reads `offline`, does not
+  run — said without asking either;
+- a node that is asked one of those two questions is given **5 s** to
+  answer, not its caller's time: silence past that is « not awake », and for
+  a watched guest an error (« node … did not say within 5s whether guest …
+  runs » — what the core knew stays).
+
+Without it every pass over a sleeping zone waited out the survey's own 30 s
+(`survey: the plugin could not answer`), then judged the zone's resources
+one 30 s call at a time, and a start asked of a sleeping zone waited behind
+both before its wake was even called.
 
 ## Zone options
 

@@ -49,7 +49,9 @@ const usage = `hangar — a small cloud's control plane.
 On the brain's host:
   hangar serve   [--config FILE]          run the brain
   hangar check   [--config FILE]          start every plugin, check the config against
-                                          what they declare, print it, stop (0 = sound)
+                                          what they declare — and that what it reaches over
+                                          https could be verified here —, print it, stop
+                                          (0 = sound)
   hangar token create --subject SUB --name NAME [--groups a,b] [--ttl 24h] [--scopes read,write|room]
                  [--config FILE]          make an API token in the registry; the secret
                                           is printed once, on stdout
@@ -181,6 +183,9 @@ func serve(args []string) error {
 	if cfg.Identity.OIDC == nil {
 		log.Warn("no identity provider configured: API tokens only (hangar token create)")
 	}
+	if what := untrusted(cfg); len(what) > 0 {
+		log.Warn("this system trusts no certificate authority: what is reached over https will not be verified, and will fail", "what", what)
+	}
 
 	m := metrics.New()
 	a := audit.New(log)
@@ -216,6 +221,9 @@ func check(args []string, out io.Writer) error {
 	cfg, err := loadConfig(flag.NewFlagSet("check", flag.ContinueOnError), args)
 	if err != nil {
 		return err
+	}
+	if what := untrusted(cfg); len(what) > 0 {
+		return noTrust(what)
 	}
 	host, err := startPlugins(context.Background(), cfg, log, io.Discard)
 	if err != nil {

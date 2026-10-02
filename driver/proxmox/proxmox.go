@@ -86,6 +86,7 @@ type Driver struct {
 	full     bool
 	shutdown int           // seconds a shutdown is waited for before a stop
 	listLag  time.Duration // pvestatd's pass: how late /cluster/resources may list a new guest
+	answerIn time.Duration // how long a node is given to answer a survey's question
 	watch    []string
 	caps     []driver.Capability
 	fenceErr string // why fence.pool is not advertised, when it is not
@@ -104,7 +105,7 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	d := &Driver{
 		zone: p.Zone, node: o["node"], pool: o["pool"], images: o["images_pool"], storage: o["storage"],
 		seeds: o["seed_storage"], bridge: o["bridge"], full: o["full_clone"] == "true", shutdown: 60, listLag: 10 * time.Second,
-		shelfArchive: o["shelf_archive"],
+		answerIn: nodeAnswersWithin, shelfArchive: o["shelf_archive"],
 	}
 	for _, ref := range p.Watch {
 		if n, err := strconv.Atoi(ref); err != nil || n < 100 {
@@ -1021,13 +1022,35 @@ func (d *Driver) GuestRunning(ctx context.Context, ref string) (bool, error) {
 		return false, d.engine(err)
 	}
 	for _, r := range rs {
-		if strconv.Itoa(r.VMID) == ref {
-			on, err := d.running(ctx, r)
-			return on, d.engine(err)
+		if strconv.Itoa(r.VMID) != ref {
+			continue
 		}
+		// a guest of a node the cluster counts out does not run — and that
+		// node is not asked: it would not answer
+		if st, err := d.nodeState(ctx, r.Node); err == nil && st == nodeOffline {
+			return false, nil
+		}
+		cctx, cancel := context.WithTimeout(ctx, d.answerIn)
+		defer cancel()
+		on, err := d.running(cctx, r)
+		if err != nil && cctx.Err() != nil && ctx.Err() == nil {
+			return false, fmt.Errorf("node %s did not say within %s whether guest %s runs", r.Node, d.answerIn, ref)
+		}
+		return on, d.engine(err)
 	}
 	return false, fmt.Errorf("%w: guest %s is not visible to the token (VM.Audit on /vms/%s)", driver.ErrNotFound, ref, ref)
 }
+
+// nodeAnswersWithin is how long a node is given to answer what a survey asks
+// of it. A node that is up answers in milliseconds; a call the API hands to
+// one that sleeps comes back 595 only when the node it was asked through
+// gives up — 30 s later, read on a live cluster — which is a survey's whole
+// time, every pass, and the wait before a sleeping zone is woken.
+const nodeAnswersWithin = 5 * time.Second
+
+// nodeOffline is the one state of the cluster's list that is a verdict: the
+// cluster's membership says the node is out, and says it at once.
+const nodeOffline = "offline"
 
 type nodeEntry struct {
 	Node   string `json:"node"`
@@ -1038,6 +1061,20 @@ func (d *Driver) nodes(ctx context.Context) ([]nodeEntry, error) {
 	var ns []nodeEntry
 	err := d.c.call(ctx, http.MethodGet, "/cluster/resources", url.Values{"type": {"node"}}, &ns)
 	return ns, err
+}
+
+// nodeState is a node's line in the cluster's list ("" when it has none).
+func (d *Driver) nodeState(ctx context.Context, node string) (string, error) {
+	ns, err := d.nodes(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, n := range ns {
+		if n.Node == node {
+			return n.Status, nil
+		}
+	}
+	return "", nil
 }
 
 // NodeDown reads a node's state from the cluster's own list — any token sees
@@ -1055,7 +1092,7 @@ func (d *Driver) NodeDown(ctx context.Context, node string) (bool, error) {
 			continue
 		}
 		switch n.Status {
-		case "offline":
+		case nodeOffline:
 			return true, nil
 		case "online":
 			return false, nil
@@ -1066,11 +1103,20 @@ func (d *Driver) NodeDown(ctx context.Context, node string) (bool, error) {
 }
 
 // Awake: the zone's node answers a call the API hands to it — a node asleep
-// does not, whichever node the endpoint is. (Its state in the cluster's list
-// is no answer: "unknown" there is also a node too busy to report.)
+// does not, whichever node the endpoint is. Its line in the cluster's list is
+// read first, for the one thing it does say: "offline" is asleep, known at
+// once, and the node is not asked. Anything else there proves nothing
+// ("unknown" is also a node too busy to report, "online" one that stopped
+// seconds ago), so the node is asked — and given nodeAnswersWithin, not the
+// 30 s the API takes to give up on one that is gone.
 func (d *Driver) Awake(ctx context.Context) (bool, error) {
+	if st, err := d.nodeState(ctx, d.node); err != nil || st == nodeOffline {
+		return false, nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, d.answerIn)
+	defer cancel()
 	var v map[string]any
-	if err := d.c.call(ctx, http.MethodGet, "/nodes/"+url.PathEscape(d.node)+"/version", nil, &v); err != nil {
+	if err := d.c.call(cctx, http.MethodGet, "/nodes/"+url.PathEscape(d.node)+"/version", nil, &v); err != nil {
 		return false, nil
 	}
 	return true, nil

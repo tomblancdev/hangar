@@ -508,7 +508,9 @@ zones:
   starts there (a create, a start), the core asks whether it is awake, calls
   the webhook when it is not, and waits for it to answer (`timeout`). A
   reconcile never wakes a zone: while it sleeps its resources are not
-  judged.
+  judged. Whether a zone is awake is a question its driver answers within a
+  time of its own — a sleeping engine is often one that answers nothing for
+  a long while.
 
 ### Power: the hours, and the idle stop **(built)**
 
