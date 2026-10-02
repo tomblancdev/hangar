@@ -104,7 +104,6 @@ const DefaultType = "t3.micro"
 
 // Spec is a machine's desired state.
 type Spec struct {
-	Name     string `json:"name,omitempty"`
 	Kind     string `json:"kind"`
 	Type     string `json:"type,omitempty"`
 	Cores    int    `json:"cores"`
@@ -181,9 +180,9 @@ const machineSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
+  "x-hangar-summary": ["{kind}", "{cores} cores", "{memory_gb} GB[ ({floor_gb} guaranteed)]", "{class=spot?spot}", "{image|image_id}", "{addresses}"],
+  "x-hangar-status": { "field": "running", "on": "running", "off": "stopped" },
   "properties": {
-    "name":      { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
-                   "description": "Its host name; its id when absent." },
     "kind":      { "type": "string", "enum": ["vm", "container"], "default": "vm",
                    "description": "A VM has its own kernel; a container shares the host's." },
     "type":      { "type": "string", "maxLength": 64,
@@ -206,7 +205,7 @@ const machineSchema = `{
                    "description": "A spot machine stopped to give its room back starts again when the room returns; false = it stays stopped." },
     "key_pairs": { "type": "array", "maxItems": 10, "uniqueItems": true,
                    "items": { "type": "string", "x-hangar-ref": "keypair" },
-                   "description": "Your key pairs, by id: their public keys let you in." },
+                   "description": "Your key pairs, by name or id: their public keys let you in." },
     "user_data": { "type": "string", "maxLength": 16384,
                    "description": "Handed to its first boot (cloud-init), where its kind takes it." },
     "idle_after": { "type": "string", "maxLength": 16,
@@ -219,6 +218,7 @@ const keyPairSchema = `{
   "type": "object",
   "additionalProperties": false,
   "required": ["public_key"],
+  "x-hangar-summary": ["{key_type}", "{comment}"],
   "properties": {
     "public_key": { "type": "string", "maxLength": 16384,
                     "description": "One public key in OpenSSH's form: ssh-ed25519 AAAA… comment." }
@@ -295,7 +295,7 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 		Types: []*pluginpb.ResourceType{
 			{
 				Name: "machine", IdPrefix: "m", Title: "Machine",
-				Description: "A container or a VM, started from an image, sized by a type.",
+				Description: "A container or a VM, started from an image, sized by a type. Its name is its host name at birth (its id when unnamed).",
 				Schema:      []byte(machineSchema),
 				Actions: []*pluginpb.Action{
 					{Name: "start", Description: "Power it on.", ChangesUsage: true},
@@ -775,7 +775,6 @@ func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) 
 		}
 		return s
 	}
-	fixed("/name", in.Name != was.Name, or(was.Name, "unnamed"), "a machine's name")
 	fixed("/kind", in.Kind != was.Kind, "a "+kindWord(was.Kind), "a machine's kind")
 	fixed("/image", in.Image != was.Image, or(was.Image, "no image by name"), "what a machine starts from")
 	fixed("/image_id", in.ImageID != was.ImageID, or(was.ImageID, "no image resource"), "what a machine starts from")
@@ -910,7 +909,8 @@ func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*plug
 	// floor, capped, or — spot — not started
 	w := wanted(s, r.GetHold())
 	guest, err := g.CreateGuest(ctx, driver.GuestSpec{
-		ID: r.GetId(), Kind: s.Kind, Name: s.Name, Cores: s.Cores, MemoryMB: w.memoryMB, DiskGB: s.DiskGB,
+		ID: r.GetId(), Kind: s.Kind, Name: r.GetName(), Label: sdk.Label(r, "machine"),
+		Cores: s.Cores, MemoryMB: w.memoryMB, DiskGB: s.DiskGB,
 		Image: ref, SSHKeys: keys, UserData: []byte(s.UserData), Tags: tagsOf(s), Holds: w.holds, CPULimit: w.cpuLimit,
 		Stopped: !w.running,
 	})
@@ -968,7 +968,7 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 		}
 		s.Running = true
 		// started as the zone's room allows: at its floor, capped, while held
-		guest, _, _, err = converge(ctx, g, r.GetId(), s, hold, guest)
+		guest, _, _, err = converge(ctx, g, r.GetId(), s, hold, sdk.Label(r, "machine"), guest)
 		ev = sdk.Event("machine.started", "", nil)
 	case "stop":
 		s.Running, s.Awake = false, ""
@@ -1028,12 +1028,21 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 // first, the tags follow, and it starts last. It returns what it changed
 // and, when a running guest holds more than its floor, what it could not
 // give back.
-func converge(ctx context.Context, g driver.Guests, id string, s Spec, hold string, guest driver.Guest) (driver.Guest, []string, string, error) {
+func converge(ctx context.Context, g driver.Guests, id string, s Spec, hold, label string, guest driver.Guest) (driver.Guest, []string, string, error) {
 	w := wanted(s, hold)
 	tags := tagsOf(s)
 	var fixed []string
 	var short string
 	var err error
+	// what it is called, where the engine shows it: a line for people — one
+	// that cannot be written now changes nothing, and is written at the next
+	// look
+	if guest.Label != label {
+		if named, lerr := g.Relabel(ctx, id, label); lerr == nil {
+			guest = named
+			fixed = append(fixed, "name")
+		}
+	}
 	retag := func() error {
 		if maps.Equal(guest.Tags, tags) && slices.Equal(guest.Holds, w.holds) {
 			return nil
@@ -1159,7 +1168,7 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 		return sdk.JSON(o)
 	}
 	wasHeld := len(guest.Holds) > 0
-	guest, fixed, short, err := converge(ctx, g, r.GetId(), s, hold, guest)
+	guest, fixed, short, err := converge(ctx, g, r.GetId(), s, hold, sdk.Label(r, "machine"), guest)
 	if err != nil && !errors.Is(err, driver.ErrRefused) && !errors.Is(err, driver.ErrNotFound) {
 		return nil, engineErr(err) // not reached: the core tries again at its next pass
 	}

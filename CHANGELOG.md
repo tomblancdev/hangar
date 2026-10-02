@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.2.0 — unreleased
+
+**Names.** A resource a person can read, and call: what the first look at a
+real console asked for — a list showed an id, `ready` on a stopped machine,
+a 64-character owner and the raw spec. The image:
+`ghcr.io/tomblancdev/hangar:0.2.0`.
+
+- **A name and a description on every type.** Every resource has its id —
+  its identity: never changed, never used again, what the audit and the
+  engine carry — and, when its owner gives one, a `name` (a host's label)
+  and a line of `description`: the core's own, beside `tags` in a create,
+  never a spec's (Hetzner's and OpenStack's model; AWS's name is a tag no
+  command takes, Google Cloud's is fixed at birth). A name is **one thing**
+  among its owner's live resources of one type — a second is refused, 409,
+  with the id that holds it — so it goes **wherever an id goes**: `hangar
+  machine start dev`, `--machine dev`, a reference in a spec or an action's
+  params (the core writes the id before anything reads it; the audit says
+  what the name stood for). It resolves among one's **own** only: what
+  someone shares is named by its id — anyone may call theirs anything, and
+  a request by name would be handed a look-alike. `PATCH
+  /v1/resources/{id}` renames and describes; the id stays, and so does the
+  host name a machine was born with.
+- **A resource is served as a person reads it.** `status` and `light` — the
+  one word it wears: the core's while something moves or went wrong, its
+  plugin's say on whether it may be named, then its type's own (`running`
+  or `stopped`, `attached` or `parked`, `available`) —, `summary` — its
+  type's own sentence, what it names read by name: « 64 GB · on dev at
+  /home · backed up » —, `owner_name` — the name its owner signs in under,
+  which the brain now remembers —, `names`. A type says its sentence and
+  its word at its schema's root (`x-hangar-summary`, `x-hangar-status`,
+  ARCHITECTURE.md §4); the core fills them in, so the command line and the
+  console print the same words and know no type.
+- **The command line.** A list is `NAME STATE WHAT ZONE AGE ID` (the owner,
+  by name, when a row is not yours; `-o wide` adds the set, the place on
+  the engine and the description); `get` is a card — what it uses and what
+  uses it, by name — and `-o yaml` the whole record; `rename`, `describe`;
+  `--name` and `--description` on a create; and **`hangar list`**:
+  everything you hold on one screen, each machine with what hangs on it.
+- **`apply`.** An entry's key is what its resource is called, a
+  `description:` may sit beside its `type:`, and apply keeps both true.
+- **The console.** The same words in its lists; name and description first
+  in every type's form, refused beside the field; a rename on every
+  resource's page; where you are, by name; home drawn as `hangar list`.
+- **On the engine** (Proxmox VE). A guest's notes say what it is called and
+  whose, and under each volume's line what the volume is called — lines for
+  people, of their own: nothing is found by one, and an older driver reads
+  past them. The notes' two writers each hold the config's digest: a write
+  on notes that changed since they were read is refused by Proxmox itself.
+  Proved on the bench, twice.
+- **What moves for whoever writes requests by hand.** A machine's and an
+  image's `name` left their spec: it is the request's own `name`. The
+  registry converts itself at the first start (schema 6): each resource is
+  called by the entry a spec file made it from, else by the name its spec
+  carried; among live ones of an owner and a type the oldest keeps a name
+  two shared; nothing is made again. A plugin's `Resource` carries `name`,
+  `description` and `owner_name` (protocol fields 11 to 13), and a driver
+  `Relabel` and `RelabelVolume`.
+
 ## v0.1.1 — 2026-10-02
 
 What the first deployment on a real cluster found, the same day: a zone that

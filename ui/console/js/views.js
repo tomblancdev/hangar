@@ -7,22 +7,48 @@
 
 import {api, Problem, clientToken, settled, session} from './api.js';
 import {h, clear, bar, ago, day, took, fmtNumber} from './dom.js';
-import {summary, label, plural, show} from './schema.js';
+import {summary, label, plural, show, fieldsOf} from './schema.js';
 import {buildForm, refusal} from './form.js';
 
 const idShape = /^[a-z][a-z0-9]{0,7}-[0-9a-f]{17}$/;
 const moving = ['creating', 'updating', 'deleting'];
 
+// What a resource is called is the brain's own, on every type: the one
+// control here no catalogue declares.
+const renameWord = 'rename';
+const calledFields = fieldsOf({type: 'object', properties: {
+  name: {type: 'string', maxLength: 63, description: 'a-z, 0-9 and -. One thing among yours of this type; it goes wherever its id goes. Empty: unnamed, shown by its id.'},
+  description: {type: 'string', maxLength: 256, description: 'One line about it.'},
+}});
+
 // ---- What a resource reads as -------------------------------------------------
 
+// nameOf: what its owner calls it; its id when unnamed.
 export function nameOf(r) {
-  return r.spec && typeof r.spec.name === 'string' && r.spec.name ? r.spec.name : r.id;
+  return typeof r.name === 'string' && r.name ? r.name : r.id;
 }
 
-// stampOf: the one word a resource wears, and its colour. The core's state
-// first; then whether it may be named (its plugin's word); then — for what
-// reports a `running` — whether it runs.
+// ownerOf: its owner by the name they sign in under; the subject when the
+// brain never saw them.
+function ownerOf(r) {
+  return r.owner_name || r.owner;
+}
+
+// whatOf: what it is, in its type's own sentence — the brain's; an older
+// brain's is drawn here from the spec's fields.
+function whatOf(ctx, r) {
+  if (typeof r.summary === 'string') return r.summary;
+  const t = ctx.type(r.type);
+  return t ? summary(t.fields, r.spec) : '';
+}
+
+// stampOf: the one word a resource wears, and its colour — the brain's say
+// (status, light: its state while something moves, its plugin's word, its
+// type's own: running or stopped, attached or parked). An older brain says
+// only the state: then the core's state first; then whether it may be named;
+// then — for what reports a `running` — whether it runs.
 export function stampOf(r) {
+  if (r.status && r.light) return [r.status, r.light];
   if (moving.includes(r.state)) return [r.state, 'busy'];
   if (r.state === 'failed' || r.state === 'lost') return [r.state, 'bad'];
   if (r.state === 'deleted') return ['deleted', 'off'];
@@ -47,18 +73,73 @@ function rowsHead(...names) {
   return h('div', {class: 'row head', 'aria-hidden': 'true'}, names.map((n) => h('div', {}, n)));
 }
 
-function row(ctx, r, {owner = false} = {}) {
+// row: one resource in a list — what it is called, the word it wears, its
+// sentence and its owner's line about it, where and since when. hangs: it is
+// drawn under what it hangs on ('mid', or 'last' of them).
+function row(ctx, r, {owner = false, hangs = ''} = {}) {
   const t = ctx.type(r.type);
-  const what = t ? summary(t.fields, r.spec, ['name']) : '';
+  const what = whatOf(ctx, r);
   const notes = [];
   if (r.hold) notes.push('its room is held for ' + r.hold);
   if (r.drift) notes.push(r.drift);
-  if (r.owner !== ctx.me.subject) notes.push(owner ? 'owner ' + r.owner : 'shared with you by ' + r.owner);
-  return h('a', {class: 'row', href: '#/r/' + r.id},
-    h('div', {class: 'row-name'}, h('div', {class: 'name'}, nameOf(r)), h('div', {class: 'tiny muted'}, (t ? t.title : r.type) + ' · ' + r.id)),
+  if (r.owner !== ctx.me.subject) notes.push(owner ? 'owner ' + ownerOf(r) : 'shared with you by ' + ownerOf(r));
+  return h('a', {class: 'row' + (hangs ? ' hangs ' + hangs : ''), href: '#/r/' + r.id},
+    h('div', {class: 'row-name'}, h('div', {class: 'name'}, nameOf(r)), h('div', {class: 'tiny muted'}, (t ? t.title : r.type) + (r.name ? ' · ' + r.id : ''))),
     h('div', {class: 'row-stamp'}, lamp(...stampOf(r))),
-    h('div', {class: 'row-what'}, what || h('span', {class: 'muted'}, '—'), notes.length ? h('div', {class: 'tiny muted'}, notes.join(' · ')) : null),
+    h('div', {class: 'row-what'}, what || h('span', {class: 'muted'}, '—'),
+      r.description ? h('div', {class: 'tiny muted said-of'}, r.description) : null,
+      notes.length ? h('div', {class: 'tiny muted'}, notes.join(' · ')) : null),
     h('div', {class: 'row-when tiny muted'}, r.zone + ' · ' + ago(r.created_at)));
+}
+
+// refsOf: the ids a resource's spec names, by its type's references.
+function refsOf(ctx, r) {
+  const t = ctx.type(r.type);
+  const out = [];
+  for (const f of t ? t.fields.filter((f) => f.ref) : []) {
+    const v = (r.spec || {})[f.name];
+    for (const x of Array.isArray(v) ? v : v ? [v] : []) if (typeof x === 'string') out.push(x);
+  }
+  return out;
+}
+
+// held: everything a person holds, as the command line's `hangar list`
+// draws it — each set of a spec file in its zone, each holder (a type
+// others attach to: a machine) with what hangs on it — what names it, then
+// what it names —, then what hangs on nothing.
+function held(ctx, all) {
+  const holder = new Set();
+  for (const t of ctx.types) for (const f of t.fields) if (f.attached && f.ref) holder.add(f.ref);
+  const mine = (r) => r.owner === ctx.me.subject;
+  const byId = new Map(all.map((r) => [r.id, r]));
+  const hangs = new Map();
+  const hung = new Set();
+  for (const r of all) {
+    if (!mine(r) || !holder.has(r.type)) continue;
+    const kids = all.filter((o) => o.id !== r.id && refsOf(ctx, o).includes(r.id));
+    for (const id of refsOf(ctx, r)) { const o = byId.get(id); if (o && !kids.includes(o)) kids.push(o); }
+    hangs.set(r.id, kids);
+    for (const o of kids) hung.add(o.id);
+  }
+  const groups = [];
+  const groupOf = (r) => {
+    const set = (r.tags || {})['apply:set'] || '';
+    let g = groups.find((x) => x.set === set && x.zone === r.zone);
+    if (!g) { g = {set, zone: r.zone, rows: []}; groups.push(g); }
+    return g;
+  };
+  for (const r of all) {
+    if (!mine(r) || !holder.has(r.type)) continue;
+    const g = groupOf(r);
+    g.rows.push(row(ctx, r));
+    const kids = hangs.get(r.id);
+    kids.forEach((o, i) => g.rows.push(row(ctx, o, {hangs: i === kids.length - 1 ? 'last' : 'mid'})));
+  }
+  for (const r of all) if (mine(r) && !holder.has(r.type) && !hung.has(r.id)) groupOf(r).rows.push(row(ctx, r));
+  groups.sort((a, b) => (a.set === '') - (b.set === '') || a.set.localeCompare(b.set) || a.zone.localeCompare(b.zone));
+  return groups.map((g) => [
+    groups.length > 1 || g.set ? h('div', {class: 'row set-head'}, (g.set ? 'set ' + g.set + ' · ' : '') + 'zone ' + g.zone) : null,
+    g.rows]);
 }
 
 function opLine(op, ctx) {
@@ -68,7 +149,7 @@ function opLine(op, ctx) {
     : h('span', {class: 'muted'}, 'done in ' + took(op.created_at, op.finished_at || op.updated_at));
   return h('div', {class: 'op'},
     h('div', {class: 'muted'}, ago(op.created_at)),
-    h('div', {}, h('b', {}, what), ' ', h('a', {href: '#/r/' + op.resource_id}, op.resource_id), ctx.me.operator && op.owner !== ctx.me.subject ? h('span', {class: 'muted'}, ' · ' + op.owner) : null,
+    h('div', {}, h('b', {}, what), ' ', h('a', {href: '#/r/' + op.resource_id, title: op.resource_id}, op.resource_name || op.resource_id), ctx.me.operator && op.owner !== ctx.me.subject ? h('span', {class: 'muted'}, ' · ' + (op.owner_name || op.owner)) : null,
       // what an action was asked with; a create's and a delete's are the core's own notes
       op.kind === 'action' && op.params && Object.keys(op.params).length ? h('span', {class: 'muted'}, ' ' + show(op.params)) : null),
     h('div', {}, res));
@@ -110,7 +191,7 @@ export function home(ctx) {
       allowed.map((l) => h('span', {class: 'chip', title: l.description || l.name}, l.name.replace(/^.*\./, '') + ': ' + l.limit.join(', '))));
 
     clear(zones, zs.zones.map(zone));
-    clear(yours, mineOnly.length ? mineOnly.map((r) => row(ctx, r)) : h('p', {class: 'muted empty'}, 'Nothing yet. Ask for something above.'));
+    clear(yours, mineOnly.length ? held(ctx, res.resources) : h('p', {class: 'muted empty'}, 'Nothing yet. Ask for something above.'));
     clear(lately, ops.operations.length ? ops.operations.map((o) => opLine(o, ctx)) : h('p', {class: 'muted empty'}, 'No operation yet.'));
   }
 
@@ -228,7 +309,7 @@ async function refsFor(ctx, fields, zoneName) {
       const s = r.tags && r.tags['hangar:schedule'];
       if (s && !r.unusable) schedules.add(s);
       opts.push({value: r.id, own: r.owner === ctx.me.subject, disabled: !!r.unusable,
-        label: nameOf(r) + (nameOf(r) === r.id ? '' : ' · ' + r.id) + (r.owner === ctx.me.subject ? '' : ' (shared by ' + r.owner + ')') + (r.unusable ? ' — ' + r.unusable : '')});
+        label: nameOf(r) + (nameOf(r) === r.id ? '' : ' · ' + r.id) + (r.owner === ctx.me.subject ? '' : ' (shared by ' + ownerOf(r) + ')') + (r.unusable ? ' — ' + r.unusable : '')});
     }
     out[type] = [...[...schedules].sort().map((s) => ({value: '@' + s, own: false, label: `@${s} — the newest ${s}`})), ...opts];
   }));
@@ -250,13 +331,27 @@ export function create(ctx, typeName) {
     const zonePick = h('select', {id: 'zone', class: 'input', onchange: (e) => { zoneName = e.target.value; ctx.now(draw); }}, t.zones.map((z) => h('option', {value: z}, z)));
     zonePick.value = zoneName;
     const tags = h('textarea', {id: 'tags', class: 'input', rows: 2, spellcheck: 'false', placeholder: 'key=value, one per line'});
+    // what it is called: the brain's own, on every type — kept while the zone is picked again
+    const was = {name: (document.getElementById('called') || {}).value || '', description: (document.getElementById('described') || {}).value || ''};
+    const called = h('input', {id: 'called', class: 'input', type: 'text', maxlength: 63, autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none', placeholder: 'dev', value: was.name});
+    const described = h('input', {id: 'described', class: 'input', type: 'text', maxlength: 256, autocomplete: 'off', value: was.description});
+    // what the brain refuses of its name or its description is said beside it
+    const errs = {name: h('div', {class: 'field-err', role: 'alert'}), description: h('div', {class: 'field-err', role: 'alert'})};
     const form = buildForm({
       fields: t.fields, refs, groups: ctx.me.groups, submit: 'ASK FOR IT',
-      extra: [h('div', {class: 'field'}, h('label', {class: 'lbl', for: 'zone'}, 'zone'), zonePick, h('div', {class: 'help'}, 'Where it is made.'))],
+      extra: [
+        h('div', {class: 'field'}, h('label', {class: 'lbl', for: 'called'}, 'name'), called,
+          h('div', {class: 'help'}, `What you call it: a-z, 0-9 and -. One thing among your ${plural(t.title).toLowerCase()}; it goes wherever its id goes. Unnamed, it is shown by its id.`), errs.name),
+        h('div', {class: 'field'}, h('label', {class: 'lbl', for: 'zone'}, 'zone'), zonePick, h('div', {class: 'help'}, 'Where it is made.')),
+        h('div', {class: 'field wide'}, h('label', {class: 'lbl', for: 'described'}, 'description'), described, h('div', {class: 'help'}, 'One line about it, for whoever reads the list.'), errs.description)],
       onCancel: () => ctx.go('#/t/' + t.name),
       onSubmit: async (spec) => {
         clear(aside);
+        clear(errs.name);
+        clear(errs.description);
         const body = {type: t.name, zone: zoneName, spec, client_token: clientToken()};
+        if (called.value.trim()) body.name = called.value.trim();
+        if (described.value.trim()) body.description = described.value.trim();
         const tagMap = readTags(tags.value);
         if (tagMap === null) { clear(aside, problemNode(new Error('a tag reads key=value, one per line'))); return; }
         if (Object.keys(tagMap).length) body.tags = tagMap;
@@ -267,7 +362,10 @@ export function create(ctx, typeName) {
         } catch (p) {
           form.busy(false);
           if (!(p instanceof Problem)) throw p;
-          clear(aside, refusal(p, form.setViolations(p.violations)));
+          // its own two words are no pointer into the spec: "name", "description"
+          const own = (p.violations || []).filter((v) => errs[v.field]);
+          for (const v of own) clear(errs[v.field], v.reason);
+          clear(aside, refusal(p, form.setViolations((p.violations || []).filter((v) => !errs[v.field]))));
           aside.scrollIntoView({block: 'nearest'});
         }
       },
@@ -323,17 +421,28 @@ export function resource(ctx, id) {
     }
     const t = ctx.type(r.type);
     const own = r.owner === ctx.me.subject || ctx.me.operator;
+    // where you are, by what it is called
+    const here = document.getElementById('here');
+    if (here) here.textContent = nameOf(r);
+    document.title = nameOf(r) + ' — Le Hangar';
+    const set = (r.tags || {})['apply:set'];
+    const place = r.observed && typeof r.observed.engine_ref === 'string' ? r.observed.engine_ref : '';
     clear(head, h('div', {class: 'page-head'}, h('div', {},
       title((t ? t.title : r.type) + ' · ' + r.id, nameOf(r).toUpperCase()),
-      h('div', {class: 'under'}, stamp(r), h('span', {class: 'muted'},
-        `zone ${r.zone} · ${r.owner === ctx.me.subject ? 'yours' : 'owner ' + r.owner} · made ${ago(r.created_at)}` +
+      h('div', {class: 'under'}, stamp(r), h('span', {class: 'what-it-is'}, whatOf(ctx, r))),
+      r.description ? h('p', {class: 'said-of'}, r.description) : null,
+      h('div', {class: 'under'}, h('span', {class: 'muted'},
+        `zone ${r.zone}` + (place ? ` · ${place}` : '') + ` · ${r.owner === ctx.me.subject ? 'yours' : 'owner ' + ownerOf(r)}` + (set ? ` · set ${set}` : '') + ` · made ${ago(r.created_at)}` +
         (r.hold ? ` · its room is held for ${r.hold}` : '') + (r.drift ? ` · ${r.drift}` : ''))))));
 
     // its actions: the ones its type offers in its zone
     const acts = t && own && r.state !== 'deleted' ? t.actions.filter((a) => a.zones.includes(r.zone)) : [];
     clear(actions, acts.map((a) => h('button', {type: 'button', class: 'btn' + (open === a.name ? ' chosen' : ''), title: a.description || '', 'aria-expanded': a.fields.length ? String(open === a.name) : null,
       onclick: () => (a.fields.length ? toggle(a, r) : act(a, r, {}))}, label(a.name))),
-      !own && r.state !== 'deleted' ? h('span', {class: 'muted'}, `${r.owner}'s, shared with you to see and use — only its owner changes it.`) : null);
+      // what it is called is the brain's own: every type takes a rename
+      own && r.state !== 'deleted' ? h('button', {type: 'button', class: 'btn' + (open === renameWord ? ' chosen' : ''), title: 'What you call it, and your line about it. Its id stays.',
+        'aria-expanded': String(open === renameWord), onclick: () => rename(r)}, renameWord) : null,
+      !own && r.state !== 'deleted' ? h('span', {class: 'muted'}, `${ownerOf(r)}'s, shared with you to see and use — only its owner changes it.`) : null);
 
     drawPairs(asked, t, r);
     drawSeen(seen, r);
@@ -346,7 +455,7 @@ export function resource(ctx, id) {
   function drawPairs(into, t, r) {
     const spec = r.spec || {};
     const keys = [...new Set([...(t ? t.fields.map((f) => f.name) : []), ...Object.keys(spec)])].filter((k) => spec[k] !== undefined);
-    clear(into, keys.length ? keys.map((k) => pair(k, linked(spec[k]))) : h('p', {class: 'muted'}, 'Everything at its default.'),
+    clear(into, keys.length ? keys.map((k) => pair(k, linked(spec[k], r.names || {}))) : h('p', {class: 'muted'}, 'Everything at its default.'),
       Object.keys(r.tags || {}).length ? pair('tags', Object.entries(r.tags).map(([k, v]) => `${k}=${v}`).join(', ')) : null,
       r.shared_with && r.shared_with.length ? pair('shared with', r.shared_with.map((g) => (g === '*' ? 'everyone' : g)).join(', ')) : null);
   }
@@ -356,7 +465,7 @@ export function resource(ctx, id) {
     const held = Object.entries(r.usage || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(' · ');
     const room = r.room && (r.room.guaranteed_mb || r.room.spot_mb) ?
       [r.room.guaranteed_mb ? `${r.room.guaranteed_mb} MB guaranteed` : '', r.room.spot_mb ? `${r.room.spot_mb} MB of the spot pool` : ''].filter(Boolean).join(' · ') : '';
-    clear(into, Object.keys(obs).map((k) => pair(k, /_at$/.test(k) && typeof obs[k] === 'string' ? ago(obs[k]) : show(obs[k]))),
+    clear(into, Object.keys(obs).map((k) => pair(k, /_at$/.test(k) && typeof obs[k] === 'string' ? ago(obs[k]) : linked(obs[k], r.names || {}))),
       held ? pair('holds', held) : null, room ? pair('room', room) : null, r.tier ? pair('counted under', 'tier ' + r.tier) : null,
       !Object.keys(obs).length && !held ? h('p', {class: 'muted'}, 'Nothing reported yet.') : null);
   }
@@ -366,9 +475,10 @@ export function resource(ctx, id) {
   }
 
   // linked: a value that is an id leads to that resource.
-  function linked(v) {
-    if (typeof v === 'string' && idShape.test(v)) return h('a', {href: '#/r/' + v}, v);
-    if (Array.isArray(v) && v.length && v.every((x) => typeof x === 'string' && idShape.test(x))) return v.map((x, i) => [i ? ', ' : '', h('a', {href: '#/r/' + x}, x)]);
+  function linked(v, names = {}) {
+    const one = (x) => h('a', {href: '#/r/' + x, title: x}, names[x] || x);
+    if (typeof v === 'string' && idShape.test(v)) return one(v);
+    if (Array.isArray(v) && v.length && v.every((x) => typeof x === 'string' && idShape.test(x))) return v.map((x, i) => [i ? ', ' : '', one(x)]);
     return show(v);
   }
 
@@ -391,6 +501,37 @@ export function resource(ctx, id) {
     }
     const by = (await Promise.all(asks)).flat();
     clear(namedBy, by.length ? by.map((x) => row(ctx, x)) : h('p', {class: 'muted empty'}, 'Nothing.'));
+  }
+
+  // rename: what it is called and its owner's line about it — the brain's own
+  // (PATCH), no operation: it is done when it answers.
+  function rename(r) {
+    open = open === renameWord ? '' : renameWord;
+    for (const b of actions.querySelectorAll('button')) b.classList.toggle('chosen', b.textContent === label(open));
+    if (!open) { clear(panel); return; }
+    const form = buildForm({fields: calledFields, current: null, submit: 'RENAME',
+      onCancel: () => { open = ''; clear(panel); ctx.now(look); },
+      onSubmit: async () => {
+        clear(said);
+        const now = form.values();
+        form.busy(true);
+        try {
+          await api('PATCH', '/v1/resources/' + r.id, {name: String(now.name || '').trim(), description: String(now.description || '').trim()});
+          open = '';
+          clear(panel);
+          clear(said, h('p', {class: 'on'}, 'renamed'));
+          await ctx.now(look);
+        } catch (p) {
+          form.busy(false);
+          if (!(p instanceof Problem)) throw p;
+          clear(said, refusal(p, form.setViolations(p.violations)));
+        }
+      }});
+    clear(panel, h('div', {class: 'panel action-panel'}, h('p', {class: 'muted'}, h('b', {}, renameWord),
+      ' — what you call it, and your line about it. Its id stays, and so does what it was born as on its engine.'), form.node));
+    const [name, description] = panel.querySelectorAll('input');
+    if (name) { name.value = r.name || ''; name.focus(); }
+    if (description) description.value = r.description || '';
   }
 
   function toggle(a, r) {

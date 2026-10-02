@@ -188,7 +188,7 @@ reconcile: {every: 10s}
     spec: {size_gb: 1, mount: /home/dev, backup: true, machine: box}
   box:
     type: machine
-    spec: {name: dev, kind: %s, class: guaranteed+spot, cores: 2, memory_gb: %d, floor_gb: 1, cores_beside: 1, image: debian-13, disk_gb: 2, key_pairs: [me]}
+    spec: {kind: %s, class: guaranteed+spot, cores: 2, memory_gb: %d, floor_gb: 1, cores_beside: 1, image: debian-13, disk_gb: 2, key_pairs: [me]}
   me:
     type: keypair
     spec: {public_key: %q}

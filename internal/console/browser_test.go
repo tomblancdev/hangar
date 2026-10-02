@@ -130,9 +130,11 @@ func TestEveryActionFromABrowser(t *testing.T) {
 	// ---- a key pair
 	p.Press("+ Key pair")
 	p.Sees("ASK FOR A KEY PAIR")
+	p.Fill("name", "laptop") // every type has a name: the brain's own, never a spec's
 	p.Fill("public key", aliceKey)
 	p.Submit()
 	kp := made()
+	p.Sees("LAPTOP")
 	p.Reads(stamp, "READY")
 	p.Sees("SHA256:") // what the plugin read of it
 
@@ -152,7 +154,7 @@ func TestEveryActionFromABrowser(t *testing.T) {
 	p.Shot("03-refused")
 	p.Fill("name", "dev-box")
 	p.Fill("type", "t3.small")
-	p.Choose("key pairs", kp, true)
+	p.Choose("key pairs", "laptop", true)
 	p.Fill("idle after", "30m")
 	p.Fill("tags", "purpose=dev\nnote=<b>bold</b><img src=x onerror=document.title='in'>")
 	p.Shot("04-new-machine")
@@ -160,6 +162,8 @@ func TestEveryActionFromABrowser(t *testing.T) {
 	box := made()
 	p.Sees("DEV-BOX")
 	p.Reads(stamp, "RUNNING")
+	p.Sees("vm · 2 cores · 2 GB · spot · debian-13") // its type's own sentence, beside the word it wears
+	p.Wait("its key pair, by what it is called", `[...document.querySelectorAll('.kv a')].some((a) => a.getAttribute('href') === '#/r/`+kp+`' && a.textContent === 'laptop')`)
 	p.Sees("purpose=dev")
 	// what a person typed comes back as the letters they typed, never as markup
 	p.Sees("note=<b>bold</b><img src=x")
@@ -203,11 +207,47 @@ func TestEveryActionFromABrowser(t *testing.T) {
 	// ---- a volume, plugged into it
 	p.Open("#/t/volume/new")
 	p.Sees("ASK FOR A VOLUME")
+	p.Fill("name", "data")
+	p.Fill("description", "what the box keeps")
 	p.Fill("size gb", "4")
 	p.Pick("machine", "dev-box")
 	p.Submit()
 	vol := made()
-	p.Reads(stamp, "READY")
+	p.Sees("DATA")
+	p.Reads(stamp, "ATTACHED") // the word its type wears, not the registry's "ready"
+	p.Sees("4 GB · on dev-box")
+	p.Sees("what the box keeps")
+	// a second one of that name is refused beside the field, with the one that holds it
+	p.Open("#/t/volume/new")
+	p.Fill("name", "data")
+	p.Fill("size gb", "1")
+	p.Submit()
+	p.Sees("REFUSED")
+	p.Wait("the name already held, said beside the name", `__t.field('name').closest('.field').querySelector('.field-err').textContent.includes('`+vol+`')`)
+	// renamed from its page: its id stays, the lists follow
+	p.Open("#/r/" + vol)
+	p.Press("rename")
+	p.Fill("name", "Not A Name")
+	p.Submit()
+	p.Sees("REFUSED")
+	p.Wait("the refusal beside the name", `__t.field('name').closest('.field').querySelector('.field-err').textContent.includes('a name is a-z')`)
+	p.Fill("name", "store")
+	p.Fill("description", "")
+	p.Shot("06a-rename")
+	p.Submit()
+	p.Sees("renamed")
+	p.Sees("STORE")
+	p.Lacks("what the box keeps")
+	p.Wait("where you are, by what it is called", `document.getElementById('here').textContent === 'store' && document.title.startsWith('store')`)
+	// everything held, on the home page: the machine, and under it what hangs on it
+	p.Open("#/")
+	p.Wait("the volume and the key pair under their machine", `(() => { const rows = [...document.querySelectorAll('.section .rows a.row')].map((a) => [a.getAttribute('href'), a.className]);
+	  const at = (id) => rows.findIndex((r) => r[0] === '#/r/' + id);
+	  return at('`+box+`') >= 0 && !rows[at('`+box+`')][1].includes('hangs') && at('`+vol+`') > at('`+box+`') && rows[at('`+vol+`')][1].includes('hangs') &&
+	    at('`+kp+`') > at('`+vol+`') && rows[at('`+kp+`')][1].includes('hangs last'); })()`)
+	p.Sees("store")
+	p.Shot("06b-home-held")
+	p.Open("#/r/" + vol)
 	p.Press("set backup")
 	p.Choose("backup", "yes", true)
 	p.Submit()
@@ -268,7 +308,7 @@ func TestEveryActionFromABrowser(t *testing.T) {
 	p.Pick("machine", "dev-box")
 	p.Submit()
 	img := made()
-	p.Reads(stamp, "READY") // made by the next looks of the brain: the page follows by itself
+	p.Reads(stamp, "AVAILABLE") // made by the next looks of the brain: the page follows by itself
 	p.Press("share")
 	p.Choose("shared with", "users", true)
 	p.Submit()
@@ -377,7 +417,7 @@ func TestTwoPeopleAndAPhone(t *testing.T) {
 	op.Choose("shared with", "everyone", true)
 	op.Submit()
 	baked := made(op)
-	op.Reads(stamp, "READY")
+	op.Reads(stamp, "AVAILABLE")
 	op.Sees("shared with")
 	// a bake that fails on its own waits to be asked again
 	op.Open("#/t/image/new")

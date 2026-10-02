@@ -157,7 +157,7 @@ reconcile: {every: 5s}
 		}
 		return out.String(), errb.String()
 	}
-	if out, _ := cli("box", "--help"); !strings.Contains(out, "hangar box create") || !strings.Contains(out, "memory_gb") || !strings.Contains(out, "hangar box resize ID [--cores --memory-gb]") {
+	if out, _ := cli("box", "--help"); !strings.Contains(out, "hangar box create") || !strings.Contains(out, "memory_gb") || !strings.Contains(out, "hangar box resize NAME [--cores --memory-gb]") {
 		t.Fatalf("a type's help, drawn from its schema:\n%s", out)
 	}
 	if _, errs := cli("box", "delete", id); !strings.Contains(errs, "deleted "+id) {
@@ -180,8 +180,62 @@ reconcile: {every: 5s}
 	if _, errs := cli("apply", boxes); !strings.Contains(errs, "resize {cores: 2, memory_gb: 1}") || !strings.Contains(errs, "1 changed") {
 		t.Fatalf("apply a change: %s", errs)
 	}
-	if out, _ := cli("box", "list", "-o", "id"); len(strings.Fields(out)) != 1 {
-		t.Fatalf("one box: %q", out)
+	ids, _ := cli("box", "list", "-o", "id")
+	if len(strings.Fields(ids)) != 1 {
+		t.Fatalf("one box: %q", ids)
+	}
+	one := strings.TrimSpace(ids)
+
+	// a person reads their own lists: the entry's name first, the word it
+	// wears, its type's sentence — and the id last, never a subject
+	lines := func(out string) []string { return strings.Split(strings.TrimRight(out, "\n"), "\n") }
+	list, _ := cli("box", "list")
+	if l := lines(list); len(l) != 2 || strings.Join(strings.Fields(l[0]), " ") != "NAME STATE WHAT ZONE AGE ID" ||
+		!strings.HasPrefix(l[1], "one ") || !strings.Contains(l[1], " running ") || !strings.Contains(l[1], "container · 2 cores · 1 GB") ||
+		!strings.HasSuffix(l[1], one) || strings.Contains(list, "alice") {
+		t.Fatalf("a list a person reads:\n%s", list)
+	}
+	// a name goes where an id goes: an action, a card, a rename
+	if _, errs := cli("box", "stop", "one"); !strings.Contains(errs, "stop: one "+one+" (stopped") {
+		t.Fatalf("stopped by name: %s", errs)
+	}
+	card, _ := cli("box", "get", "one")
+	for _, want := range []string{"one  box · stopped  " + one, "container · 2 cores · 1 GB", "where     zone z", "set e2e", "as asked", "cores          2", "hangar box get one -o yaml"} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("the card lacks %q:\n%s", want, card)
+		}
+	}
+	if out, _ := cli("box", "get", "one", "-o", "json"); !strings.Contains(out, `"id": "`+one+`"`) || !strings.Contains(out, `"name": "one"`) {
+		t.Fatalf("the whole record: %s", out)
+	}
+	if _, errs := cli("box", "rename", "one", "uno"); !strings.Contains(errs, one+" is now uno") {
+		t.Fatalf("renamed: %s", errs)
+	}
+	if _, errs := cli("box", "describe", "uno", "the", "only", "box"); !strings.Contains(errs, "uno: described") {
+		t.Fatalf("described: %s", errs)
+	}
+	everything, _ := cli("list")
+	if l := lines(everything); len(l) != 2 || l[0] != "set e2e · zone z" || strings.Join(strings.Fields(l[1]), " ") != "uno box stopped container · 2 cores · 1 GB" {
+		t.Fatalf("everything held, on one screen:\n%s", everything)
+	}
+	if wide, _ := cli("box", "list", "-o", "wide"); !strings.Contains(wide, "DESCRIPTION") || !strings.Contains(wide, "the only box") || !strings.Contains(wide, "e2e") {
+		t.Fatalf("wide:\n%s", wide)
+	}
+	gone := exec.Command(bin, "box", "get", "one")
+	gone.Env = append(os.Environ(), "HANGAR_URL="+base, "HANGAR_TOKEN="+secret, "HANGAR_HOME="+filepath.Join(dir, "cli"))
+	if out, err := gone.CombinedOutput(); err == nil || !strings.Contains(string(out), "no box named one") {
+		t.Fatalf("the name it left: %v\n%s", err, out)
+	}
+	// the file is the truth of what a resource is called too: apply puts the
+	// entry's name back and takes the description off
+	if _, errs := cli("apply", boxes); !strings.Contains(errs, "~ one: rename (it is called uno), describe done") || !strings.Contains(errs, "1 changed") {
+		t.Fatalf("apply after a rename: %s", errs)
+	}
+	if list, _ = cli("box", "list", "-o", "wide"); !strings.HasPrefix(lines(list)[1], "one ") || strings.Contains(list, "the only box") {
+		t.Fatalf("called by the file again:\n%s", list)
+	}
+	if _, errs := cli("apply", boxes); !strings.Contains(errs, "Nothing to do") {
+		t.Fatalf("apply once more: %s", errs)
 	}
 	// the box leaves the file: with no one at stdin (/dev/null, a character
 	// device as a terminal is) nothing is deleted without --yes

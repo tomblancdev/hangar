@@ -890,7 +890,15 @@ type Resource struct {
 	// the tier its last request was admitted in. A plugin brings the resource
 	// to what that means in Reconcile — a running machine is stopped, and stays
 	// so — and refuses in Act what would draw on one.
-	Spent         []string `protobuf:"bytes,10,rep,name=spent,proto3" json:"spent,omitempty"`
+	Spent []string `protobuf:"bytes,10,rep,name=spent,proto3" json:"spent,omitempty"`
+	// What its owner calls it ("" = unnamed) and their line about it, and the
+	// name the owner last signed in under ("" = never seen): the core's own,
+	// never a spec's. A plugin writes them where a person reads the engine's
+	// own screen (a guest's notes), and keeps them true in Reconcile; it finds
+	// a resource by its id, never by its name.
+	Name          string `protobuf:"bytes,11,opt,name=name,proto3" json:"name,omitempty"`
+	Description   string `protobuf:"bytes,12,opt,name=description,proto3" json:"description,omitempty"`
+	OwnerName     string `protobuf:"bytes,13,opt,name=owner_name,json=ownerName,proto3" json:"owner_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -993,6 +1001,27 @@ func (x *Resource) GetSpent() []string {
 		return x.Spent
 	}
 	return nil
+}
+
+func (x *Resource) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Resource) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *Resource) GetOwnerName() string {
+	if x != nil {
+		return x.OwnerName
+	}
+	return ""
 }
 
 type PlanRequest struct {
@@ -2556,7 +2585,7 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"ZoneReport\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\"\n" +
 	"\fcapabilities\x18\x02 \x03(\tR\fcapabilities\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\xd1\x02\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\xa6\x03\n" +
 	"\bResource\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
@@ -2568,7 +2597,11 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x04hold\x18\b \x01(\tR\x04hold\x12*\n" +
 	"\x04room\x18\t \x01(\v2\x16.hangar.plugin.v1.RoomR\x04room\x12\x14\n" +
 	"\x05spent\x18\n" +
-	" \x03(\tR\x05spent\x1a7\n" +
+	" \x03(\tR\x05spent\x12\x12\n" +
+	"\x04name\x18\v \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\f \x01(\tR\vdescription\x12\x1d\n" +
+	"\n" +
+	"owner_name\x18\r \x01(\tR\townerName\x1a7\n" +
 	"\tTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdf\x01\n" +

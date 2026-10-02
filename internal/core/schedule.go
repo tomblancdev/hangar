@@ -15,6 +15,7 @@ import (
 	"github.com/tomblancdev/hangar/internal/audit"
 	"github.com/tomblancdev/hangar/internal/config"
 	"github.com/tomblancdev/hangar/internal/identity"
+	"github.com/tomblancdev/hangar/internal/ids"
 	"github.com/tomblancdev/hangar/internal/plugins"
 	"github.com/tomblancdev/hangar/internal/registry"
 )
@@ -303,6 +304,9 @@ func asProblem(err error) *Problem {
 // latest is the publisher's pointer, never a search by name that anyone
 // could answer with a look-alike. The request keeps the id: a machine says
 // what it was born from, and never moves under it.
+//
+// And every reference given as a name, as the id of what its owner calls so
+// (names.go): a name goes wherever an id goes, and the registry keeps ids.
 func (c *Core) resolve(ctx context.Context, owner string, groups []string, zone string, refs []plugins.Ref, doc json.RawMessage) (json.RawMessage, []string, *Problem) {
 	var fields map[string]json.RawMessage
 	if len(refs) == 0 || json.Unmarshal(doc, &fields) != nil {
@@ -311,10 +315,16 @@ func (c *Core) resolve(ctx context.Context, owner string, groups []string, zone 
 	var resolved []string
 	var bad []plugins.Violation
 	one := func(ref plugins.Ref, field, v string) string {
-		if !strings.HasPrefix(v, "@") {
+		var id, why string
+		switch {
+		case v == "" || ids.Valid(v):
 			return v
+		case strings.HasPrefix(v, "@"):
+			id, why = c.latest(ctx, owner, groups, zone, ref, strings.TrimPrefix(v, "@"))
+		default:
+			// a name where an id goes: what its owner calls so
+			id, why = c.named(ctx, owner, ref, v)
 		}
-		id, why := c.latest(ctx, owner, groups, zone, ref, strings.TrimPrefix(v, "@"))
 		if why != "" {
 			bad = append(bad, plugins.Violation{Field: field, Reason: v + ": " + why})
 			return v

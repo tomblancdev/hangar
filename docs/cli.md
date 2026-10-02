@@ -78,18 +78,60 @@ profile offline_access`) must bring it and a refresh token.
 ## A type's commands
 
 ```text
-hangar <type> create [--zone Z] [FIELDS] [-f spec.yaml] [--tag k=v] [--no-wait] [-o yaml|json|id]
-hangar <type> list [--zone Z] [--tag k=v] [--state S] [--owner SUBJECT] [-o …]
-hangar <type> get ID | delete ID
-hangar <type> <action> ID [PARAMS]           e.g. hangar volume set-backup vol-… --backup
-                                                  hangar machine keep-awake m-… --for 8h
+hangar list [--zone Z]                       everything you hold, each machine with what hangs on it
+hangar <type> create [--name NAME] [--description WORDS] [--zone Z] [FIELDS] [-f spec.yaml] [--tag k=v] [--no-wait] [-o yaml|json|id]
+hangar <type> list [--zone Z] [--tag k=v] [--state S] [--owner WHO] [-o wide|yaml|json|id]
+hangar <type> get NAME | rename NAME NEW | describe NAME WORDS | delete NAME
+hangar <type> <action> NAME [PARAMS]         e.g. hangar volume set-backup home --backup
+                                                  hangar machine keep-awake dev --for 8h
 hangar <type> --help                         its fields and actions, from its schema
 ```
+
+- **A name goes wherever an id goes.** `NAME` is what you call the resource
+  (`--name` at its birth, `rename` after), or its id: `hangar machine start
+  dev`, `hangar volume move cache --machine dev`. A name is one thing among
+  your live resources of one type — a second is refused, with the id that
+  holds it — and it is **yours**: a field names one of your own by name,
+  what someone shares with you by its id. Unnamed, a resource is shown by
+  its id. `rename` leaves the id alone, and the host name a machine was born
+  with; `rename NAME ""` unnames, `describe NAME ""` takes the line off.
+- **A list is read by a person.** What each is called, the word it wears
+  (`running`, `stopped`, `attached`, `parked` — its type's own, never the
+  registry's `ready` for a stopped machine), its type's sentence (what it
+  names read by name), its zone, its age, and its id last; whose it is when
+  one is not yours (an operator's listing, an image shared with you) — by
+  the name its owner signs in under. `-o wide` adds the owner, the spec
+  file's set, its place on the engine and its description; `-o yaml|json|id`
+  are a script's.
+
+  ```text
+  $ hangar volume list
+  NAME   STATE     WHAT                                 ZONE  AGE  ID
+  home   attached  64 GB · on dev at /home · backed up  lab   3h   vol-ecf4c439e0b1774fc
+  cache  attached  128 GB · on dev at /srv/cache        lab   3h   vol-73d7d893c785b3e68
+  ```
+- **`get` is a card**: what it is called and wears, its sentence and its
+  description, where it is and whose, what it uses and what uses it — by
+  name —, then what was asked and what was seen, field by field. `-o yaml`
+  (or `json`) is the whole record.
+- **`hangar list`** is everything you hold on one screen: each set a spec
+  file made, in its zone; each holder — a type others attach to: a machine
+  — with what hangs on it, what names it then what it names; then what
+  hangs on nothing.
+
+  ```text
+  $ hangar list
+  set dev-box · zone lab
+  box      machine   running   container · 12 cores · 40 GB (12 guaranteed) · debian-13
+  ├ home   volume    attached  64 GB · on box at /home · backed up
+  └ me     key pair  ready     ssh-ed25519 · alice@laptop
+  ```
 
 - **Flags from fields.** A top-level property `memory_gb` is `--memory-gb`
   (or `--memory_gb`); an integer, a boolean (`--resume=false`), a string, an
   array (repeated, or comma-separated), anything else as YAML. A reference
-  (`x-hangar-ref`) takes an id, or `@<schedule>` for the newest it made.
+  (`x-hangar-ref`) takes the name of one of yours, an id, or `@<schedule>`
+  for the newest it made.
   `--set key=value` reaches any field (its value YAML), and `-f` reads a
   whole spec (flags are written over it).
 - **The zone**: `--zone`, else `$HANGAR_ZONE`, else the only zone the type is
@@ -97,9 +139,10 @@ hangar <type> --help                         its fields and actions, from its sc
 - **Waiting**: a create, delete or action waits for its operation and says
   how it ended; `--no-wait` answers at once (`hangar wait OP` later).
 - **The command line's own words win**: `login`, `logout`, `whoami`, `types`,
-  `zones`, `limits`, `operations`, `wait`, `apply`, `type`; a type of one of
-  those names is `hangar type <name> …`. An action named `create`, `list`,
-  `get` or `delete` is `hangar <type> act ID <action>`.
+  `zones`, `limits`, `list`, `operations`, `wait`, `apply`, `type`; a type of
+  one of those names is `hangar type <name> …`. An action named `create`,
+  `list` or `get` is `hangar <type> act NAME <action>` (`delete`, `rename`
+  and `describe` are the core's: no plugin declares one).
 
 ## `hangar apply`: a spec file made true
 
@@ -120,9 +163,15 @@ resources:
 ```
 
 Each entry is **one resource, in its type's own words** — the schema the API
-already checks, no second format. A reference names **an id, `@<schedule>`,
-or another entry** (`machine: box`): apply makes them in that order, waiting
-for each to be ready and usable. `zone:` and `tags:` may be given per entry.
+already checks, no second format. **An entry's key is what the resource is
+called** (its name, on the brain: `hangar machine start box`), and a
+`description:` line may sit beside its `type:`; apply keeps both true — a
+resource renamed by hand is called by the file again at the next apply. A
+reference names **an id, `@<schedule>`, or another entry** (`machine: box`):
+apply makes them in that order, waiting for each to be ready and usable.
+`zone:` and `tags:` may be given per entry. A name is one thing among your
+resources of a type: an entry called as a resource you already hold
+elsewhere (another set, or made by hand) is refused, with its id.
 
 **The brain is the state** — no state file: each resource carries the tags
 `apply:set=<set>` and `apply:name=<entry>`. **Only the caller's own count**: a

@@ -61,17 +61,21 @@ var schemaFS embed.FS
 
 // Resource is one row of the registry, with its tags and usage.
 type Resource struct {
-	ID       string            `json:"id"`
-	Type     string            `json:"type"`
-	Plugin   string            `json:"plugin"`
-	Owner    string            `json:"owner"`
-	Zone     string            `json:"zone"`
-	State    string            `json:"state"`
-	Spec     json.RawMessage   `json:"spec"`
-	Observed json.RawMessage   `json:"observed"`
-	Choices  map[string]string `json:"choices"`
-	Usage    map[string]int64  `json:"usage"`
-	Tags     map[string]string `json:"tags"`
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	// Name: what its owner calls it — one thing among their live resources
+	// of its type; "" = unnamed. Description: a line of theirs about it.
+	Name        string            `json:"name,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Plugin      string            `json:"plugin"`
+	Owner       string            `json:"owner"`
+	Zone        string            `json:"zone"`
+	State       string            `json:"state"`
+	Spec        json.RawMessage   `json:"spec"`
+	Observed    json.RawMessage   `json:"observed"`
+	Choices     map[string]string `json:"choices"`
+	Usage       map[string]int64  `json:"usage"`
+	Tags        map[string]string `json:"tags"`
 	// SharedWith: the groups its owner opened it to ("*" = everyone), as its
 	// spec says; empty = its owner's alone.
 	SharedWith []string `json:"shared_with,omitempty"`
@@ -93,6 +97,19 @@ type Resource struct {
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+
+	// What follows is never stored: the core writes it on a resource it
+	// serves (core.Dress), from the registry and the type's schema.
+	//
+	// OwnerName: the name its owner last signed in under. Status and Light:
+	// the one word it wears and how it is lit (on, off, busy, bad). Summary:
+	// what it is, in its type's own sentence. Names: the names of the
+	// resources its spec names, by id.
+	OwnerName string            `json:"owner_name,omitempty"`
+	Status    string            `json:"status,omitempty"`
+	Light     string            `json:"light,omitempty"`
+	Summary   string            `json:"summary,omitempty"`
+	Names     map[string]string `json:"names,omitempty"`
 }
 
 // Room is what a resource takes from its zone: MiB booked in the guaranteed
@@ -114,21 +131,25 @@ type Claim struct {
 
 // Operation is a long action as the person polls it.
 type Operation struct {
-	ID          string          `json:"id"`
-	Owner       string          `json:"owner"`
-	ResourceID  string          `json:"resource_id"`
-	Kind        string          `json:"kind"`
-	Action      string          `json:"action,omitempty"`
-	Params      json.RawMessage `json:"params,omitempty"`
-	ClientToken string          `json:"client_token,omitempty"`
-	RequestHash string          `json:"-"`
-	State       string          `json:"state"`
-	Error       string          `json:"error,omitempty"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Attempts    int             `json:"attempts"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
+	ID         string `json:"id"`
+	Owner      string `json:"owner"`
+	ResourceID string `json:"resource_id"`
+	// ResourceName, OwnerName: never stored — the core writes them on an
+	// operation it serves.
+	ResourceName string          `json:"resource_name,omitempty"`
+	OwnerName    string          `json:"owner_name,omitempty"`
+	Kind         string          `json:"kind"`
+	Action       string          `json:"action,omitempty"`
+	Params       json.RawMessage `json:"params,omitempty"`
+	ClientToken  string          `json:"client_token,omitempty"`
+	RequestHash  string          `json:"-"`
+	State        string          `json:"state"`
+	Error        string          `json:"error,omitempty"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Attempts     int             `json:"attempts"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+	FinishedAt   *time.Time      `json:"finished_at,omitempty"`
 }
 
 // Token is an API token, its secret reduced to a hash.
@@ -153,7 +174,11 @@ type Store struct {
 
 // Open opens (creating when absent) the registry at path and brings its
 // schema up to date.
-func Open(path string) (*Store, error) {
+func Open(path string) (*Store, error) { return openAt(path, 0) }
+
+// openAt is Open, stopping at a schema version (0 = the newest): how a test
+// makes the file an older brain left.
+func openAt(path string, upTo int) (*Store, error) {
 	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)" +
 		"&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
@@ -162,7 +187,7 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(8)
 	s := &Store{db: db, Now: func() time.Time { return time.Now().UTC() }}
-	if err := s.migrate(context.Background()); err != nil {
+	if err := s.migrate(context.Background(), upTo); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("registry %s: %w", path, err)
 	}
@@ -178,9 +203,9 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
 }
 
-// migrate applies every schema file numbered above the file's user_version,
-// each in its own transaction.
-func (s *Store) migrate(ctx context.Context) error {
+// migrate applies every schema file numbered above the file's user_version
+// (up to upTo; 0 = all), each in its own transaction.
+func (s *Store) migrate(ctx context.Context, upTo int) error {
 	var have int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&have); err != nil {
 		return err
@@ -195,7 +220,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("schema file %s: not numbered", f)
 		}
-		if n <= have {
+		if n <= have || upTo > 0 && n > upTo {
 			continue
 		}
 		body, err := schemaFS.ReadFile(f)
@@ -313,10 +338,10 @@ func (t *Tx) InsertResource(r *Resource) error {
 		since = ts(t.now)
 	}
 	_, err := t.q.ExecContext(t.ctx, `INSERT INTO resources
-		(id, type, plugin, owner, zone, state, spec, observed, choices, room_guaranteed, room_spot, running, hold, hold_since,
-		 unusable, pending, tier, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Type, r.Plugin, r.Owner, r.Zone, r.State, rawOr(r.Spec, "{}"), rawOr(r.Observed, "{}"),
+		(id, type, name, description, plugin, owner, zone, state, spec, observed, choices, room_guaranteed, room_spot, running,
+		 hold, hold_since, unusable, pending, tier, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Type, r.Name, r.Description, r.Plugin, r.Owner, r.Zone, r.State, rawOr(r.Spec, "{}"), rawOr(r.Observed, "{}"),
 		mustJSON(nonNilS(r.Choices)), r.Room.GuaranteedMB, r.Room.SpotMB, r.Room.Running, r.Hold, since,
 		r.Unusable, r.Pending, r.Tier, ts(t.now), ts(t.now))
 	if err != nil {
@@ -444,6 +469,9 @@ type Change struct {
 	Hold *string
 	// Tier: the tier the request that makes this change was admitted under.
 	Tier string
+	// Name, Description: what its owner calls it now ("" unnames it).
+	Name        *string
+	Description *string
 	// IfState: apply only while the resource is still in this state
 	// (ErrMoved otherwise).
 	IfState string
@@ -498,6 +526,14 @@ func (t *Tx) update(id string, c Change) error {
 		sets = append(sets, "tier = ?")
 		args = append(args, c.Tier)
 	}
+	if c.Name != nil {
+		sets = append(sets, "name = ?")
+		args = append(args, *c.Name)
+	}
+	if c.Description != nil {
+		sets = append(sets, "description = ?")
+		args = append(args, *c.Description)
+	}
 	if c.Hold != nil {
 		var since any
 		if *c.Hold != "" {
@@ -536,7 +572,7 @@ func (s *Store) Resource(ctx context.Context, id string) (*Resource, error) {
 	return getResource(ctx, s.db, id)
 }
 
-const resourceCols = `seq, id, type, plugin, owner, zone, state, spec, observed, choices, drift,
+const resourceCols = `seq, id, type, name, description, plugin, owner, zone, state, spec, observed, choices, drift,
 	room_guaranteed, room_spot, running, hold, hold_since, unusable, pending, tier, created_at, updated_at, deleted_at`
 
 func scanResource(sc interface{ Scan(...any) error }) (*Resource, int64, error) {
@@ -544,7 +580,7 @@ func scanResource(sc interface{ Scan(...any) error }) (*Resource, int64, error) 
 	var seq int64
 	var spec, observed, choices, created, updated string
 	var deleted, since sql.NullString
-	if err := sc.Scan(&seq, &r.ID, &r.Type, &r.Plugin, &r.Owner, &r.Zone, &r.State, &spec, &observed, &choices,
+	if err := sc.Scan(&seq, &r.ID, &r.Type, &r.Name, &r.Description, &r.Plugin, &r.Owner, &r.Zone, &r.State, &spec, &observed, &choices,
 		&r.Drift, &r.Room.GuaranteedMB, &r.Room.SpotMB, &r.Room.Running, &r.Hold, &since, &r.Unusable, &r.Pending, &r.Tier,
 		&created, &updated, &deleted); err != nil {
 		return nil, 0, err
@@ -627,6 +663,7 @@ type Filter struct {
 	// — and with everyone ("*"), always.
 	SharedTo []string
 	Type     string   // "" = every type
+	Name     string   // "" = whatever it is called
 	Zone     string   // "" = every zone
 	States   []string // empty = the live states
 	Tags     map[string]string
@@ -657,6 +694,9 @@ func (s *Store) Resources(ctx context.Context, f Filter) (rs []*Resource, next i
 	}
 	if f.Zone != "" {
 		add("zone = ?", f.Zone)
+	}
+	if f.Name != "" {
+		add("name = ?", f.Name)
 	}
 	states := f.States
 	if len(states) == 0 {
@@ -698,6 +738,88 @@ func (s *Store) Resources(ctx context.Context, f Filter) (rs []*Resource, next i
 		rs, next = rs[:limit], seqs[limit-1]
 	}
 	return rs, next, fill(ctx, s.db, rs)
+}
+
+// Named finds the live resource of a type an owner calls by this name: its
+// id, or "" when they call none so.
+func (t *Tx) Named(owner, typ, name string) (string, error) {
+	return named(t.ctx, t.q, owner, typ, name)
+}
+
+// Named finds the live resource of a type an owner calls by this name.
+func (s *Store) Named(ctx context.Context, owner, typ, name string) (string, error) {
+	return named(ctx, s.db, owner, typ, name)
+}
+
+func named(ctx context.Context, q querier, owner, typ, name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
+	args := []any{owner, typ, name}
+	for _, st := range Live {
+		args = append(args, st)
+	}
+	var id string
+	err := q.QueryRowContext(ctx, `SELECT id FROM resources WHERE owner = ? AND type = ? AND name = ?
+		AND state IN (`+strings.TrimSuffix(strings.Repeat("?, ", len(Live)), ", ")+`)`, args...).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// NamesOf reads what resources are called, by id; one unnamed, or unknown,
+// is absent.
+func (s *Store) NamesOf(ctx context.Context, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name FROM resources WHERE name != '' AND id IN (`+
+		strings.TrimSuffix(strings.Repeat("?, ", len(ids)), ", ")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
+
+// ---- Subjects ---------------------------------------------------------------
+
+// SeeSubject remembers the name a subject signed in under.
+func (s *Store) SeeSubject(ctx context.Context, subject, name string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO subjects (subject, name, seen_at) VALUES (?, ?, ?)
+		ON CONFLICT (subject) DO UPDATE SET name = excluded.name, seen_at = excluded.seen_at`, subject, name, ts(s.Now()))
+	return err
+}
+
+// Subjects reads every subject's name.
+func (s *Store) Subjects(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT subject, name FROM subjects`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var sub, name string
+		if err := rows.Scan(&sub, &name); err != nil {
+			return nil, err
+		}
+		out[sub] = name
+	}
+	return out, rows.Err()
 }
 
 // Usage sums what an owner's live resources hold, per dimension.

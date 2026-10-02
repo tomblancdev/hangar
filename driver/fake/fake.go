@@ -272,6 +272,7 @@ func (e *Engine) CreateGuest(_ context.Context, s driver.GuestSpec) (driver.Gues
 	}
 	g := &driver.Guest{
 		ID: s.ID, EngineRef: fmt.Sprintf("fake-%d", e.state.Seq), Kind: s.Kind, Name: name, Node: "fake",
+		Label: s.Label,
 		Cores: s.Cores, MemoryMB: s.MemoryMB, DiskGB: s.DiskGB, Running: !s.Stopped, Tags: maps.Clone(s.Tags),
 		Holds: sortedHolds(s.Holds), CPULimit: s.CPULimit,
 	}
@@ -406,6 +407,20 @@ func (e *Engine) SetCPULimit(_ context.Context, id string, cores int) (driver.Gu
 		return driver.Guest{}, fmt.Errorf("%w: this zone caps no CPU", driver.ErrRefused)
 	}
 	g.CPULimit = cores
+	return e.clone(g), e.save()
+}
+
+func (e *Engine) Relabel(_ context.Context, id, label string) (driver.Guest, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.fail(); err != nil {
+		return driver.Guest{}, err
+	}
+	g, ok := e.state.Guests[id]
+	if !ok {
+		return driver.Guest{}, driver.ErrNotFound
+	}
+	g.Label = label
 	return e.clone(g), e.save()
 }
 

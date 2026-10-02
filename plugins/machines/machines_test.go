@@ -185,10 +185,12 @@ func TestKeyPairs(t *testing.T) {
 func TestCreateHandsTheEngineItsMakings(t *testing.T) {
 	p := configured(t, "strict", "")
 	kp := &pluginpb.Resource{Id: "kp-0000000000000000a", Type: "keypair", Spec: []byte(`{"public_key":"ssh-ed25519 AAAA k"}`)} // as the registry holds it
-	_, s := plan(t, p, `{"image":"debian-13","name":"dev","user_data":"#cloud-config\n","class":"guaranteed"}`)
+	_, s := plan(t, p, `{"image":"debian-13","user_data":"#cloud-config\n","class":"guaranteed"}`)
 	resp, err := p.Create(context.Background(), &pluginpb.CreateRequest{
-		Resource: &pluginpb.Resource{Id: "m-0000000000000000b", Type: "machine", Zone: "z", Spec: mustJSON(s)},
-		Refs:     []*pluginpb.Resource{kp},
+		// what its owner calls it is the core's, and what it is born as
+		Resource: &pluginpb.Resource{Id: "m-0000000000000000b", Type: "machine", Zone: "z", Spec: mustJSON(s),
+			Name: "dev", OwnerName: "alice", Description: "the build box"},
+		Refs: []*pluginpb.Resource{kp},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -202,6 +204,98 @@ func TestCreateHandsTheEngineItsMakings(t *testing.T) {
 	if got.Image != "debian-13" || len(got.SSHKeys) != 1 || got.SSHKeys[0] != "ssh-ed25519 AAAA k" ||
 		string(got.UserData) != "#cloud-config\n" || got.Tags["class"] != "guaranteed" || got.DiskGB != 8 {
 		t.Fatalf("the engine got %+v", got)
+	}
+	// and the line a person reads on the engine's own screen
+	if got.Name != "dev" || got.Label != "dev · machine of alice — the build box" {
+		t.Fatalf("the engine got the name %q and the label %q", got.Name, got.Label)
+	}
+}
+
+// A machine's sentence, as its type says it: what it is, and — while it runs
+// and its engine reads one — where it answers.
+func TestAMachinesSentence(t *testing.T) {
+	var doc struct {
+		Summary []string                        `json:"x-hangar-summary"`
+		Status  struct{ Field, On, Off string } `json:"x-hangar-status"`
+	}
+	if err := json.Unmarshal([]byte(machineSchema), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(doc.Summary, "{addresses}") || doc.Summary[0] != "{kind}" || doc.Status.Field != "running" || doc.Status.On != "running" || doc.Status.Off != "stopped" {
+		t.Fatalf("%+v", doc)
+	}
+	// every hole is a field the spec or what is observed carries
+	known := map[string]bool{}
+	for _, v := range []any{Spec{}, Observed{}} {
+		b, _ := json.Marshal(v)
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		for k := range m {
+			known[k] = true
+		}
+	}
+	for _, f := range []string{"floor_gb", "image", "image_id", "addresses"} { // left out of an empty one's JSON
+		known[f] = true
+	}
+	for _, part := range doc.Summary {
+		for _, hole := range strings.Split(part, "{")[1:] {
+			name, _, _ := strings.Cut(hole, "}")
+			name, _, _ = strings.Cut(name, "?")
+			name, _, _ = strings.Cut(name, "=")
+			for _, f := range strings.Split(name, "|") {
+				if !known[f] {
+					t.Errorf("the sentence names %q, which a machine does not carry", f)
+				}
+			}
+		}
+	}
+}
+
+// What a machine is called is kept true on its engine: a rename reaches the
+// guest's label at the next look, and nothing else of it moves.
+func TestARenameReachesTheEngine(t *testing.T) {
+	p := configured(t, "strict", "")
+	_, s := plan(t, p, `{"image":"debian-13","class":"guaranteed"}`)
+	r := &pluginpb.Resource{Id: "m-0000000000000000c", Type: "machine", Zone: "z", Spec: mustJSON(s), Name: "dev", OwnerName: "alice"}
+	created, err := p.Create(context.Background(), &pluginpb.CreateRequest{Resource: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Observed = created.GetObserved()
+	look := func() *pluginpb.ReconcileResponse {
+		t.Helper()
+		resp, err := p.Reconcile(context.Background(), &pluginpb.ReconcileRequest{Resource: r})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Observed = resp.GetObserved()
+		return resp
+	}
+	label := func() string {
+		t.Helper()
+		g, err := p.Driver("z").(driver.Guests).Guest(context.Background(), r.GetId())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g.Label
+	}
+	if resp := look(); resp.GetDrift() != pluginpb.Drift_DRIFT_IN_SYNC || label() != "dev · machine of alice" {
+		t.Fatalf("born named: %v %q", resp.GetDrift(), label())
+	}
+	r.Name, r.Description = "build", "the box that builds"
+	if resp := look(); resp.GetDrift() != pluginpb.Drift_DRIFT_REPAIRED || !strings.Contains(resp.GetDetail(), "name") {
+		t.Fatalf("renamed: %v %q", resp.GetDrift(), resp.GetDetail())
+	}
+	if got := label(); got != "build · machine of alice — the box that builds" {
+		t.Fatalf("the engine says %q", got)
+	}
+	var obs Observed
+	_ = json.Unmarshal(r.GetObserved(), &obs)
+	if obs.Name != "dev" {
+		t.Fatalf("its host name moved with its name: %q", obs.Name)
+	}
+	if resp := look(); resp.GetDrift() != pluginpb.Drift_DRIFT_IN_SYNC {
+		t.Fatalf("a second look: %v %q", resp.GetDrift(), resp.GetDetail())
 	}
 }
 

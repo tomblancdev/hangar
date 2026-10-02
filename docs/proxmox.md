@@ -82,6 +82,31 @@ set a container's feature flags other than `nesting`; pass a device through.
   (`GuestHelpers.pm`, `assert_tag_permissions`), which is not in the pool
   until the guest exists — so the driver creates, then tags, and a create
   cut in between is found again by its description.
+- **What a guest is called is in its notes**, for whoever opens it on
+  Proxmox's own screen — one line under the first, written by the machines'
+  driver from what the brain calls the machine, its owner, and the owner's
+  line about it; and under each volume's line, what the volume is called
+  (the volumes' driver's):
+
+  ```text
+  made by hangar: m-0123456789abcdef0
+  hangar name m-0123456789abcdef0 dev · machine of alice — the build box
+  hangar volume vol-0123456789abcdef0 mp0 tank:subvol-11010-disk-1
+  hangar name vol-0123456789abcdef0 home
+  ```
+
+  A name line is **for people: nothing is ever found by it** — a guest by
+  its tag (or its first line), a volume by its own line —, which is why it
+  is a line of its own, and never a word more on a line the driver reads:
+  an older driver reads past it. It follows a rename at the brain's next
+  look (`PATCH /v1/resources/{id}` asks for one at once), goes with a volume
+  that moves or parks, and leaves with one that is deleted; what an
+  operator wrote there by hand stays where it is. The notes have **two
+  writers** — two processes —, so each writes holding the config's `digest`:
+  a write made on notes that changed since they were read is refused by
+  Proxmox itself (« detected modified configuration »), and tried again at
+  the next look. A machine's **host name** is what it was called at its
+  birth, and is not renamed with it.
 - **Other tags are `key.value`**, the contract with the node's hook: the
   machine's `class` (`spot`, `guaranteed`, `guaranteed+spot`), the memory
   `admitted` (MiB), its `floor` (MiB) and its cap `beside` (cores) where it

@@ -110,5 +110,6 @@ func (c *Core) spent(ctx context.Context, r *registry.Resource) []string {
 func (c *Core) proto(ctx context.Context, r *registry.Resource) *pluginpb.Resource {
 	p := toProto(r)
 	p.Spent = c.spent(ctx, r)
+	p.OwnerName = c.nameOf(ctx, r.Owner)
 	return p
 }

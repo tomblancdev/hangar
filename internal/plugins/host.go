@@ -45,7 +45,7 @@ import (
 // reserved: prefixes and action names the core keeps for itself.
 var (
 	reservedPrefixes = []string{ids.Operation, ids.Token}
-	reservedActions  = []string{"create", "delete"}
+	reservedActions  = []string{"create", "delete", "rename", "describe"}
 )
 
 // Host runs the plugins.
@@ -106,6 +106,10 @@ type Type struct {
 	Share string
 
 	schema *jsonschema.Schema
+	// how one of its resources reads: its schema's x-hangar-summary and
+	// x-hangar-status (summary.go)
+	summary *Summary
+	status  *StatusRule
 }
 
 // Ref is a field of a spec, or of an action's params, that names other
@@ -541,6 +545,8 @@ func compileType(plugin string, d *pluginpb.DescribeResponse, rt *pluginpb.Resou
 	} else if t.Refs, err = refsOf(rt.GetSchema()); err != nil {
 		errs = append(errs, fmt.Errorf("schema: %w", err))
 	} else if t.Share, err = shareOf(rt.GetSchema()); err != nil {
+		errs = append(errs, fmt.Errorf("schema: %w", err))
+	} else if t.summary, t.status, err = readOf(rt.GetSchema()); err != nil {
 		errs = append(errs, fmt.Errorf("schema: %w", err))
 	}
 	t.schema = s

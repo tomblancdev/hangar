@@ -99,6 +99,7 @@ type client struct {
 	env   *Env
 	base  string
 	token func() (string, error)
+	who   *whoamiView // the caller, once asked (me)
 }
 
 // connect finds the brain and how to sign in to it: $HANGAR_URL, else the
@@ -254,31 +255,43 @@ func clientToken() string {
 // ---- What the API returns ---------------------------------------------------
 
 type resource struct {
-	ID         string            `json:"id"`
-	Type       string            `json:"type"`
-	Owner      string            `json:"owner"`
-	Zone       string            `json:"zone"`
-	State      string            `json:"state"`
-	Spec       json.RawMessage   `json:"spec"`
-	Observed   json.RawMessage   `json:"observed"`
-	Tags       map[string]string `json:"tags"`
-	SharedWith []string          `json:"shared_with"`
-	Unusable   string            `json:"unusable"`
-	Pending    bool              `json:"pending"`
-	Drift      string            `json:"drift"`
-	CreatedAt  time.Time         `json:"created_at"`
+	ID          string            `json:"id"`
+	Type        string            `json:"type"`
+	Name        string            `json:"name,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Owner       string            `json:"owner"`
+	OwnerName   string            `json:"owner_name,omitempty"`
+	Zone        string            `json:"zone"`
+	State       string            `json:"state"`
+	Status      string            `json:"status,omitempty"`
+	Summary     string            `json:"summary,omitempty"`
+	Names       map[string]string `json:"names,omitempty"`
+	Spec        json.RawMessage   `json:"spec"`
+	Observed    json.RawMessage   `json:"observed"`
+	Tags        map[string]string `json:"tags"`
+	SharedWith  []string          `json:"shared_with"`
+	Unusable    string            `json:"unusable"`
+	Pending     bool              `json:"pending"`
+	Drift       string            `json:"drift"`
+	Hold        string            `json:"hold,omitempty"`
+	Room        struct {
+		GuaranteedMB int64 `json:"guaranteed_mb"`
+		SpotMB       int64 `json:"spot_mb"`
+	} `json:"room"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type operation struct {
-	ID         string          `json:"id"`
-	ResourceID string          `json:"resource_id"`
-	Kind       string          `json:"kind"`
-	Action     string          `json:"action"`
-	State      string          `json:"state"`
-	Error      string          `json:"error"`
-	Result     json.RawMessage `json:"result"`
-	CreatedAt  time.Time       `json:"created_at"`
-	FinishedAt *time.Time      `json:"finished_at"`
+	ID           string          `json:"id"`
+	ResourceID   string          `json:"resource_id"`
+	ResourceName string          `json:"resource_name,omitempty"`
+	Kind         string          `json:"kind"`
+	Action       string          `json:"action"`
+	State        string          `json:"state"`
+	Error        string          `json:"error"`
+	Result       json.RawMessage `json:"result"`
+	CreatedAt    time.Time       `json:"created_at"`
+	FinishedAt   *time.Time      `json:"finished_at"`
 }
 
 type accepted struct {

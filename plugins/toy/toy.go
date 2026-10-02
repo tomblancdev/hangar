@@ -52,6 +52,8 @@ const boxSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
+  "x-hangar-summary": ["{kind}", "{cores} cores", "{memory_gb} GB"],
+  "x-hangar-status": { "field": "running", "on": "running", "off": "stopped" },
   "properties": {
     "kind":      { "type": "string", "enum": ["container", "vm"], "default": "container",
                    "description": "A container shares the host's kernel; a VM has its own." },
@@ -246,7 +248,8 @@ func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*plug
 	for k, v := range r.GetTags() {
 		tags[k] = v
 	}
-	guest, err := g.CreateGuest(ctx, driver.GuestSpec{ID: r.GetId(), Kind: s.Kind, Cores: s.Cores, MemoryMB: s.MemoryGB * 1024, Tags: tags})
+	guest, err := g.CreateGuest(ctx, driver.GuestSpec{ID: r.GetId(), Kind: s.Kind, Name: r.GetName(), Label: sdk.Label(r, "box"),
+		Cores: s.Cores, MemoryMB: s.MemoryGB * 1024, Tags: tags})
 	if err != nil {
 		return nil, engineErr(err)
 	}
@@ -316,6 +319,14 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 		return nil, engineErr(err)
 	}
 	var fixed []string
+	// what it is called, where the engine shows it: for people, never what it
+	// is found by — one that cannot be written now waits for the next look
+	if label := sdk.Label(r, "box"); guest.Label != label {
+		if named, lerr := g.Relabel(ctx, r.GetId(), label); lerr == nil {
+			guest = named
+			fixed = append(fixed, "name")
+		}
+	}
 	if guest.Cores != s.Cores || guest.MemoryMB != s.MemoryGB*1024 {
 		if guest, err = g.ResizeGuest(ctx, r.GetId(), s.Cores, s.MemoryGB*1024); err != nil {
 			return &pluginpb.ReconcileResponse{Drift: pluginpb.Drift_DRIFT_DRIFTED, Observed: sdk.JSON(observe(guest)),

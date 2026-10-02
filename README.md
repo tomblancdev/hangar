@@ -37,7 +37,11 @@ hypervisor (it drives yours) and not an EC2 clone.
 > line**, drawn from what the brain serves: signed in by the device flow at
 > your identity provider, every type a command, and `hangar apply` making a
 > spec file true — created, changed by the steps each plugin names, deleted
-> after asking ([docs/cli.md](docs/cli.md)). **And power**: a machine that says
+> after asking ([docs/cli.md](docs/cli.md)). **And names**: every resource
+> called by what its owner calls it, wherever its id goes (`hangar machine
+> start dev`), and read as a person reads it — `dev  stopped  container · 12
+> cores · 40 GB (12 guaranteed) · debian-13` — in the command line, in the
+> console, and in its guest's notes on the engine. **And power**: a machine that says
 > `idle_after: 30m` is stopped once its engine saw it quiet that long, the
 > hours machines run are counted against a tier's month — once per core —
 > and when the month is spent what still runs is shut down; `keep_awake`
@@ -102,6 +106,8 @@ resources:
   one: {type: box, spec: {cores: 1}}
 YAML
 ./hangar apply boxes.yaml       # again: nothing to do; cores: 2, then again: a resize
+./hangar box stop one           # a resource by what it is called (the entry's key), or by its id
+./hangar list                   # everything you hold, on one screen
 ```
 
 With an identity provider, `hangar login https://…` signs you in by the

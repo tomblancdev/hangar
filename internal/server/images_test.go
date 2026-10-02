@@ -148,7 +148,7 @@ func TestAnImagesLife(t *testing.T) {
 		403, "images.source")
 	refused(s.do("POST", "/v1/resources", root, map[string]any{"type": "image", "zone": "t", "spec": map[string]any{"recipe": "nope"}}),
 		422, `no recipe "nope" here (there are: broken, debian)`)
-	img := s.create(root, map[string]any{"type": "image", "zone": "t", "spec": map[string]any{"recipe": "debian", "name": "debian"}}).str("resource", "id")
+	img := s.create(root, map[string]any{"type": "image", "zone": "t", "name": "debian", "spec": map[string]any{"recipe": "debian"}}).str("resource", "id")
 	r := get(root, img)
 	if r.str("observed", "state") != "pending" || r.str("room", "spot_mb") != "2048" || r.str("room", "running") != "true" {
 		t.Fatalf("a bake begun is pending and borrows its builder's room: %v", r.body)
@@ -244,6 +244,30 @@ func TestAnImagesLife(t *testing.T) {
 	if n := len(s.do("GET", "/v1/resources?type=image", carol, nil).body["resources"].([]any)); n != 1 {
 		t.Fatalf("carol lists what is everyone's alone: %d", n)
 	}
+	// what a resource names is called by name for its owner alone: bob, who
+	// only shares the image, reads the id of the machine it was saved from
+	for id, name := range map[string]string{am: "forge", mine: "base"} {
+		if r := s.do("PATCH", "/v1/resources/"+id, alice, map[string]any{"name": name}); r.code != 200 {
+			t.Fatalf("%d %v", r.code, r.body)
+		}
+	}
+	if r = get(alice, mine); r.str("summary") != "vm · 6 GB · saved from forge · shared with family" || r.str("names", am) != "forge" || r.str("status") != "available" {
+		t.Fatalf("alice reads her image: %q %v", r.str("summary"), r.body["names"])
+	}
+	if r = get(bob, mine); r.str("summary") != "vm · 6 GB · saved from "+am+" · shared with family" || r.body["names"] != nil || r.str("name") != "base" {
+		t.Fatalf("bob reads alice's image: %q %v", r.str("summary"), r.body["names"])
+	}
+	// a name is its owner's word for their own: what is shared is named by
+	// its id — anyone may call theirs base, and a request by name would be
+	// handed a look-alike. Alice's own machine is born from her base
+	refused(s.do("POST", "/v1/resources", bob, map[string]any{"type": "machine", "zone": "t", "spec": map[string]any{"image_id": "base"}}),
+		422, "you have no image named base (one shared with you is named by its id)")
+	own := s.do("POST", "/v1/resources", alice, map[string]any{"type": "machine", "zone": "t", "spec": map[string]any{"image_id": "base"}})
+	if own.code != 202 || own.str("resource", "spec", "image_id") != mine {
+		t.Fatalf("alice's machine from her base: %d %v", own.code, own.body)
+	}
+	opEnds(alice, own, "succeeded")
+	opEnds(alice, s.do("DELETE", "/v1/resources/"+own.str("resource", "id"), alice, nil), "succeeded")
 	bm2 := machine(bob, map[string]any{"image_id": mine})
 	if got := bornFrom(t, s, bm2); got != "fake-img-"+mine {
 		t.Fatalf("bob's second machine is born from alice's image: %q", got)

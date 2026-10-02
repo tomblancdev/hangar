@@ -65,6 +65,8 @@ type Core struct {
 
 	room roomState // the zones' reservations: what is in force, and why
 
+	people people // the name each subject last signed in under (names.go)
+
 	// Now is the schedules' clock (tests move it); ScheduleEvery, how often
 	// they are looked at.
 	Now           func() time.Time
@@ -246,7 +248,11 @@ func shareProblem(who *Caller, groups []string) *Problem {
 
 // CreateInput is a create request.
 type CreateInput struct {
-	Zone        string            `json:"zone"`
+	Zone string `json:"zone"`
+	// Name: what its owner calls it — one thing among their live resources
+	// of the type; Description: a line of theirs about it. Both optional.
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
 	Spec        json.RawMessage   `json:"spec"`
 	Tags        map[string]string `json:"tags"`
 	ClientToken string            `json:"client_token"`
@@ -276,11 +282,17 @@ func (c *Core) create(ctx context.Context, who *Caller, typeName string, in Crea
 	if p := checkTags(in.Tags); p != nil {
 		return nil, nil, false, c.refused(ctx, p)
 	}
+	if p := checkName(in.Name); p != nil {
+		return nil, nil, false, c.refused(ctx, p)
+	}
+	if p := checkDescription(in.Description); p != nil {
+		return nil, nil, false, c.refused(ctx, p)
+	}
 	if len(in.Spec) == 0 {
 		in.Spec = json.RawMessage("{}")
 	}
 	in.Tags = withTags(in.Tags, coreTags)
-	hash := requestHash("create", typeName, in.Zone, in.Spec, in.Tags)
+	hash := requestHash("create", typeName, in.Zone, in.Spec, in.Tags, in.Name, in.Description)
 	if in.ClientToken != "" {
 		if op, r, p := c.replay(ctx, who, in.ClientToken, hash); p != nil || op != nil {
 			return op, r, op != nil, errOf(p)
@@ -320,7 +332,7 @@ func (c *Core) create(ctx context.Context, who *Caller, typeName string, in Crea
 	}
 
 	r = &registry.Resource{
-		ID: ids.New(t.Prefix), Type: t.Name, Plugin: t.Plugin, Owner: who.Subject, Zone: in.Zone,
+		ID: ids.New(t.Prefix), Type: t.Name, Name: in.Name, Description: in.Description, Plugin: t.Plugin, Owner: who.Subject, Zone: in.Zone,
 		State: registry.Creating, Spec: plan.GetSpec(), Choices: plan.GetChoices(), Usage: plan.GetUsage(), Tags: in.Tags,
 		Room: roomOf(plan.GetRoom()), Tier: who.Tier.Name,
 	}
@@ -330,7 +342,7 @@ func (c *Core) create(ctx context.Context, who *Caller, typeName string, in Crea
 	}
 	var refusals []limits.Refusal
 	var noRoom *room.Refusal
-	var moved string
+	var moved, taken string
 	c.admit.Lock()
 	err = c.store.Tx(ctx, func(tx *registry.Tx) error {
 		if in.ClientToken != "" {
@@ -340,6 +352,14 @@ func (c *Core) create(ctx context.Context, who *Caller, typeName string, in Crea
 				}
 				return err
 			}
+		}
+		// a name is one thing among its owner's live resources of the type
+		var err error
+		if taken, err = tx.Named(who.Subject, t.Name, in.Name); err != nil || taken != "" {
+			if err == nil {
+				err = errNameTaken
+			}
+			return err
 		}
 		used, err := tx.Usage(who.Subject)
 		if err != nil {
@@ -388,6 +408,8 @@ func (c *Core) create(ctx context.Context, who *Caller, typeName string, in Crea
 		return nil, nil, false, c.refused(ctx, limitProblem(refusals))
 	case errors.Is(err, errNoRoom):
 		return nil, nil, false, c.refused(ctx, roomProblem(noRoom))
+	case errors.Is(err, errNameTaken):
+		return nil, nil, false, c.refused(ctx, nameTaken(t.Name, in.Name, taken))
 	case errors.Is(err, errRefMoved):
 		return nil, nil, false, c.refused(ctx, problem(409, KindBusy, "%s changed while you asked: try again", moved))
 	case errors.Is(err, errReplayRace):
@@ -830,6 +852,8 @@ func (c *Core) Get(ctx context.Context, who *Caller, id string) (*registry.Resou
 func (c *Core) List(ctx context.Context, who *Caller, f registry.Filter) ([]*registry.Resource, int64, error) {
 	if !who.Tier.Operator {
 		f.Owner, f.SharedTo = who.Subject, append([]string{}, who.Groups...)
+	} else if f.Owner != "" {
+		f.Owner = c.subjectOf(ctx, f.Owner) // an operator names a person by subject, or by name
 	}
 	return c.store.Resources(ctx, f)
 }
@@ -1541,7 +1565,7 @@ func (c *Core) loadRefs(ctx context.Context, refs []plugins.Ref, doc json.RawMes
 
 func toProto(r *registry.Resource) *pluginpb.Resource {
 	return &pluginpb.Resource{Id: r.ID, Type: r.Type, Zone: r.Zone, Owner: r.Owner, Spec: r.Spec, Observed: r.Observed, Tags: r.Tags,
-		Hold: r.Hold, Room: &pluginpb.Room{GuaranteedMb: r.Room.GuaranteedMB, SpotMb: r.Room.SpotMB, Running: r.Room.Running}}
+		Name: r.Name, Description: r.Description, Hold: r.Hold, Room: &pluginpb.Room{GuaranteedMb: r.Room.GuaranteedMB, SpotMb: r.Room.SpotMB, Running: r.Room.Running}}
 }
 
 // ---- Reconcile ----------------------------------------------------------

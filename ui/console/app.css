@@ -162,6 +162,17 @@ a.row:hover { background: rgba(200, 255, 0, .045); color: var(--chalk); box-shad
 .row-what { font-size: 13px; overflow-wrap: anywhere; }
 .row-when { justify-self: end; text-align: right; }
 .row.dead .name { color: var(--ash); text-decoration: line-through; }
+/* what its owner says of it, under what it is */
+.said-of { font-style: italic; overflow-wrap: anywhere; }
+p.said-of { margin-top: 10px; max-width: 72ch; color: var(--chalk); }
+.what-it-is { overflow-wrap: anywhere; }
+/* everything held: a set's line, then each holder with what hangs on it —
+   a branch drawn in the margin, as a terminal draws a tree */
+.row.set-head { display: block; padding-top: 7px; padding-bottom: 7px; background: var(--steel); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--ash); }
+.row.hangs { position: relative; padding-left: 40px; }
+.row.hangs::before { content: ""; position: absolute; left: 22px; top: 0; bottom: 0; width: 1px; background: var(--rebar); }
+.row.hangs.last::before { bottom: 50%; }
+.row.hangs::after { content: ""; position: absolute; left: 22px; top: 50%; width: 10px; height: 1px; background: var(--rebar); }
 /* a resource's own state is stamped: stencil, boxed, a little askew */
 .stamp { display: inline-block; font-family: var(--display); font-weight: 900; font-size: 24px; line-height: 1.1; letter-spacing: .08em; text-transform: uppercase; padding: 3px 12px; border: 3px solid currentColor; transform: rotate(calc(-3deg * var(--tilt))); white-space: nowrap; }
 .stamp.on { color: var(--toxic); }

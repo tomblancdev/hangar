@@ -54,9 +54,9 @@ func show(w io.Writer, format string, v any) error {
 }
 
 func outputOpt(p *string) *opt {
-	return &opt{names: []string{"output", "o"}, value: true, arg: "FORMAT", help: "yaml (default), json, or id", set: func(v string) error {
-		if !slices.Contains([]string{"yaml", "json", "id", "table"}, v) {
-			return fmt.Errorf("yaml, json or id, not %q", v)
+	return &opt{names: []string{"output", "o"}, value: true, arg: "FORMAT", help: "yaml, json, or id — the whole record, for a script; wide: a list with its owner, set, place and description", set: func(v string) error {
+		if !slices.Contains([]string{"yaml", "json", "id", "table", "wide", "card"}, v) {
+			return fmt.Errorf("yaml, json, id or wide, not %q", v)
 		}
 		*p = v
 		return nil
@@ -293,7 +293,7 @@ func operations(env *Env, args []string) error {
 		if op.Action != "" {
 			what = op.Action
 		}
-		rows = append(rows, []string{op.ID, op.ResourceID, what, op.State, op.CreatedAt.Local().Format(time.DateTime), op.Error})
+		rows = append(rows, []string{op.ID, orID(op.ResourceName, op.ResourceID), what, op.State, op.CreatedAt.Local().Format(time.DateTime), op.Error})
 	}
 	return table(env.Stdout, "OPERATION\tRESOURCE\tWHAT\tSTATE\tASKED\tERROR", rows)
 }
@@ -333,7 +333,7 @@ func waitCmd(env *Env, args []string) error {
 // verb is how an action is typed: set_backup → set-backup.
 func verb(action string) string { return strings.ReplaceAll(action, "_", "-") }
 
-var builtinVerbs = []string{"create", "list", "get", "delete"}
+var builtinVerbs = []string{"create", "list", "get", "rename", "describe", "delete"}
 
 func typeCmd(env *Env, name string, args []string) error {
 	c, err := connect(env)
@@ -368,12 +368,16 @@ func typeCmd(env *Env, name string, args []string) error {
 	case "list":
 		return listCmd(env, c, t, rest)
 	case "get":
-		return getCmd(env, c, t, rest)
+		return getCmd(env, c, ts, t, rest)
+	case "rename":
+		return renameCmd(env, c, t, rest)
+	case "describe":
+		return describeCmd(env, c, t, rest)
 	case "delete":
 		return deleteCmd(env, c, t, rest)
 	case "act":
 		if len(rest) < 2 {
-			return usagef("%s act ID ACTION …", t.Name)
+			return usagef("%s act NAME|ID ACTION …", t.Name)
 		}
 		v, rest = rest[1], append([]string{rest[0]}, rest[2:]...)
 	}
@@ -390,11 +394,12 @@ func typeHelp(w io.Writer, t *typeView) {
 		title = t.Name
 	}
 	fmt.Fprintf(w, "hangar %s — %s: %s\n  ids %s-…, from plugin %s, offered in: %s\n\n", t.Name, title, t.Description, t.IDPrefix, t.Plugin, strings.Join(t.Zones, ", "))
-	fmt.Fprintf(w, "  hangar %s create [--zone Z] [FIELDS] [-f spec.yaml]\n", t.Name)
-	fmt.Fprintf(w, "  hangar %s list | get ID | delete ID\n", t.Name)
+	fmt.Fprintf(w, "  hangar %s create [--name NAME] [--description WORDS] [--zone Z] [FIELDS] [-f spec.yaml]\n", t.Name)
+	fmt.Fprintf(w, "  hangar %s list | get NAME | rename NAME NEW | describe NAME WORDS | delete NAME\n", t.Name)
 	for _, a := range t.Actions {
-		fmt.Fprintf(w, "  hangar %s %s ID%s — %s\n", t.Name, verb(a.Name), paramsWords(a.fields), a.Description)
+		fmt.Fprintf(w, "  hangar %s %s NAME%s — %s\n", t.Name, verb(a.Name), paramsWords(a.fields), a.Description)
 	}
+	fmt.Fprintf(w, "\nNAME is what you call it, or its id (%s-…): a name goes wherever an id goes, in a field too.\n", t.IDPrefix)
 	fmt.Fprintf(w, "\nFields (--help on a command lists its flags):\n")
 	for _, f := range t.fields {
 		fmt.Fprintf(w, "  %-14s %s\n", f.Name, f.help())
@@ -463,12 +468,14 @@ func tagsOf(list []string) (map[string]string, error) {
 
 func createCmd(env *Env, c *client, t *typeView, args []string) error {
 	spec := map[string]any{}
-	var zone, file, format string
+	var zone, file, format, name, description string
 	var tags []string
 	noWait := false
 	format = "yaml"
 	fieldOpts := flags(t.fields, spec)
 	own := []*opt{
+		strOpt(&name, "NAME", "what you call it (a-z, 0-9, -): one thing among yours of this type, usable wherever its id is", "name"),
+		strOpt(&description, "WORDS", "one line about it", "description"),
 		strOpt(&zone, "ZONE", "where (default: $HANGAR_ZONE, or the only zone it is offered in)", "zone"),
 		listOpt(&tags, "KEY=VALUE", "a tag (repeatable)", "tag"),
 		strOpt(&file, "FILE", "the spec as YAML or JSON (- = stdin); flags are written over it", "from-file", "f"),
@@ -512,8 +519,15 @@ func createCmd(env *Env, c *client, t *typeView, args []string) error {
 	if err != nil {
 		return err
 	}
+	body := map[string]any{"type": t.Name, "zone": zone, "spec": spec, "tags": tagMap, "client_token": clientToken()}
+	if name != "" {
+		body["name"] = name
+	}
+	if description != "" {
+		body["description"] = description
+	}
 	var acc accepted
-	if err := c.do("POST", "/v1/resources", map[string]any{"type": t.Name, "zone": zone, "spec": spec, "tags": tagMap, "client_token": clientToken()}, &acc); err != nil {
+	if err := c.do("POST", "/v1/resources", body, &acc); err != nil {
 		return err
 	}
 	return finish(env, c, t, &acc, noWait, format, "created")
@@ -546,11 +560,11 @@ func finish(env *Env, c *client, t *typeView, acc *accepted, noWait bool, format
 	case "json":
 		return show(env.Stdout, "json", map[string]any{"resource": r, "result": op.Result})
 	default:
-		note := r.State
-		if r.Unusable != "" {
-			note += ", " + r.Unusable
+		what := id
+		if r.Name != "" {
+			what = r.Name + " " + id
 		}
-		fmt.Fprintf(env.Stderr, "%s %s (%s, %s)\n", done, id, note, env.Now().Sub(start).Round(time.Second))
+		fmt.Fprintf(env.Stderr, "%s %s (%s, %s)\n", done, what, wears(&r), env.Now().Sub(start).Round(time.Second))
 		if len(op.Result) > 0 && string(op.Result) != "null" {
 			var res any
 			_ = json.Unmarshal(op.Result, &res)
@@ -567,7 +581,7 @@ func listCmd(env *Env, c *client, t *typeView, args []string) error {
 		strOpt(&zone, "ZONE", "in one zone", "zone"),
 		listOpt(&tags, "KEY=VALUE", "with this tag (repeatable: every one)", "tag"),
 		listOpt(&states, "STATE", "in this state (repeatable; default: every live one)", "state"),
-		strOpt(&owner, "SUBJECT", "someone's (operators)", "owner"),
+		strOpt(&owner, "WHO", "someone's, by the name they sign in under or their subject (operators)", "owner"),
 		outputOpt(&format),
 	}
 	pos, err := parse(args, opts)
@@ -603,15 +617,7 @@ func listCmd(env *Env, c *client, t *typeView, args []string) error {
 		}
 		return nil
 	}
-	var rows [][]string
-	for _, r := range rs {
-		state := r.State
-		if r.Unusable != "" {
-			state += " (" + r.Unusable + ")"
-		}
-		rows = append(rows, []string{r.ID, state, r.Zone, r.Owner, summary(t, r.Spec)})
-	}
-	return table(env.Stdout, "ID\tSTATE\tZONE\tOWNER\tSPEC", rows)
+	return listRows(env, c, t, rs, format == "wide")
 }
 
 // list reads every page of a listing.
@@ -634,43 +640,40 @@ func (c *client) list(q url.Values) ([]resource, error) {
 	}
 }
 
-func oneID(t *typeView, verb string, pos []string) (string, error) {
-	if len(pos) != 1 {
-		return "", usagef("%s %s ID — one id", t.Name, verb)
-	}
-	if !strings.HasPrefix(pos[0], t.IDPrefix+"-") {
-		return "", usagef("%s is not a %s's id (%s-…)", pos[0], t.Name, t.IDPrefix)
-	}
-	return pos[0], nil
-}
-
-func getCmd(env *Env, c *client, t *typeView, args []string) error {
-	format := "yaml"
+func getCmd(env *Env, c *client, ts []*typeView, t *typeView, args []string) error {
+	format := "card"
 	opts := []*opt{outputOpt(&format)}
 	pos, err := parse(args, opts)
 	if errors.Is(err, errHelp) {
-		fmt.Fprintf(env.Stdout, "hangar %s get ID\n\n", t.Name)
+		fmt.Fprintf(env.Stdout, "hangar %s get NAME|ID — one %s, as a person reads it; -o yaml or json: the whole record\n\n", t.Name, t.Name)
 		flagHelp(env.Stdout, opts)
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	id, err := oneID(t, "get", pos)
+	id, err := c.idOf(t, "get", pos)
 	if err != nil {
 		return err
 	}
-	var r json.RawMessage
-	if err := c.do("GET", "/v1/resources/"+id, nil, &r); err != nil {
+	var raw json.RawMessage
+	if err := c.do("GET", "/v1/resources/"+id, nil, &raw); err != nil {
 		return err
 	}
-	if format == "id" {
+	switch format {
+	case "id":
 		fmt.Fprintln(env.Stdout, id)
 		return nil
+	case "yaml", "json":
+		var v any
+		_ = json.Unmarshal(raw, &v)
+		return show(env.Stdout, format, v)
 	}
-	var v any
-	_ = json.Unmarshal(r, &v)
-	return show(env.Stdout, format, v)
+	var r resource
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return err
+	}
+	return card(env, c, ts, t, &r)
 }
 
 func deleteCmd(env *Env, c *client, t *typeView, args []string) error {
@@ -678,14 +681,14 @@ func deleteCmd(env *Env, c *client, t *typeView, args []string) error {
 	opts := []*opt{boolOpt(&noWait, "answer at once, without waiting for it to go", "no-wait")}
 	pos, err := parse(args, opts)
 	if errors.Is(err, errHelp) {
-		fmt.Fprintf(env.Stdout, "hangar %s delete ID\n\n", t.Name)
+		fmt.Fprintf(env.Stdout, "hangar %s delete NAME|ID\n\n", t.Name)
 		flagHelp(env.Stdout, opts)
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	id, err := oneID(t, "delete", pos)
+	id, err := c.idOf(t, "delete", pos)
 	if err != nil {
 		return err
 	}
@@ -714,14 +717,14 @@ func actCmd(env *Env, c *client, t *typeView, a *actionView, args []string) erro
 	}
 	pos, err := parse(args, opts)
 	if errors.Is(err, errHelp) {
-		fmt.Fprintf(env.Stdout, "hangar %s %s ID — %s\n\n", t.Name, verb(a.Name), a.Description)
+		fmt.Fprintf(env.Stdout, "hangar %s %s NAME|ID — %s\n\n", t.Name, verb(a.Name), a.Description)
 		flagHelp(env.Stdout, opts)
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	id, err := oneID(t, verb(a.Name), pos)
+	id, err := c.idOf(t, verb(a.Name), pos)
 	if err != nil {
 		return err
 	}

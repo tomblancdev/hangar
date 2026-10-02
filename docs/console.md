@@ -147,9 +147,16 @@ A field left empty is left out: the brain's default applies. An action's
 form shows what each field is **now**. A refusal lands beside the field its
 violation points at; a limit's or a room's, on a notice, with the numbers.
 
-Two conventions, both optional: a resource is called by its spec's `name`
-when it has one (its id otherwise), and one whose plugin reports a boolean
-`running` is stamped *running* or *stopped* rather than *ready*.
+**What a resource reads as is the brain's**, not the page's: its `name` (its
+id when unnamed), the word it wears and its colour (`status`, `light` —
+running or stopped, attached or parked, pending, failed…), its type's own
+sentence (`summary`), its owner by the name they sign in under, and the
+names of what it names — so a list here and `hangar <type> list` say the same
+words, and a plugin added later reads well in both. Every type's form begins
+with **name** and **description** (the core's own, beside the zone), every
+resource's page has a **rename**, and a name already held is refused beside
+the field, with the id that holds it. **Home** draws everything you hold as
+`hangar list` does: each machine, and under it what hangs on it.
 
 ## Its look
 

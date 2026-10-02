@@ -27,8 +27,25 @@ info:
     (`/v1/zones/{zone}/claim`, `/release`): the zone's borrowed room is then
     held, and each resource brought to what its hold means for it.
 
+    **Names.** Every resource has an id (`m-0123456789abcdef0`) — its
+    identity: never changed, never used again, what the audit and the
+    engine carry — and, when its owner gives one, a `name` and a line of
+    `description`: the brain's own, on every type, never a spec's. A name
+    is one thing among its owner's live resources of one type (a second is
+    refused, 409 `conflict`, with the id that holds it), so it goes where
+    an id goes: `GET /v1/resources?type=machine&name=dev` finds it, and a
+    reference takes it. `PATCH /v1/resources/{id}` renames; the id, and the
+    host name a machine was born with, stay. Each resource is served with
+    what a person reads: `status` (the one word it wears — running,
+    stopped, attached, parked… — and its `light`), `summary` (its type's
+    own sentence: "container · 12 cores · 40 GB (12 guaranteed) ·
+    debian-13"), `owner_name` (the name its owner signs in under) and
+    `names` (what the resources it names are called).
+
     **References and the latest.** A spec's field that names another
-    resource (its schema marks it `x-hangar-ref`) takes an id — or
+    resource (its schema marks it `x-hangar-ref`) takes an id, the name
+    you gave one of your own — never one shared with you: anyone may call
+    theirs anything, so what is shared is named by its id — or
     `@<schedule>`: the newest usable resource that schedule of the
     operator's made which you may name (a machine born from "the latest
     image"). The request keeps the id it stood for: a machine says what it
@@ -270,6 +287,7 @@ paths:
       parameters:
         - { name: type, in: query, schema: { type: string } }
         - { name: zone, in: query, schema: { type: string } }
+        - { name: name, in: query, description: What its owner calls it., schema: { type: string } }
         - name: state
           in: query
           description: Repeatable. Default — the live states (every one but deleted and failed).
@@ -286,7 +304,9 @@ paths:
           explode: true
         - name: owner
           in: query
-          description: Operators only; others always list their own, and what is shared with them.
+          description: |
+            Operators only — a subject, or the name a person signs in under;
+            others always list their own, and what is shared with them.
           schema: { type: string }
         - name: after
           in: query
@@ -338,6 +358,28 @@ paths:
       responses:
         "200":
           description: The resource.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Resource" }
+        default: { $ref: "#/components/responses/Problem" }
+    patch:
+      tags: [resources]
+      summary: Say what a resource is called, and its description.
+      description: |
+        Its owner's (or an operator's). Nothing of the resource moves: its
+        id stays, and so does what a machine was born as on its engine (its
+        host name). A name another live resource of the same type and owner
+        holds is refused (409 `conflict`, with that id). Its plugin writes
+        the new words where the engine shows them (a guest's notes) at its
+        next look. No operation: it is done when it answers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RenameRequest" }
+      responses:
+        "200":
+          description: The resource, renamed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Resource" }
@@ -516,6 +558,13 @@ components:
       description: A short prefix naming the kind, a dash, seventeen hex digits.
       pattern: "^[a-z][a-z0-9]{0,7}-[0-9a-f]{17}$"
       examples: ["box-0123456789abcdef0", "op-0123456789abcdef0"]
+    Name:
+      type: string
+      pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+      description: |
+        What its owner calls it: a-z, 0-9 and "-" (a host's label), never
+        the shape of an id. One thing among their live resources of its
+        type; absent = unnamed.
     ClientToken:
       type: string
       maxLength: 64
@@ -555,7 +604,12 @@ components:
         description: { type: string }
         schema:
           type: object
-          description: The JSON Schema (2020-12) of the type's spec.
+          description: |
+            The JSON Schema (2020-12) of the type's spec. Its root may say
+            how a resource of the type reads: `x-hangar-summary` (the parts
+            of its sentence, with {field} holes) and `x-hangar-status` (the
+            word it wears while a field is set, and otherwise) — the brain
+            fills them in on every resource it serves (`summary`, `status`).
         zones:
           type: array
           items: { type: string }
@@ -654,10 +708,34 @@ components:
       properties:
         id: { $ref: "#/components/schemas/Id" }
         type: { type: string }
+        name: { $ref: "#/components/schemas/Name" }
+        description: { type: string, maxLength: 256, description: Its owner's line about it. }
         plugin: { type: string }
-        owner: { type: string }
+        owner: { type: string, description: The identity provider's subject. }
+        owner_name: { type: string, description: The name its owner last signed in under; absent when never seen. }
         zone: { type: string }
         state: { $ref: "#/components/schemas/ResourceState" }
+        status:
+          type: string
+          description: |
+            The one word it wears: the state while something moves or went
+            wrong (creating, failed, lost…), else its plugin's say on whether
+            it may be named (pending, retired…), else its type's own word
+            (its schema's `x-hangar-status`: running or stopped, attached or
+            parked), else `ready`.
+        light: { type: string, enum: [on, off, busy, bad], description: How its status is lit. }
+        summary:
+          type: string
+          description: |
+            What it is, in its type's own sentence (its schema's
+            `x-hangar-summary`), what it names read by name — "64 GB · on
+            dev at /home · backed up".
+        names:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            What the resources its spec names are called, by id — for its
+            owner and for an operator; someone it is shared with reads ids.
         spec: { type: object, description: Desired — its shape is the type's schema. }
         observed: { type: object, description: As the plugin last reported it. }
         choices: { type: object, additionalProperties: { type: string } }
@@ -730,6 +808,8 @@ components:
         spec:
           type: object
           description: Checked against the type's schema (`GET /v1/types`).
+        name: { $ref: "#/components/schemas/Name" }
+        description: { type: string, maxLength: 256, description: One line about it. }
         tags:
           type: object
           maxProperties: 50
@@ -738,6 +818,13 @@ components:
             Keys starting with `hangar` are the core's — `hangar:schedule`
             names the schedule that made a resource.
         client_token: { $ref: "#/components/schemas/ClientToken" }
+    RenameRequest:
+      type: object
+      additionalProperties: false
+      description: A field left out stays as it is; "" unnames, or clears the description.
+      properties:
+        name: { type: string, pattern: "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)?$" }
+        description: { type: string, maxLength: 256 }
     ActRequest:
       type: object
       additionalProperties: false
@@ -760,7 +847,7 @@ components:
       properties:
         spec:
           type: object
-          description: The whole spec wanted — the type's schema; references by id or `@<schedule>`.
+          description: The whole spec wanted — the type's schema; references by id, by name or `@<schedule>`.
     ChangePlan:
       type: object
       required: [resource, steps]
@@ -799,7 +886,9 @@ components:
       properties:
         id: { $ref: "#/components/schemas/Id" }
         owner: { type: string }
+        owner_name: { type: string, description: The name who asked last signed in under; absent when never seen. }
         resource_id: { $ref: "#/components/schemas/Id" }
+        resource_name: { type: string, description: What the resource is called now; absent when unnamed. }
         kind: { type: string, enum: [create, delete, action] }
         action: { type: string }
         params: { type: object }
@@ -854,11 +943,15 @@ components:
           enum: [sign-in, no-tier, scope, not-found, bad-request, zone, unavailable-here, schema, plugin-refused, limit, room, busy, conflict, attached, shared, engine, plugin-down, internal]
         violations:
           type: array
-          description: For `schema` and `plugin-refused` — each field that does not fit.
+          description: |
+            For `schema` and `plugin-refused` — each field that does not fit.
+            And for a name or a description that is refused (`bad-request`,
+            or `conflict` for a name already held): the field is then `name`
+            or `description`, the resource's own — no pointer into its spec.
           items:
             type: object
             properties:
-              field: { type: string, description: A JSON pointer. }
+              field: { type: string, description: "A JSON pointer into the spec or the params (/cores) — or name, description." }
               reason: { type: string }
         refusals:
           type: array

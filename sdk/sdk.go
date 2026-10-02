@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
@@ -101,6 +102,25 @@ func Unreachable(format string, a ...any) error {
 // Event builds an event for a response.
 func Event(name, message string, fields map[string]string) *pluginpb.Event {
 	return &pluginpb.Event{Name: name, Message: message, Fields: fields}
+}
+
+// Label is the one line a person reads where an engine shows a resource (a
+// guest's notes): what its owner calls it, what it is and whose, and their
+// line about it — "dev · machine of alice — the build box". what is the
+// type in a person's word ("machine"). Nothing is ever found by it.
+func Label(r *pluginpb.Resource, what string) string {
+	var parts []string
+	if n := r.GetName(); n != "" {
+		parts = append(parts, n)
+	}
+	if o := r.GetOwnerName(); o != "" {
+		what += " of " + o
+	}
+	label := strings.Join(append(parts, what), " · ")
+	if d := r.GetDescription(); d != "" {
+		label += " — " + d
+	}
+	return label
 }
 
 // Step is one action a PlanChange answers, with its params.

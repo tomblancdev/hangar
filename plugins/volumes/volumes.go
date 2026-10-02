@@ -73,6 +73,8 @@ const volumeSchema = `{
   "type": "object",
   "additionalProperties": false,
   "required": ["size_gb"],
+  "x-hangar-summary": ["{size_gb} GB", "on {machine}[ at {mount}]", "{backup?backed up}"],
+  "x-hangar-status": { "field": "machine", "on": "attached", "off": "parked" },
   "properties": {
     "size_gb": { "type": "integer", "minimum": 1, "maximum": 65536,
                  "description": "Its size. It only ever grows." },
@@ -505,7 +507,8 @@ func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*plug
 	if err != nil {
 		return nil, err
 	}
-	got, err := v.CreateVolume(ctx, driver.VolumeSpec{ID: r.GetId(), Content: s.Content, SizeGB: s.SizeGB, Backup: s.Backup, At: place(r, s)})
+	got, err := v.CreateVolume(ctx, driver.VolumeSpec{ID: r.GetId(), Content: s.Content, SizeGB: s.SizeGB, Backup: s.Backup, At: place(r, s),
+		Label: r.GetName()})
 	if err != nil {
 		return nil, engineErr(err)
 	}
@@ -599,6 +602,14 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 	}
 	if got.Backup != s.Backup {
 		try("backup", func() (driver.Volume, error) { return v.SetVolumeBackup(ctx, r.GetId(), s.Backup) })
+	}
+	// what it is called, where the engine shows it: a line for people — one
+	// that cannot be written now is written at the next look, and says nothing
+	if got.Label != r.GetName() {
+		if named, err := v.RelabelVolume(ctx, r.GetId(), r.GetName()); err == nil {
+			got = named
+			fixed = append(fixed, "name")
+		}
 	}
 	resp := &pluginpb.ReconcileResponse{Observed: sdk.JSON(observe(got))}
 	switch {

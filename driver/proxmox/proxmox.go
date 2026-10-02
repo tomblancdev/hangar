@@ -314,7 +314,9 @@ func (d *Driver) find(ctx context.Context, id string) (resource, error) {
 	}
 	for _, r := range untagged {
 		var cfg map[string]any
-		if err := d.c.call(ctx, http.MethodGet, r.path()+"/config", nil, &cfg); err == nil && strings.TrimSpace(str(cfg["description"])) == marker(id) {
+		// its first line: what it is called may follow (names.go)
+		if err := d.c.call(ctx, http.MethodGet, r.path()+"/config", nil, &cfg); err == nil &&
+			strings.SplitN(strings.TrimSpace(str(cfg["description"])), "\n", 2)[0] == marker(id) {
 			return r, nil
 		}
 	}
@@ -405,6 +407,7 @@ func (d *Driver) read(ctx context.Context, r resource, id string) (driver.Guest,
 	if g.ID == "" {
 		g.ID = id // found by its marker, before its tags
 	}
+	g.Label = nameIn(strings.Split(str(cfg["description"]), "\n"), g.ID)
 	if g.Cores == 0 {
 		g.Cores = 1 // Proxmox's default, not written in the config
 	}
@@ -655,6 +658,11 @@ func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Gu
 	}
 	if err != nil {
 		return driver.Guest{}, d.engine(err)
+	}
+	// what it is called, for whoever opens it on Proxmox: a line for people,
+	// so a write that fails changes nothing here — the next look writes it
+	if s.Label != "" {
+		_ = d.relabel(ctx, r, s.ID, s.Label)
 	}
 	if !s.Stopped {
 		if err := d.power(ctx, r, true); err != nil {

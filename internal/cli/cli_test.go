@@ -333,9 +333,10 @@ func TestAFileRefusedBeforeAnything(t *testing.T) {
 		"set: dev\nresources:\n  a:\n    type: volume\n    spec: {size_gb: 1, machine: box}\n":                        `a: machine names "box", which the file does not declare`,
 		"set: dev\nresources:\n  a:\n    type: volume\n    spec: {size_gb: 1, machine: k}\n  k:\n    type: keypair\n": "a: machine names k, a keypair — it takes a machine",
 		"set: dev\nresources:\n  a:\n    type: widget\n":                                                              `the brain offers no type "widget"`,
-		"set: Dev\nresources: {}\n":                                        "set names what apply keeps",
-		"set: dev\nresources:\n  m-0123456789abcdef0:\n    type: volume\n": "not shaped like an id",
-		"set: dev\nresources:\n  a:\n    type: volume\n    colour: red\n":  `no key "colour"`,
+		"set: Dev\nresources: {}\n":                                                                "set names what apply keeps",
+		"set: dev\nresources:\n  m-0123456789abcdef0:\n    type: volume\n":                         "not shaped like an id",
+		"set: dev\nresources:\n  a:\n    type: volume\n    colour: red\n":                          `no key "colour"`,
+		"set: dev\nresources:\n  a:\n    type: machine\n    spec: {name: box, image: debian-13}\n": "a: its spec says name: box — a spec names nothing: the entry's key (a) is what it is called",
 		"set: dev\nresources:\n  a:\n    type: machine\n    spec: {image: debian-13, key_pairs: [b]}\n  b:\n    type: keypair\n    spec: {public_key: x}\n": "",
 	} {
 		p := writeFile(t, dir, "f.yaml", body)

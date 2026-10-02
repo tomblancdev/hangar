@@ -111,6 +111,7 @@ var routes = []route{
 	{pattern: "GET /v1/resources", api: func(s *Server) apiFunc { return s.listResources }},
 	{pattern: "POST /v1/resources", api: func(s *Server) apiFunc { return s.createResource }},
 	{pattern: "GET /v1/resources/{id}", api: func(s *Server) apiFunc { return s.getResource }},
+	{pattern: "PATCH /v1/resources/{id}", api: func(s *Server) apiFunc { return s.renameResource }},
 	{pattern: "DELETE /v1/resources/{id}", api: func(s *Server) apiFunc { return s.deleteResource }},
 	{pattern: "POST /v1/resources/{id}/actions/{action}", api: func(s *Server) apiFunc { return s.act }},
 	{pattern: "POST /v1/resources/{id}/plan", api: func(s *Server) apiFunc { return s.planChange }},
@@ -206,6 +207,9 @@ func (s *Server) v1(pattern string, h apiFunc) http.Handler {
 			writeProblem(rw, p)
 			return
 		}
+		// someone in a tier: what they are called is remembered, so that what
+		// they own is shown by it
+		s.core.Seen(ctx, id)
 		if r.Method == http.MethodGet && !who.Can(identity.ScopeRead) {
 			writeProblem(rw, &core.Problem{Status: 403, Kind: core.KindScope, Detail: "this token cannot read"})
 			return
@@ -445,7 +449,7 @@ func (s *Server) limits(w http.ResponseWriter, r *http.Request, who *core.Caller
 
 func (s *Server) listResources(w http.ResponseWriter, r *http.Request, who *core.Caller) error {
 	q := r.URL.Query()
-	f := registry.Filter{Type: q.Get("type"), Zone: q.Get("zone"), Owner: q.Get("owner"), States: q["state"], Tags: map[string]string{}}
+	f := registry.Filter{Type: q.Get("type"), Zone: q.Get("zone"), Owner: q.Get("owner"), Name: q.Get("name"), States: q["state"], Tags: map[string]string{}}
 	for _, st := range f.States {
 		if !slices.Contains([]string{registry.Creating, registry.Ready, registry.Updating, registry.Deleting, registry.Deleted, registry.Failed, registry.Lost}, st) {
 			return &core.Problem{Status: 400, Kind: core.KindBadRequest, Detail: fmt.Sprintf("no state %q", st)}
@@ -476,6 +480,7 @@ func (s *Server) listResources(w http.ResponseWriter, r *http.Request, who *core
 	if rs == nil {
 		rs = []*registry.Resource{}
 	}
+	s.core.Dress(r.Context(), who, rs...)
 	body := map[string]any{"resources": rs}
 	if next > 0 {
 		body["next"] = next
@@ -500,13 +505,15 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, who *cor
 		return &core.Problem{Status: 400, Kind: core.KindBadRequest, Detail: "a client token is at most 64 characters"}
 	}
 	op, res, replayed, err := s.core.Create(r.Context(), who, in.Type, in.CreateInput)
-	return accepted(w, op, res, replayed, err)
+	return s.accepted(w, r, who, op, res, replayed, err)
 }
 
-func accepted(w http.ResponseWriter, op *registry.Operation, res *registry.Resource, replayed bool, err error) error {
+func (s *Server) accepted(w http.ResponseWriter, r *http.Request, who *core.Caller, op *registry.Operation, res *registry.Resource, replayed bool, err error) error {
 	if err != nil {
 		return err
 	}
+	s.core.Dress(r.Context(), who, res)
+	s.core.DressOps(r.Context(), op)
 	code := 202
 	if replayed {
 		code = 200
@@ -519,6 +526,20 @@ func (s *Server) getResource(w http.ResponseWriter, r *http.Request, who *core.C
 	if err != nil {
 		return err
 	}
+	s.core.Dress(r.Context(), who, res)
+	return writeJSON(w, 200, res)
+}
+
+func (s *Server) renameResource(w http.ResponseWriter, r *http.Request, who *core.Caller) error {
+	var in core.RenameInput
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	res, err := s.core.Rename(r.Context(), who, r.PathValue("id"), in)
+	if err != nil {
+		return err
+	}
+	s.core.Dress(r.Context(), who, res)
 	return writeJSON(w, 200, res)
 }
 
@@ -528,7 +549,7 @@ func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request, who *cor
 		return &core.Problem{Status: 400, Kind: core.KindBadRequest, Detail: "a client token is at most 64 characters"}
 	}
 	op, res, replayed, err := s.core.Delete(r.Context(), who, r.PathValue("id"), token)
-	return accepted(w, op, res, replayed, err)
+	return s.accepted(w, r, who, op, res, replayed, err)
 }
 
 func (s *Server) act(w http.ResponseWriter, r *http.Request, who *core.Caller) error {
@@ -542,7 +563,7 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request, who *core.Caller) e
 		return &core.Problem{Status: 400, Kind: core.KindBadRequest, Detail: "a client token is at most 64 characters"}
 	}
 	op, res, replayed, err := s.core.Act(r.Context(), who, r.PathValue("id"), r.PathValue("action"), in)
-	return accepted(w, op, res, replayed, err)
+	return s.accepted(w, r, who, op, res, replayed, err)
 }
 
 type planBody struct {
@@ -572,6 +593,7 @@ func (s *Server) listOperations(w http.ResponseWriter, r *http.Request, who *cor
 	if ops == nil {
 		ops = []*registry.Operation{}
 	}
+	s.core.DressOps(r.Context(), ops...)
 	return writeJSON(w, 200, map[string]any{"operations": ops})
 }
 
@@ -588,6 +610,7 @@ func (s *Server) getOperation(w http.ResponseWriter, r *http.Request, who *core.
 	if err != nil {
 		return err
 	}
+	s.core.DressOps(r.Context(), op)
 	return writeJSON(w, 200, op)
 }
 

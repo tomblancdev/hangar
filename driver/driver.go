@@ -169,6 +169,9 @@ type Guests interface {
 	SetCPULimit(ctx context.Context, id string, cores int) (Guest, error)
 	// Retag writes a guest's tags and holds anew (the core's id stays).
 	Retag(ctx context.Context, id string, tags map[string]string, holds []string) (Guest, error)
+	// Relabel writes a guest's label anew (see GuestSpec.Label); "" takes it
+	// off. A label is for people: no guest is ever found by it.
+	Relabel(ctx context.Context, id, label string) (Guest, error)
 	// Traits says what a guest of this kind can take on this engine.
 	Traits(kind string) Traits
 }
@@ -226,7 +229,10 @@ type GuestSpec struct {
 	ID   string // the core's resource id, written on the guest
 	Kind string // "container" or "vm"
 	// Name is its host name; the id when empty.
-	Name     string
+	Name string
+	// Label is one line a person reads where the engine shows the guest (a
+	// Proxmox guest's notes): what it is called, what it is and whose.
+	Label    string
 	Cores    int
 	MemoryMB int
 	// DiskGB is its root disk; 0 = the image's own size.
@@ -255,6 +261,7 @@ type Guest struct {
 	EngineRef string            `json:"engine_ref"` // the engine's own name for it
 	Kind      string            `json:"kind"`
 	Name      string            `json:"name,omitempty"`
+	Label     string            `json:"label,omitempty"` // see GuestSpec.Label
 	Node      string            `json:"node,omitempty"`
 	Cores     int               `json:"cores"`
 	MemoryMB  int               `json:"memory_mb"`
@@ -306,6 +313,9 @@ type Volumes interface {
 	ResizeVolume(ctx context.Context, id string, sizeGB int) (Volume, error)
 	// SetVolumeBackup says whether the engine's backups take it.
 	SetVolumeBackup(ctx context.Context, id string, backup bool) (Volume, error)
+	// RelabelVolume writes what the volume is called where the engine shows
+	// it (see VolumeSpec.Label); "" takes it off.
+	RelabelVolume(ctx context.Context, id, label string) (Volume, error)
 	// DeleteVolume destroys a parked volume. One on a guest is ErrRefused;
 	// one already gone is not an error.
 	DeleteVolume(ctx context.Context, id string) error
@@ -332,6 +342,9 @@ type VolumeSpec struct {
 	SizeGB  int
 	Backup  bool
 	At      Place
+	// Label is what its owner calls it, for a person reading the engine's
+	// own screen; nothing is found by it.
+	Label string
 }
 
 // Volume is a volume as the engine reports it.
@@ -343,6 +356,7 @@ type Volume struct {
 	Content   string `json:"content"`
 	SizeGB    int    `json:"size_gb"`
 	Backup    bool   `json:"backup"`
+	Label     string `json:"label,omitempty"` // see VolumeSpec.Label
 	// Guest: the core's id of the guest it is plugged into; "" = parked.
 	Guest string `json:"guest,omitempty"`
 	Mount string `json:"mount,omitempty"`

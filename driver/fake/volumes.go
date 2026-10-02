@@ -86,7 +86,7 @@ func (e *Engine) CreateVolume(_ context.Context, s driver.VolumeSpec) (driver.Vo
 	}
 	e.state.Seq++
 	v := &driver.Volume{ID: s.ID, EngineRef: fmt.Sprintf("fake-vol-%d", e.state.Seq), Content: s.Content, SizeGB: s.SizeGB,
-		Backup: s.Backup, Node: "fake"}
+		Backup: s.Backup, Node: "fake", Label: s.Label}
 	if err := e.place(v, s.At); err != nil {
 		return driver.Volume{}, err
 	}
@@ -151,6 +151,20 @@ func (e *Engine) ResizeVolume(_ context.Context, id string, sizeGB int) (driver.
 		return driver.Volume{}, fmt.Errorf("%w: it is %d GB; a volume never shrinks", driver.ErrRefused, v.SizeGB)
 	}
 	v.SizeGB = sizeGB
+	return *v, e.save()
+}
+
+func (e *Engine) RelabelVolume(_ context.Context, id, label string) (driver.Volume, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.fail(); err != nil {
+		return driver.Volume{}, err
+	}
+	v, ok := e.state.Volumes[id]
+	if !ok {
+		return driver.Volume{}, driver.ErrNotFound
+	}
+	v.Label = label
 	return *v, e.save()
 }
 

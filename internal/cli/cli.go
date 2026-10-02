@@ -66,7 +66,7 @@ func DefaultEnv() *Env {
 
 // Words are the command line's own commands; a type of the same name is
 // reached as `hangar type <name> …`.
-var Words = []string{"login", "logout", "whoami", "types", "zones", "limits", "operations", "wait", "apply", "type"}
+var Words = []string{"login", "logout", "whoami", "types", "zones", "limits", "list", "operations", "wait", "apply", "type"}
 
 // Usage is the command line's part of `hangar help`.
 const Usage = `
@@ -75,9 +75,11 @@ The command line (a door on a brain's API):
                                           provider, or an API token read from stdin
   hangar logout                           revoke the sign-in and forget it
   hangar whoami | types | zones | limits  who you are; what may be asked for, where, how much
-  hangar <type> create|list|get|delete|<action> …
+  hangar list                             everything you hold, each machine with what hangs on it
+  hangar <type> create|list|get|rename|describe|delete|<action> …
                                           every type the brain offers, its flags drawn from
-                                          its schema: hangar <type> --help
+                                          its schema: hangar <type> --help. A resource is
+                                          named by what you call it, or by its id
   hangar apply FILE [--plan] [--yes]      make a spec file true: create what is missing,
                                           change what differs, delete what left the file
   hangar operations [--resource ID] | wait OP
@@ -130,6 +132,8 @@ func run(args []string, env *Env) error {
 		return zones(env, args[1:])
 	case "limits":
 		return limitsCmd(env, args[1:])
+	case "list":
+		return listAll(env, args[1:])
 	case "operations":
 		return operations(env, args[1:])
 	case "wait":

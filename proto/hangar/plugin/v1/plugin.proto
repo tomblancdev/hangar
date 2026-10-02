@@ -204,6 +204,14 @@ message Resource {
   // to what that means in Reconcile — a running machine is stopped, and stays
   // so — and refuses in Act what would draw on one.
   repeated string spent = 10;
+  // What its owner calls it ("" = unnamed) and their line about it, and the
+  // name the owner last signed in under ("" = never seen): the core's own,
+  // never a spec's. A plugin writes them where a person reads the engine's
+  // own screen (a guest's notes), and keeps them true in Reconcile; it finds
+  // a resource by its id, never by its name.
+  string name = 11;
+  string description = 12;
+  string owner_name = 13;
 }
 
 message PlanRequest {

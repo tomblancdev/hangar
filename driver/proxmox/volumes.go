@@ -99,10 +99,27 @@ func parseDesc(desc string) (keep []string, lines []volLine) {
 	return keep, lines
 }
 
+// formatDesc writes a description back: every other line as it was, then
+// each volume's line with, under it, the line that says what it is called.
 func formatDesc(keep []string, lines []volLine) string {
-	out := slices.Clone(keep)
+	held := map[string]bool{}
+	for _, l := range lines {
+		held[l.ID] = true
+	}
+	var out []string
+	for _, k := range keep {
+		if id, _, ok := nameLine(k); ok && held[id] {
+			continue
+		}
+		out = append(out, k)
+	}
+	said := map[string]bool{}
 	for _, l := range lines {
 		out = append(out, fmt.Sprintf("%s %s %s %s", volumeWord, l.ID, l.Key, l.VolID))
+		if text := nameIn(keep, l.ID); text != "" && !said[l.ID] {
+			out = append(out, nameWord+" "+l.ID+" "+text)
+			said[l.ID] = true
+		}
 	}
 	return strings.Join(out, "\n")
 }
@@ -319,10 +336,11 @@ func (d *Driver) forget(ctx context.Context, h *holder, id string) error {
 			lines = append(lines, o)
 		}
 	}
-	if len(lines) == len(h.lines) {
+	keep, unnamed := withName(h.keep, id, "")
+	if len(lines) == len(h.lines) && !unnamed {
 		return nil
 	}
-	h.lines = lines
+	h.lines, h.keep = lines, keep
 	desc := formatDesc(h.keep, h.lines)
 	if desc == "" {
 		return d.setConfig(ctx, h.r, nil, "description")
@@ -457,7 +475,7 @@ func (d *Driver) withFreeVMID(ctx context.Context, make func(vmid int) error) er
 func (d *Driver) volumeOf(ctx context.Context, sp spot, id string) driver.Volume {
 	line := str(sp.h.cfg[sp.key])
 	v := driver.Volume{ID: id, EngineRef: volidOf(line), Content: contentOf(sp.h.r.Type), Device: sp.key, Node: sp.h.r.Node,
-		SizeGB: sizeGB(line)}
+		SizeGB: sizeGB(line), Label: nameIn(sp.h.keep, id)}
 	if v.SizeGB == 0 {
 		v.SizeGB = d.storedGB(ctx, sp.h.r.Node, v.EngineRef)
 	}
@@ -557,6 +575,7 @@ func (d *Driver) CreateVolume(ctx context.Context, s driver.VolumeSpec) (driver.
 	} else {
 		line += ",serial=" + driver.SerialOf(s.ID)
 	}
+	h.keep, _ = withName(h.keep, s.ID, s.Label)
 	// the disk and the line that says whose it is, in one write
 	if err := d.record(ctx, &h, volLine{ID: s.ID, Key: key, VolID: "-"}, url.Values{key: {line}}); err != nil {
 		return driver.Volume{}, d.engine(err)
@@ -730,6 +749,8 @@ func (d *Driver) move(ctx context.Context, sp spot, target holder, id string) (s
 	if err != nil {
 		return spot{}, err
 	}
+	// what it is called goes with it
+	target.keep, _ = withName(target.keep, id, nameIn(sp.h.keep, id))
 	if err := d.record(ctx, &target, volLine{ID: id, Key: key, VolID: "-"}, nil); err != nil {
 		return spot{}, d.engine(err)
 	}

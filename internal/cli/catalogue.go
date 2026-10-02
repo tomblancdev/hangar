@@ -273,7 +273,7 @@ func (f field) help() string {
 		if f.Kind == "array" {
 			many = "each"
 		}
-		h += fmt.Sprintf(" (%s %s: an id, or @<schedule> for the newest it made)", many, f.Ref)
+		h += fmt.Sprintf(" (%s %s: its name or id, or @<schedule> for the newest it made)", many, f.Ref)
 	}
 	if f.Default != nil {
 		h += fmt.Sprintf(" [default %v]", f.Default)

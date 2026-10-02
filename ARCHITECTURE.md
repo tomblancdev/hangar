@@ -142,7 +142,8 @@ public door. *(Designed: a machine's terminal.)*
 |---|---|---|
 | **Identity** | a bearer token signed by the operator's OIDC provider for the configured client id (its `groups` claim maps a person to a **tier**), or an API token `hgr_…` for automation — only its hash kept, expiring, read-only or read-write, carrying its owner's groups as they were when it was made; **a token cannot make tokens**. The provider is reached on the first token, never at start-up | `coreos/go-oidc` |
 | **Tiers and limits** | a tier = a line of limits per plugin dimension (§7); the **first** tier in the file whose groups a person is in is theirs; a dimension a tier does not name is allowed **nothing**; the core counts usage and refuses what exceeds it, **with the numbers**. Three kinds of dimension: a **quantity** (what one holds now: a delete gives it back), a **choice** (a value from a set), a **meter** (what is *consumed* as time passes — the hours machines run — summed per owner over the **calendar month**, in the file's `time_zone`: the limit is the month's, a delete gives nothing back, the next month begins at nothing) | data (YAML) |
-| **Registry** | every resource: an ID in AWS's style (`box-0123456789abcdef0`: a prefix, seventeen hex digits), type, owner, zone, state, desired spec, observed state, tags, what it holds per dimension, relations; a deleted resource keeps its row | SQLite (WAL, pure Go) |
+| **Registry** | every resource: an ID in AWS's style (`box-0123456789abcdef0`: a prefix, seventeen hex digits), **a name and a line of description of its owner's** (below), type, owner, zone, state, desired spec, observed state, tags, what it holds per dimension, relations; a deleted resource keeps its row | SQLite (WAL, pure Go) |
+| **Names** | every resource has an **id** — its identity: never changed, never used again, what the audit and the engine carry — and, when its owner gives one, a **name** (a host's label: a-z, 0-9, `-`) and a **description** (one line): the core's own, on every type, never a spec's (Hetzner's and OpenStack's model — AWS's name is a free tag no command takes, Google Cloud's is fixed at birth). **A name is one thing** among its owner's live resources of one type: a second is refused with the id that holds it, so a name goes **wherever an id goes** — a command, a reference in a spec or in an action's params. It resolves among the owner's **own** only: what someone shares is named by its id, since anyone may call theirs anything (§4 « The latest »). Renamed at any time (`PATCH`): the id stays, and so does what a machine was born as on its engine (its host name). The core remembers **the name each subject signs in under** (the provider's name claim; a token teaches nothing) and shows an owner by it. And it serves each resource **as a person reads it**: the one word it wears (`status`, `light`), its type's own sentence (`summary`, §4 « How a resource reads »), the names of what it names — one rule, in the core, so the command line and the console print the same words and know no type | the core; `subjects` in the registry |
 | **The API** | REST + JSON, OpenAPI 3.1, spec first; **client tokens** on every create, delete and action (AWS's `ClientToken`: a retry returns the first operation, a reused token for another request is refused); long actions return an **operation** to poll or wait on; every refusal an RFC 9457 problem | `net/http` |
 | **Operations + reconcile** | an operation is written before the plugin is called and ended after; one the brain died during is **run again at the next start** (plugins are idempotent on the resource id); a loop compares every settled resource with its engine: in sync, **repaired**, **drifted** (reported) or **lost** (and found again) | the core |
 | **Zones** | a zone = an engine connection (driver, endpoint, options); a plugin is enabled per zone and reports what its driver can do there (§5) | data |
@@ -232,10 +233,37 @@ are absolute (« memory 8 », never « +2 »); (4) refusals are gRPC statuses �
 `INVALID_ARGUMENT` (never as written), `FAILED_PRECONDITION` (not in the
 engine's present state), `UNAVAILABLE` (the core retries).
 
+**How a resource reads.** A type says it at its schema's root, and only
+says it — the core fills it in on every resource it serves:
+
+```json
+"x-hangar-summary": ["{kind}", "{cores} cores", "{memory_gb} GB[ ({floor_gb} guaranteed)]", "{class=spot?spot}", "{image|image_id}"],
+"x-hangar-status":  {"field": "running", "on": "running", "off": "stopped"}
+```
+
+The **summary** is one sentence, its parts joined by « · »: `{field}` is
+that field's value (the spec's, else what was observed), `{a|b}` the first
+that has one, `{field?words}` the words when it is set, `{field=value?words}`
+when it is that value; a stretch between `[` and `]`, and a whole part, is
+left out when one of its holes is empty; a field that is a reference reads
+as **the name** of what it names (« 64 GB · on dev at /home · backed up »).
+The **status** is the word a settled resource wears — `on` while the field
+is set, as observed, else as asked; `off` otherwise — after the core's own
+(creating, failed, lost…) and the plugin's say on whether it may be named
+(pending, retired…); a type that says none is `ready`. A schema whose
+sentence does not parse is refused at start. A plugin is also handed what
+its resource is **called** (`name`, `description`, `owner_name`): it writes
+them where a person reads the engine's own screen (`sdk.Label`: « dev ·
+machine of alice »; a Proxmox guest's notes) and keeps them true in
+`Reconcile` — a line for people, **never** what a resource is found by.
+**(built)**
+
 **References.** A spec's (or an action's params') top-level property that
 names other resources carries `"x-hangar-ref": "<type>"` in its schema — a
 string, or an array whose items are marked (the machines plugin's
-`key_pairs`). The core checks every id before the plugin is asked: a
+`key_pairs`). A reference is written as an id, as what its owner calls one
+of their own (the core writes the id before anything reads the spec), or
+as `@<schedule>` (below). The core checks every id before the plugin is asked: a
 resource of that type, **the owner's own** (someone else's reads exactly
 like one that does not exist), in the same zone, ready. It records the link
 (`relations`: the field's name as its kind) and hands the plugin the

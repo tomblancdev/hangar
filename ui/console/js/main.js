@@ -76,7 +76,7 @@ function frame(crumbs) {
         // the bar: where you are, as a prompt says it; the zones' lamps
         h('header', {class: 'topbar'},
           h('div', {class: 'crumbs', 'aria-label': 'Where you are'}, h('span', {class: 'prompt', 'aria-hidden': 'true'}, '>'),
-            crumbs.map((c, i) => [i ? h('span', {class: 'sep', 'aria-hidden': 'true'}, '/') : null, c.href ? h('a', {href: c.href}, c.words) : h('span', {}, c.words)]),
+            crumbs.map((c, i) => [i ? h('span', {class: 'sep', 'aria-hidden': 'true'}, '/') : null, c.href ? h('a', {href: c.href}, c.words) : h('span', {id: c.id || null}, c.words)]),
             h('span', {class: 'cursor', 'aria-hidden': 'true'})),
           h('div', {id: 'zones', class: 'lamps'})),
         h('div', {id: 'notice'}),
@@ -121,7 +121,8 @@ function route() {
     // an id says its type by its prefix
     const t = state.types.find((x) => parts[1].startsWith(x.id_prefix + '-'));
     if (t) typeCrumb(t.name);
-    crumbs.push({words: parts[1]});
+    // its page writes what it is called there, once read
+    crumbs.push({words: parts[1], id: 'here'});
   } else if (parts[0] === 'operations') { node = views.operations(page.ctx); name = 'Operations'; crumbs.push({words: 'operations'}); }
   else if (parts[0] === 'tokens') { node = views.tokens(page.ctx); name = 'Tokens'; crumbs.push({words: 'tokens'}); }
   else node = h('div', {class: 'page'}, h('p', {class: 'muted'}, 'No such page.'), h('p', {}, h('a', {href: '#/'}, 'Home')));

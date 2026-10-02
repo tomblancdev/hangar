@@ -27,11 +27,13 @@ import (
 //	  box:  {type: machine, spec: {kind: container, cores: 2, memory_gb: 4, image: debian-13, key_pairs: [me]}}
 //	  home: {type: volume,  spec: {size_gb: 16, mount: /home, machine: box}}
 //
-// A reference (a field its schema marks x-hangar-ref) names an id,
-// "@<schedule>", or another entry of the file — apply makes them in that
-// order. The brain is the state: each resource carries the tags
-// apply:set=<set> and apply:name=<entry>, and only the caller's own count
-// (someone else's shared with the same tags is never theirs to change).
+// An entry's key is what the resource is called (its name, on the brain); a
+// line of description may follow its type. A reference (a field its schema
+// marks x-hangar-ref) names an id, "@<schedule>", or another entry of the
+// file — apply makes them in that order. The brain is the state: each
+// resource carries the tags apply:set=<set> and apply:name=<entry>, and only
+// the caller's own count (someone else's shared with the same tags is never
+// theirs to change).
 //
 // What is missing is created; what differs is brought to the file by the
 // steps its plugin names (POST /v1/resources/{id}/plan), each asked as an
@@ -53,12 +55,13 @@ type specFile struct {
 }
 
 type fileEntry struct {
-	Name string
-	Type string
-	Zone string
-	Spec map[string]any
-	Tags map[string]string
-	Line int
+	Name        string
+	Description string
+	Type        string
+	Zone        string
+	Spec        map[string]any
+	Tags        map[string]string
+	Line        int
 
 	t    *typeView
 	deps []string // the entries it names
@@ -105,7 +108,7 @@ func readSpecFile(env *Env, path string) (*specFile, error) {
 					return nil, bad(nk, "%q: a name is lowercase letters, digits and dashes, and not shaped like an id", e.Name)
 				}
 				if nv.Kind != yaml.MappingNode {
-					return nil, bad(nv, "%s: type, spec, and zone or tags if need be", e.Name)
+					return nil, bad(nv, "%s: type, spec, and description, zone or tags if need be", e.Name)
 				}
 				for m := 0; m < len(nv.Content); m += 2 {
 					ek, ev := nv.Content[m], nv.Content[m+1]
@@ -114,6 +117,8 @@ func readSpecFile(env *Env, path string) (*specFile, error) {
 						e.Type = ev.Value
 					case "zone":
 						e.Zone = ev.Value
+					case "description":
+						e.Description = ev.Value
 					case "spec":
 						var spec map[string]any
 						if err := ev.Decode(&spec); err != nil {
@@ -127,7 +132,7 @@ func readSpecFile(env *Env, path string) (*specFile, error) {
 							return nil, bad(ev, "%s's tags: %v", e.Name, err)
 						}
 					default:
-						return nil, bad(ek, "%s: no key %q (type, zone, spec, tags)", e.Name, ek.Value)
+						return nil, bad(ek, "%s: no key %q (type, description, zone, spec, tags)", e.Name, ek.Value)
 					}
 				}
 				if e.Type == "" {
@@ -156,6 +161,9 @@ type change struct {
 	r     *resource // what exists
 	steps []planStep
 	fixed []string
+	// called: what it is called on the brain differs from the file (its
+	// name, its description) — written before its steps
+	called bool
 }
 
 type planStep struct {
@@ -232,6 +240,10 @@ func (a *applier) link() ([]*fileEntry, error) {
 				return nil, fmt.Errorf("%s: name a zone (in the file, or for this entry): %s is offered in %s", e.Name, t.Name, strings.Join(t.Zones, ", "))
 			}
 			e.Zone = t.Zones[0]
+		}
+		// a file written before names: a machine's name sat in its spec
+		if n, in := e.Spec["name"]; in && !slices.ContainsFunc(t.fields, func(f field) bool { return f.Name == "name" }) {
+			return nil, fmt.Errorf("%s: its spec says name: %v — a spec names nothing: the entry's key (%s) is what it is called. Take the line out", e.Name, n, e.Name)
 		}
 		for _, f := range refFields(t) {
 			for _, v := range named(e.Spec, f) {
@@ -340,6 +352,8 @@ func (a *applier) planOne(e *fileEntry, r *resource) (*change, error) {
 	if !maps.Equal(own, e.Tags) && !(len(own) == 0 && len(e.Tags) == 0) {
 		ch.fixed = append(ch.fixed, "/tags: a resource's tags are set at its birth")
 	}
+	// what it is called: the entry's key, and its line of description
+	ch.called = r.Name != e.Name || r.Description != e.Description
 	spec, ok := a.resolved(e)
 	if !ok {
 		ch.kind = "later"
@@ -354,10 +368,22 @@ func (a *applier) planOne(e *fileEntry, r *resource) (*change, error) {
 	}
 	ch.steps = p.Steps
 	ch.kind = "keep"
-	if len(ch.steps) > 0 {
+	if len(ch.steps) > 0 || ch.called {
 		ch.kind = "steps"
 	}
 	return ch, nil
+}
+
+// calledWords says what apply writes of a resource's name and description.
+func calledWords(ch *change) string {
+	var parts []string
+	if ch.r.Name != ch.e.Name {
+		parts = append(parts, fmt.Sprintf("rename (it is called %s)", dash(ch.r.Name)))
+	}
+	if ch.r.Description != ch.e.Description {
+		parts = append(parts, "describe")
+	}
+	return strings.Join(parts, ", ")
 }
 
 func stepWords(steps []planStep) string {
@@ -527,13 +553,17 @@ birth that differs stops everything before anything changes. FILE - = stdin.`)
 			}
 			line("+", what)
 		case ch.kind == "steps":
-			line("~", stepWords(ch.steps))
+			words := stepWords(ch.steps)
+			if ch.called {
+				words = strings.TrimSuffix(calledWords(ch)+", "+words, ", ")
+			}
+			line("~", words)
 		case ch.kind == "later":
 			line("~", "its plan once "+strings.Join(ch.e.deps, ", ")+" exists")
 		case ch.kind == "keep":
 			line("=", "in sync")
 		case ch.kind == "delete":
-			line("-", "delete — with what it holds: "+summary(a.types[ch.r.Type], ch.r.Spec))
+			line("-", "delete — with what it holds: "+reads(a.types[ch.r.Type], ch.r))
 		}
 	}
 	fmt.Fprintln(env.Stderr)
@@ -634,7 +664,10 @@ func (a *applier) do(ch *change) error {
 		}
 		tags[TagSet], tags[TagName] = a.f.Set, ch.e.Name
 		var acc accepted
-		body := map[string]any{"type": ch.e.Type, "zone": ch.e.Zone, "spec": spec, "tags": tags, "client_token": clientToken()}
+		body := map[string]any{"type": ch.e.Type, "zone": ch.e.Zone, "name": ch.e.Name, "spec": spec, "tags": tags, "client_token": clientToken()}
+		if ch.e.Description != "" {
+			body["description"] = ch.e.Description
+		}
 		if err := a.c.do("POST", "/v1/resources", body, &acc); err != nil {
 			return fmt.Errorf("%s: %w", ch.e.Name, err)
 		}
@@ -659,7 +692,7 @@ func (a *applier) do(ch *change) error {
 		if len(re.fixed) > 0 {
 			return fmt.Errorf("%s: %s", ch.e.Name, strings.Join(re.fixed, "; "))
 		}
-		ch.steps = re.steps
+		ch.steps, ch.called = re.steps, re.called
 		return a.steps(ch)
 	case "steps":
 		return a.steps(ch)
@@ -670,6 +703,13 @@ func (a *applier) do(ch *change) error {
 }
 
 func (a *applier) steps(ch *change) error {
+	if ch.called {
+		body := map[string]any{"name": ch.e.Name, "description": ch.e.Description}
+		if err := a.c.do("PATCH", "/v1/resources/"+ch.r.ID, body, nil); err != nil {
+			return fmt.Errorf("%s: %w", ch.e.Name, err)
+		}
+		a.say("  ~ %s: %s done", ch.e.Name, calledWords(ch))
+	}
 	for _, s := range ch.steps {
 		var acc accepted
 		body := map[string]any{"params": s.Params, "client_token": clientToken()}

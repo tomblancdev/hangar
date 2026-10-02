@@ -117,7 +117,6 @@ type Settings struct {
 
 // Spec is an image's desired state.
 type Spec struct {
-	Name string `json:"name,omitempty"`
 	// Recipe: baked from this recipe of the operator's.
 	Recipe string `json:"recipe,omitempty"`
 	// Machine: saved from this stopped machine of the owner's.
@@ -155,9 +154,9 @@ const imageSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
+  "x-hangar-summary": ["{kind}", "{size_gb} GB", "baked from {recipe}", "saved from {machine}", "shared with {shared_with}"],
+  "x-hangar-status": { "field": "made_at", "on": "available", "off": "pending" },
   "properties": {
-    "name":        { "type": "string", "pattern": "^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$",
-                     "description": "A name of yours for it." },
     "recipe":      { "type": "string", "minLength": 1, "maxLength": 64,
                      "description": "Bake it from this recipe of the operator's. Or save it from a machine." },
     "machine":     { "type": "string", "x-hangar-ref": "machine",
@@ -492,7 +491,6 @@ func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) 
 			out.Fixed = append(out.Fixed, sdk.Fixed(field, then, what))
 		}
 	}
-	fixed("/name", want.Name, was.Name, "an image's name")
 	fixed("/recipe", want.Recipe, was.Recipe, "what an image was made from")
 	fixed("/machine", want.Machine, was.Machine, "what an image was made from")
 	a, b := slices.Clone(want.SharedWith), slices.Clone(was.SharedWith)

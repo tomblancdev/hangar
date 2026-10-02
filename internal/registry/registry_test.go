@@ -39,7 +39,7 @@ func TestMigrationsRunOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if v, _ := s.Version(context.Background()); v != 5 {
+		if v, _ := s.Version(context.Background()); v != 6 {
 			t.Fatalf("schema version %d", v)
 		}
 		_ = s.Close()
@@ -352,5 +352,156 @@ func TestMetersAndTheAdmittedTier(t *testing.T) {
 	}
 	if r, _ = s.Resource(ctx, r.ID); r.Tier != "users" {
 		t.Fatalf("the tier stays until another request is admitted: %q", r.Tier)
+	}
+}
+
+// What an older brain held takes its names when the file is opened: the entry
+// a spec file made it from first, else the name its spec carried; a name is
+// one thing among an owner's live resources of a type, and a spec names
+// nothing any more.
+func TestNamesAreLiftedFromWhatWasHeld(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hangar.db")
+	old, err := openAt(path, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	row := func(id, typ, owner, state, spec string, tags map[string]string) {
+		t.Helper()
+		if _, err := old.db.ExecContext(ctx, `INSERT INTO resources (id, type, plugin, owner, zone, state, spec, created_at, updated_at)
+			VALUES (?, ?, 'p', ?, 'z', ?, ?, '2026-10-02T09:00:00Z', '2026-10-02T09:00:00Z')`, id, typ, owner, state, spec); err != nil {
+			t.Fatal(err)
+		}
+		for k, v := range tags {
+			if _, err := old.db.ExecContext(ctx, `INSERT INTO tags (resource_id, key, value) VALUES (?, ?, ?)`, id, k, v); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	row("m-00000000000000001", "machine", "alice", Ready, `{"name":"dev","kind":"container","cores":2}`, map[string]string{"apply:set": "a", "apply:name": "dev"})
+	row("vol-00000000000000001", "volume", "alice", Ready, `{"size_gb":64}`, map[string]string{"apply:set": "a", "apply:name": "home"})
+	row("m-00000000000000002", "machine", "alice", Ready, `{"name":"web","kind":"vm"}`, map[string]string{"apply:name": "front"}) // the entry's name wins
+	row("m-00000000000000003", "machine", "alice", Ready, `{"name":"dev","kind":"vm"}`, nil)                                      // a second dev: the oldest keeps it
+	row("m-00000000000000004", "machine", "alice", Deleted, `{"name":"dev","kind":"vm"}`, nil)                                    // history keeps its name
+	row("m-00000000000000005", "machine", "bob", Ready, `{"name":"dev","kind":"vm"}`, nil)                                        // another owner's dev
+	row("vol-00000000000000002", "volume", "alice", Ready, `{"size_gb":8}`, map[string]string{"apply:name": "My Disk"})           // not a name
+	row("img-00000000000000001", "image", "alice", Ready, `{"name":"base_1.2","recipe":"r"}`, nil)                                // nor this
+	row("kp-00000000000000001", "keypair", "alice", Ready, `{"public_key":"k"}`, nil)
+	_ = old.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := map[string]string{
+		"m-00000000000000001": "dev", "vol-00000000000000001": "home", "m-00000000000000002": "front", "m-00000000000000003": "",
+		"m-00000000000000004": "dev", "m-00000000000000005": "dev", "vol-00000000000000002": "", "img-00000000000000001": "",
+		"kp-00000000000000001": "",
+	}
+	for id, name := range want {
+		r, err := s.Resource(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Name != name {
+			t.Errorf("%s is named %q, want %q", id, r.Name, name)
+		}
+		if strings.Contains(string(r.Spec), `"name"`) {
+			t.Errorf("%s: its spec still names it: %s", id, r.Spec)
+		}
+	}
+	// the rest of a spec, and the tags a spec file reads, are as they were
+	r, _ := s.Resource(ctx, "m-00000000000000001")
+	var spec map[string]any
+	if json.Unmarshal(r.Spec, &spec) != nil || spec["kind"] != "container" || spec["cores"] != float64(2) || r.Tags["apply:name"] != "dev" {
+		t.Fatalf("%s %v", r.Spec, r.Tags)
+	}
+	if id, _ := s.Named(ctx, "alice", "machine", "dev"); id != "m-00000000000000001" {
+		t.Fatalf("alice's dev is %q", id)
+	}
+}
+
+// A name is one thing among an owner's live resources of a type — the file
+// itself refuses a second —, free again once its holder is gone, and a
+// resource is renamed, described and found by name.
+func TestANameIsOneThing(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	ins := func(id, typ, owner, name string) error {
+		return s.Tx(ctx, func(tx *Tx) error {
+			return tx.InsertResource(&Resource{ID: id, Type: typ, Name: name, Description: "the " + name, Plugin: "toy", Owner: owner,
+				Zone: "z", State: Ready, Spec: json.RawMessage(`{}`)})
+		})
+	}
+	if err := ins("box-00000000000000001", "box", "alice", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ins("box-00000000000000002", "box", "alice", "dev"); err == nil {
+		t.Fatal("a second dev of alice's was written")
+	}
+	for _, ok := range [][3]string{{"box-00000000000000003", "box", "bob"}, {"jar-00000000000000001", "jar", "alice"}} {
+		if err := ins(ok[0], ok[1], ok[2], "dev"); err != nil {
+			t.Fatalf("%v: %v", ok, err)
+		}
+	}
+	if err := ins("box-00000000000000004", "box", "alice", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := ins("box-00000000000000005", "box", "alice", ""); err != nil {
+		t.Fatalf("two unnamed: %v", err)
+	}
+	r, _ := s.Resource(ctx, "box-00000000000000001")
+	if r.Name != "dev" || r.Description != "the dev" {
+		t.Fatalf("%+v", r)
+	}
+	rs, _, err := s.Resources(ctx, Filter{Owner: "alice", Type: "box", Name: "dev"})
+	if err != nil || len(rs) != 1 || rs[0].ID != "box-00000000000000001" {
+		t.Fatalf("%v %v", rs, err)
+	}
+	names, err := s.NamesOf(ctx, []string{"box-00000000000000001", "box-00000000000000004", "box-0000000000000000f"})
+	if err != nil || len(names) != 1 || names["box-00000000000000001"] != "dev" {
+		t.Fatalf("%v %v", names, err)
+	}
+	// renamed; and the name it left is free
+	name, desc := "old", ""
+	if err := s.Tx(ctx, func(tx *Tx) error { return tx.Update("box-00000000000000001", Change{Name: &name, Description: &desc}) }); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ = s.Resource(ctx, "box-00000000000000001"); r.Name != "old" || r.Description != "" {
+		t.Fatalf("%+v", r)
+	}
+	if err := ins("box-00000000000000006", "box", "alice", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	// a deleted one gives its name back, and keeps it for the history
+	if err := s.Tx(ctx, func(tx *Tx) error { return tx.Update("box-00000000000000006", Change{State: Deleted}) }); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := s.Named(ctx, "alice", "box", "dev"); id != "" {
+		t.Fatalf("a deleted box still answers to dev: %s", id)
+	}
+	if err := ins("box-00000000000000007", "box", "alice", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ = s.Resource(ctx, "box-00000000000000006"); r.Name != "dev" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestSubjectsAreRememberedByName(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	for _, n := range []string{"alice", "alice.b"} {
+		if err := s.SeeSubject(ctx, "sub-1", n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SeeSubject(ctx, "sub-2", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Subjects(ctx)
+	if err != nil || len(got) != 2 || got["sub-1"] != "alice.b" || got["sub-2"] != "bob" {
+		t.Fatalf("%v %v", got, err)
 	}
 }
