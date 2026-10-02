@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased — la console
+## v0.1.0 — 2026-10-02
+
+The first release. It gathers everything built since the product was born,
+one entry a piece, newest first: the console, the hours, the command line,
+the recipes baked again by themselves, the images, the volumes, the room and
+the node's hook, the machines and the Proxmox VE driver, the core. Nothing
+moved between the last entry and the tag — a release is what a deployment
+pins: the image `ghcr.io/tomblancdev/hangar:0.1.0`.
+
+### la console
 
 The web console: the catalogue in a browser, signed in at the provider —
 proved by tests that run each of its server's guards on the console inside
@@ -59,7 +68,7 @@ binary ([docs/console.md](docs/console.md)).
   tests drive drew its ring and its bolt and never its words.
 - CI runs the suite with a browser (`HANGAR_BROWSER`).
 
-## Unreleased — les heures
+### les heures
 
 Power: an idle machine stopped by itself, the hours machines run counted
 against a tier's month, keep awake — proved on the fake engine by a clock the
@@ -116,7 +125,7 @@ binary, in real minutes.
   test now makes a guest on a dead one's number on purpose.
 - Registry schema 5: `meters`, `resources.tier`.
 
-## Unreleased — la ligne de commande
+### la ligne de commande
 
 The command line, drawn from what the brain serves — proved on the fake
 engine (controls red), through the binary, on the repo's throwaway Proxmox VE
@@ -153,7 +162,7 @@ device flow, the refresh, the revocation).
   and revokes; `internal/stacktest` runs a whole brain in another package's
   tests.
 
-## Unreleased — les recettes qui se refont
+### les recettes qui se refont
 
 Recipes baked again by themselves — proved on the fake engine by a clock
 the test turns, and on the repo's throwaway Proxmox VE through the binary.
@@ -190,7 +199,7 @@ the test turns, and on the repo's throwaway Proxmox VE through the binary.
   at the same moment is passed over for the next. `tools/bench`: 6 GB by
   default (4 GB hung under a builder, a machine and an import at once).
 
-## Unreleased — les images
+### les images
 
 System disks machines are born from — proved on the repo's throwaway Proxmox
 VE, through the binary's API, the machines and images plugins each on its
@@ -245,7 +254,7 @@ own token.
 - **The bench** gains the images plugin's user, roles and token
   (`HANGAR_BENCH_IMAGES_TOKEN_FILE`).
 
-## Unreleased — les volumes
+### les volumes
 
 Disks that belong to their owner rather than to a machine — proved on the
 repo's throwaway Proxmox VE, through the binary's API, with both plugins
@@ -289,7 +298,7 @@ running, each on its own token.
   a time (`go test -p 1`): two packages' tests drive the bench's one
   priority guest.
 
-## Unreleased — la place
+### la place
 
 A zone's room: what can be promised, what is only lent, and the guests that
 matter more than yours — proved on the repo's throwaway Proxmox VE, with the
@@ -338,7 +347,7 @@ hook running on its node.
   reached — never refusing that guest's start.
 - **The bench** gains a priority guest (VM 100) and the watch grant on it.
 
-## Unreleased — les machines
+### les machines
 
 The first plugin that makes real machines, and the first real engine:
 proved on a throwaway Proxmox VE installed by the repo's own bench.
@@ -373,7 +382,7 @@ proved on a throwaway Proxmox VE installed by the repo's own bench.
   an operator would; the driver's tests and the binary's end-to-end test run
   against it when its variables are set, and skip otherwise.
 
-## la naissance
+### la naissance
 
 The product is born: the core's skeleton, proved end to end on a fake engine.
 No release is cut; the first tag comes with the first plugin that makes a real

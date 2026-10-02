@@ -46,8 +46,9 @@ hypervisor (it drives yours) and not an EC2 clone.
 > schema and its actions as buttons —, signed in at your identity provider,
 > the sign-in kept by the console's server and a cookie in the browser; inside
 > the brain, or a process of its own in front of it that holds none of the
-> plugins' keys ([docs/console.md](docs/console.md)). No
-> release is cut yet. [ARCHITECTURE.md](ARCHITECTURE.md) says what is built
+> plugins' keys ([docs/console.md](docs/console.md)). A release
+> is a tag, and its image `ghcr.io/tomblancdev/hangar:<version>`
+> ([CHANGELOG.md](CHANGELOG.md)). [ARCHITECTURE.md](ARCHITECTURE.md) says what is built
 > and what is designed, section by section.
 
 ## How it fits together
