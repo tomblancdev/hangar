@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0 — unreleased
+## v0.3.0 — 2026-10-03
 
 **A machine's processor.** What the first heavy runs on a real zone found: a
 VM the product made saw a 2003 processor. The image:
