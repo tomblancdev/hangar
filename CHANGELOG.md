@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.1 — 2026-10-03
 
 - **Le JSON lisible — the console's JSON.** A value that does not read on
   one line — an object, a list that holds one, a text of several lines — was
