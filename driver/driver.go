@@ -31,6 +31,9 @@ const (
 	KindVM                  Capability = "kind.vm"
 	ResizeLiveMemoryDown    Capability = "resize.live.memory_down"
 	ResizeLiveCPUCap        Capability = "resize.live.cpu_cap"
+	CPUHost                 Capability = "cpu.host"
+	CPUNested               Capability = "cpu.nested"
+	CPUWeight               Capability = "cpu.weight"
 	VolumeMoveBetweenGuests Capability = "volume.move_between_guests"
 	GuestSuspendToDisk      Capability = "guest.suspend_to_disk"
 	GuestTags               Capability = "guest.tags"
@@ -43,7 +46,7 @@ const (
 
 // Known lists every flag, in the order the documentation gives them.
 var Known = []Capability{
-	KindContainer, KindVM, ResizeLiveMemoryDown, ResizeLiveCPUCap,
+	KindContainer, KindVM, ResizeLiveMemoryDown, ResizeLiveCPUCap, CPUHost, CPUNested, CPUWeight,
 	VolumeMoveBetweenGuests, GuestSuspendToDisk, GuestTags, GuestActivity, HookPreStart,
 	GPUShared, GPUPassthrough, FencePool,
 }
@@ -167,6 +170,10 @@ type Guests interface {
 	// at once, running or not; 0 lifts the cap. Where the engine lacks
 	// resize.live.cpu_cap it is ErrRefused.
 	SetCPULimit(ctx context.Context, id string, cores int) (Guest, error)
+	// SetCPUWeight sets a guest's share of the cores when they are contended
+	// (1 to 100; 100, or 0, a full share), at once, running or not. Where the
+	// engine lacks cpu.weight it is ErrRefused.
+	SetCPUWeight(ctx context.Context, id string, weight int) (Guest, error)
 	// Retag writes a guest's tags and holds anew (the core's id stays).
 	Retag(ctx context.Context, id string, tags map[string]string, holds []string) (Guest, error)
 	// Relabel writes a guest's label anew (see GuestSpec.Label); "" takes it
@@ -213,6 +220,23 @@ type Quiet struct {
 	SentBps float64
 }
 
+// CPUModelHost is the one processor a guest names (GuestSpec.CPU): its
+// host's own, every instruction of it. A guest that names none sees the
+// model its zone gives everyone.
+const CPUModelHost = "host"
+
+// FullWeight is a guest's whole share of the cores (GuestSpec.CPUWeight): a
+// guest that names no weight has it.
+const FullWeight = 100
+
+// WeightOf reads a weight as a share: none named is a full one.
+func WeightOf(w int) int {
+	if w == 0 {
+		return FullWeight
+	}
+	return w
+}
+
 // Traits is what a guest of one kind can take on one engine — finer than a
 // capability flag, which speaks for the whole engine.
 type Traits struct {
@@ -251,6 +275,16 @@ type GuestSpec struct {
 	Holds []string
 	// CPULimit: a cap from birth (cores' worth; 0 = none).
 	CPULimit int
+	// CPU: the processor it sees — "" the model its zone gives everyone, or
+	// CPUModelHost (cpu.host): its host's own. A VM's; it then runs on a
+	// host of that kind only.
+	CPU string
+	// Virtualization: it may run VMs of its own (cpu.nested). Whatever its
+	// processor, a guest that does not say so is given none of it.
+	Virtualization bool
+	// CPUWeight: its share of the cores when they are contended, 1 to 100
+	// (cpu.weight); 0 = a full share. It loses nothing while cores are free.
+	CPUWeight int
 	// Stopped: create it without starting it.
 	Stopped bool
 }
@@ -273,6 +307,10 @@ type Guest struct {
 	Holds []string `json:"holds,omitempty"`
 	// CPULimit: its CPU cap in cores' worth; 0 = none.
 	CPULimit int `json:"cpu_limit,omitempty"`
+	// CPU, Virtualization, CPUWeight: as GuestSpec's, read on the engine.
+	CPU            string `json:"cpu,omitempty"`
+	Virtualization bool   `json:"virtualization,omitempty"`
+	CPUWeight      int    `json:"cpu_weight,omitempty"`
 	// MemoryUsedMB: what a running guest holds now, where the engine says
 	// (a limit written below it is refused); 0 = unknown or stopped.
 	MemoryUsedMB int `json:"memory_used_mb,omitempty"`
@@ -363,8 +401,9 @@ type Volume struct {
 	// Device: where it is plugged on the guest (or on its shelf).
 	Device string `json:"device,omitempty"`
 	Node   string `json:"node,omitempty"`
-	// InGuest: how its guest finds it — a block volume's stable device path,
-	// a filesystem volume's mount.
+	// InGuest: how its guest finds it — a block volume's device path where
+	// it is plugged now, a filesystem volume's mount. What follows a block
+	// volume from guest to guest is its serial (SerialOf).
 	InGuest string `json:"in_guest,omitempty"`
 }
 

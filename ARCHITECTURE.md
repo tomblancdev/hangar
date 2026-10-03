@@ -369,6 +369,9 @@ advertise the documented flags.
 | `kind.vm` | yes (QEMU) | yes | yes (EC2) | yes |
 | `resize.live.memory_down` | **containers only** | containers | no | yes |
 | `resize.live.cpu_cap` | yes (VM `cpulimit`, CT `cores`/`cpulimit`) | yes | no | yes |
+| `cpu.host` (a VM given its host's own processor, every instruction of it) | yes (`cpu: host`; it is then never live-migrated to another kind of node) | yes | no (an instance type's) | yes |
+| `cpu.nested` (a VM that may run VMs of its own — and, where a guest does not ask, given none) | yes (`nested-virt`, said either way on every VM; the node's own module must allow it) | yes | by instance type | yes |
+| `cpu.weight` (a guest's share of the cores when they are contended) | yes (`cpuunits`, live on both kinds) | yes | no | yes |
 | `volume.move_between_guests` | yes (`target-vmid`, both guests on one node) | yes | yes (EBS) | yes |
 | `guest.suspend_to_disk` | VMs without a passed-through device | yes | hibernate | yes |
 | `guest.tags` | yes | yes (config keys) | yes | yes |
@@ -388,7 +391,10 @@ credential (to prove the plugin received its own).
 **The guests facet** (`driver.Guests`: create, find, list, delete, power,
 reboot, resize — create idempotent on the core's id) carries a guest's name,
 image (the engine's own name for it, per kind), root disk, public keys, user
-data, tags, holds and a CPU cap; it reports its node, addresses and what a
+data, tags, holds, a CPU cap, **its processor** (the model its zone gives
+everyone, or its host's own), **whether it may run VMs of its own**, and
+**its share of the cores** when they are contended (1 to 100, set again at
+once, running or not); it reports its node, addresses and what a
 running guest holds. **`Traits(kind)`** says what a
 guest of one kind takes (user data) and changes while it runs (cores, memory
 up, memory down) — finer than a flag, which speaks for the whole engine: on
@@ -408,7 +414,8 @@ wait on: a watched guest's power, a node's state, whether the zone is awake.
 backup, delete — idempotent on the core's id) makes a volume on a guest or
 parked, and places it on another guest or back parked, keeping its data,
 size and backup flag; a block volume shows its guest the serial
-`vol0123…` (the id without its dash, AWS's form). Where the engine keeps no
+`vol0123…` (the id without its dash, AWS's form) — what follows it from
+guest to guest, where its device path may name only where it is plugged. Where the engine keeps no
 disk without a guest the driver parks one on a stopped **shelf** guest of
 its owner — the plugin never sees a shelf; `CanPark` says where it cannot.
 **The images facet** (`driver.Images`: bake, save, read, delete — idempotent
@@ -426,7 +433,11 @@ cloned from a template found by name and fed their user data on a NoCloud
 seed disc the driver writes and uploads; every long call waits for its task
 (a refused start is a `200` and a failed task). It advertises `kind.*`,
 `guest.tags`, `resize.live.memory_down` (containers, above what they hold),
-`resize.live.cpu_cap` (`cpulimit`, live on both kinds), `hook.pre_start` (its
+`resize.live.cpu_cap` (`cpulimit`, live on both kinds), `cpu.host`,
+`cpu.nested` and `cpu.weight` (a VM's `cpu` line always written — the
+zone's `cpu_model`, `x86-64-v2-AES` unless said, or `host` — with Proxmox's
+`nested-virt` flag said either way; `cpuunits`, live on both kinds —
+[docs/proxmox.md](docs/proxmox.md#how-it-behaves)), `hook.pre_start` (its
 hook, `hangar-hook`, §6), `guest.activity` (the node's own statistics of each
 guest, one sample a minute kept for a day, read with the `VM.Audit` the token
 already has — [docs/proxmox.md](docs/proxmox.md#idleness-and-hours)),
@@ -592,9 +603,31 @@ a private key). The **`console` action** — a terminal into the machine, in the
 carry yet). **The classes,
 `floor_gb`, `cores_beside` and `resume`** are built with §6's room;
 **`idle_after`, keep awake and the hours** (`machines.vcpu_hours`, a meter)
-with §6's power — `set_idle_after`, `keep_awake`, `let_sleep`; **GPU** and
+with §6's power — `set_idle_after`, `keep_awake`, `let_sleep`; **a VM's
+processor** is built — below; **GPU** and
 **`peers`** later. A machine holds its size against its tier while it
 exists, running or not; against its zone, as its class says (§6).
+
+**A VM's processor — three fields, two of them a tier's to open.** A VM
+that asks nothing sees the model its zone gives everyone. **`cpu: host`**
+gives it its host's own processor, every instruction of it: faster (measured
+on one suite of real work: a fifth), and it then runs on that kind of host
+only. **`virtualization: true`** lets it run VMs of its own, and goes with
+`cpu: host`. They are two fields because they are two risks: the first
+shows a guest its host's processor; the second hands it the host's
+virtualisation, a larger surface — so an operator may open speed to many
+and VMs inside to few. Each is a **choice** (`machines.cpu: [host]`,
+`machines.virtualization: [nested]`), asked of a tier **only by a machine
+that wants it**: a tier that names neither gives neither, in words, and goes
+on making every machine that asks for neither — a tier written before them
+needs no change. Both are **set at a machine's birth** (a processor does not
+change under a system that runs). **`cpu_weight`** (1 to 100, a full share
+unless said) is a machine's share of the cores when others want them too —
+a container's as a VM's: it yields, never takes, so no tier is asked; it
+loses nothing while cores are free; and it is changed while the machine
+runs (`set_cpu_weight`, and `apply` asks for that step). Each needs its
+zone's flag (`cpu.host`, `cpu.nested`, `cpu.weight`, §5), and says so where
+it is missing.
 
 **The images plugin is built**, as its row says. An
 image (`img-…`) is **baked** from a recipe of the operator's, or **saved**
@@ -635,7 +668,7 @@ numbers), and its spec written at its admission.
 
 | plugin | resources | actions | limit dimensions (per tier) | driver needs |
 |---|---|---|---|---|
-| **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · set_idle_after · keep_awake (for a time, or until let_sleep) · let_sleep · console (serial / terminal) · delete | count · vCPU · memory GB · **vCPU-hours a month** (a meter) · kinds allowed · classes allowed · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `guest.activity` for `idle_after`, `hook.pre_start` or core admission |
+| **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **`cpu`** (host), **`virtualization`**, **`cpu_weight`**, **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · set_idle_after · set_cpu_weight · keep_awake (for a time, or until let_sleep) · let_sleep · console (serial / terminal) · delete | count · vCPU · memory GB · **vCPU-hours a month** (a meter) · kinds allowed · classes allowed · **a VM's host processor** (`machines.cpu`) · **VMs inside a VM** (`machines.virtualization`) · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `cpu.*` for a processor and a weight, `guest.activity` for `idle_after`, `hook.pre_start` or core admission |
 | **volumes** | **`vol-…`**: size, content (block / filesystem), backup yes/no, the machine it is attached to and its path there, tags | create · attach · detach · **move** (to another machine of the same owner) · resize (grow) · set_backup · delete | count · total GB · **backed-up GB** | `volume.move_between_guests`, `fence.pool`; where the engine keeps no disk without a guest, an unattached volume parks on a stopped **« shelf » guest** of its owner |
 | **images** | **`img-…`**: name, family, kind, size, whom it is shared with (`shared_with`: groups, `*` = everyone), retired, the recipe it came from (`from`) or the machine it was saved from; observed: `pending` → `available` \| `failed` (its words), `waiting` while the zone's room is held, its engine form per kind | **bake** (create from a `recipe`) · **save** (create from a stopped `machine`) · share · retire · rebake · delete | `images.count` · `images.size_gb` (one's own) · choices `images.source` (recipe, machine) and `images.visibility` (private, shared, public) | the images facet (`driver.Images`): a bake moved forward call by call, a save, a delete refused under linked clones — Proxmox VE: VM templates in the images pool, a builder VM per bake |
 

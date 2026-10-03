@@ -41,7 +41,15 @@ func TestBenchAGuestsActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.CreateGuest(ctx, driver.GuestSpec{ID: vm, Kind: "vm", Name: "quiet-vm", Cores: 1, MemoryMB: 1024, Image: "debian-13"}); err != nil {
+	// a Debian 13 guest fetches its packages' changelogs once, at the first
+	// top of the hour of its life (apt-listchanges.timer: hourly, then it
+	// disables itself): a minute that is rightly not quiet, and that sent
+	// this test red whenever it ran across an hour. Both guests are told not
+	// to — the container from the node, the VM by its first boot — so the
+	// clock on the wall is no part of what is measured.
+	b.must(t, "pct exec "+vmid(c)+" -- sh -c 'systemctl disable --now apt-listchanges.timer >/dev/null 2>&1; true'")
+	once := "#cloud-config\nruncmd:\n  - [sh, -c, 'systemctl disable --now apt-listchanges.timer; true']\n"
+	if _, err := d.CreateGuest(ctx, driver.GuestSpec{ID: vm, Kind: "vm", Name: "quiet-vm", Cores: 1, MemoryMB: 1024, Image: "debian-13", UserData: []byte(once)}); err != nil {
 		t.Fatal(err)
 	}
 	// since when it runs: its start, within the seconds its create took

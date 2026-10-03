@@ -35,7 +35,7 @@ func TestBenchTheDevBoxApplied(t *testing.T) {
 	benchSSH := func(cmd string) (string, error) {
 		out, err := exec.Command("ssh", "-i", os.Getenv("HANGAR_BENCH_SSH_KEY"), "-p", os.Getenv("HANGAR_BENCH_SSH_PORT"),
 			"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
-			"root@127.0.0.1", cmd).CombinedOutput()
+			benchRoot(), cmd).CombinedOutput()
 		return strings.TrimSpace(string(out)), err
 	}
 	must := func(cmd string) string {

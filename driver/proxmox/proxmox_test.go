@@ -394,3 +394,184 @@ func has(list []string, s string) bool {
 }
 
 func sha(b []byte) [32]byte { return sha256.Sum256(b) }
+
+// A VM's processor, as it is written for Proxmox and read back: the zone's
+// model or the host's, and virtualisation said either way — a VM that did
+// not ask is given none, whatever its model carries.
+func TestAVMsProcessorLine(t *testing.T) {
+	a := newAPI()
+	d := open(t, a, nil)
+	for name, c := range map[string]struct {
+		s    driver.GuestSpec
+		want string
+	}{
+		"nothing asked":       {driver.GuestSpec{}, "x86-64-v2-AES,flags=-nested-virt"},
+		"its host's":          {driver.GuestSpec{CPU: driver.CPUModelHost}, "host,flags=-nested-virt"},
+		"its host's, VMs too": {driver.GuestSpec{CPU: driver.CPUModelHost, Virtualization: true}, "host,flags=+nested-virt"},
+	} {
+		if got := d.cpuLine(c.s); got != c.want {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
+		// and it reads back as it was asked
+		model, virt := cpuOf(c.want)
+		if model != c.s.CPU || virt != c.s.Virtualization {
+			t.Errorf("%s: %q reads back as %q %v", name, c.want, model, virt)
+		}
+	}
+	// the operator's own model for the zone: every VM that asks nothing
+	e := open(t, a, map[string]string{"cpu_model": "EPYC-v4"})
+	if got := e.cpuLine(driver.GuestSpec{}); got != "EPYC-v4,flags=-nested-virt" {
+		t.Errorf("the zone's model: %q", got)
+	}
+	if got := e.cpuLine(driver.GuestSpec{CPU: driver.CPUModelHost}); got != "host,flags=-nested-virt" {
+		t.Errorf("its host's, in a zone with a model of its own: %q", got)
+	}
+	// lines no driver wrote: a hand's `host` carries virtualisation, the
+	// API's own default and a generic model carry none
+	for line, want := range map[string][2]any{
+		"host":                                  {"host", true},
+		"cputype=host":                          {"host", true},
+		"host,flags=+aes;-nested-virt":          {"host", false},
+		"":                                      {"", false},
+		"kvm64":                                 {"", false},
+		"x86-64-v2-AES":                         {"", false},
+		"x86-64-v2-AES,flags=+aes;+nested-virt": {"", true},
+		"host,hidden=1,flags=+pcid":             {"host", true},
+	} {
+		if model, virt := cpuOf(line); model != want[0] || virt != want[1] {
+			t.Errorf("%q reads as %q %v, want %v", line, model, virt, want)
+		}
+	}
+	for name, s := range map[string]driver.GuestSpec{
+		"another model":           {Kind: "vm", CPU: "EPYC"},
+		"a container's processor": {Kind: "container", CPU: driver.CPUModelHost},
+		"VMs inside a container":  {Kind: "container", Virtualization: true},
+		"VMs on a generic model":  {Kind: "vm", Virtualization: true},
+		"more than a full share":  {Kind: "vm", CPUWeight: 101},
+	} {
+		if err := cpuRefusal(s); !errors.Is(err, driver.ErrRefused) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, s := range map[string]driver.GuestSpec{
+		"nothing asked":      {Kind: "vm"},
+		"a container":        {Kind: "container", CPUWeight: 25},
+		"host, VMs, a share": {Kind: "vm", CPU: driver.CPUModelHost, Virtualization: true, CPUWeight: 1},
+	} {
+		if err := cpuRefusal(s); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for _, bad := range []string{"host,flags=+nested-virt", "x86 64", "-v2", "a;b"} {
+		srv := httptest.NewTLSServer(a)
+		_, err := Open(context.Background(), driver.Params{Zone: "z", Endpoint: srv.URL, Credential: []byte("tok@pve!t=s3cret"),
+			Options: map[string]string{"node": "n", "pool": "hangar", "storage": "s", "seed_storage": "i", "bridge": "b", "vmids": "11000-11009",
+				"fingerprint": fmt.Sprintf("%x", sha(srv.Certificate().Raw)), "cpu_model": bad}})
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), "cpu_model") {
+			t.Errorf("cpu_model %q: %v", bad, err)
+		}
+	}
+	for _, c := range []driver.Capability{driver.CPUHost, driver.CPUNested, driver.CPUWeight} {
+		if !has(d.Capabilities(), c) {
+			t.Errorf("the driver does not advertise %s", c)
+		}
+	}
+}
+
+// A guest's share of the cores: read from its config (none written is a
+// full one), written only when it differs — a VM's through its task, a
+// container's at once.
+func TestAGuestsWeight(t *testing.T) {
+	a := newAPI()
+	a.res = []resource{
+		{VMID: 11001, Node: "node-a", Type: "qemu", Pool: "hangar", Tags: "hangar-id.m-000000000000000aa", Name: "vm"},
+		{VMID: 11002, Node: "node-a", Type: "lxc", Pool: "hangar", Tags: "hangar-id.m-000000000000000bb"},
+	}
+	cfg := map[string]map[string]any{
+		"qemu/11001": {"tags": "hangar-id.m-000000000000000aa", "cores": 2, "memory": "1024", "cpu": "host,flags=-nested-virt"},
+		"lxc/11002":  {"tags": "hangar-id.m-000000000000000bb", "cores": 1, "memory": 512, "cpuunits": 25, "hostname": "ct"},
+	}
+	var wrote []string
+	for k := range cfg {
+		a.h["GET /nodes/node-a/"+k+"/config"] = func(w http.ResponseWriter, _ *http.Request) { data(w, cfg[k]) }
+		a.h["GET /nodes/node-a/"+k+"/status/current"] = func(w http.ResponseWriter, _ *http.Request) { data(w, map[string]any{"status": "stopped"}) }
+		write := func(w http.ResponseWriter, r *http.Request) {
+			_ = r.ParseForm()
+			wrote = append(wrote, r.Method+" "+k+" cpuunits="+r.Form.Get("cpuunits"))
+			n := 0
+			_, _ = fmt.Sscan(r.Form.Get("cpuunits"), &n)
+			cfg[k]["cpuunits"] = n
+			if r.Method == http.MethodPost {
+				data(w, a.task("OK", ""))
+				return
+			}
+			data(w, nil)
+		}
+		a.h["POST /nodes/node-a/"+k+"/config"] = write
+		a.h["PUT /nodes/node-a/"+k+"/config"] = write
+	}
+	d := open(t, a, nil)
+	ctx := context.Background()
+	vm, err := d.Guest(ctx, "m-000000000000000aa")
+	if err != nil || vm.CPUWeight != driver.FullWeight || vm.CPU != driver.CPUModelHost || vm.Virtualization {
+		t.Fatalf("a VM with no weight written: %+v %v", vm, err)
+	}
+	ct, err := d.Guest(ctx, "m-000000000000000bb")
+	if err != nil || ct.CPUWeight != 25 || ct.CPU != "" {
+		t.Fatalf("a container at 25: %+v %v", ct, err)
+	}
+	// already so: nothing written
+	if _, err := d.SetCPUWeight(ctx, "m-000000000000000aa", 100); err != nil || len(wrote) != 0 {
+		t.Fatalf("a full share written on one that has it: %v %v", wrote, err)
+	}
+	if _, err := d.SetCPUWeight(ctx, "m-000000000000000bb", 25); err != nil || len(wrote) != 0 {
+		t.Fatalf("25 written on one at 25: %v %v", wrote, err)
+	}
+	if vm, err = d.SetCPUWeight(ctx, "m-000000000000000aa", 40); err != nil || vm.CPUWeight != 40 {
+		t.Fatalf("%+v %v", vm, err)
+	}
+	if ct, err = d.SetCPUWeight(ctx, "m-000000000000000bb", 0); err != nil || ct.CPUWeight != driver.FullWeight {
+		t.Fatalf("%+v %v", ct, err)
+	}
+	if got := strings.Join(wrote, "; "); got != "POST qemu/11001 cpuunits=40; PUT lxc/11002 cpuunits=100" {
+		t.Fatalf("written: %s", got)
+	}
+	if _, err := d.SetCPUWeight(ctx, "m-000000000000000aa", 101); !errors.Is(err, driver.ErrRefused) {
+		t.Fatalf("more than a full share: %v", err)
+	}
+}
+
+// A VM's system disk is made to give back what is deleted inside it, once:
+// a line that says so already is left alone, and its other options stay.
+func TestAVMsDiskGivesSpaceBack(t *testing.T) {
+	a := newAPI()
+	var wrote []string
+	a.h["POST /nodes/node-a/qemu/11001/config"] = func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		wrote = append(wrote, r.Form.Encode())
+		data(w, a.task("OK", ""))
+	}
+	d := open(t, a, nil)
+	r := resource{VMID: 11001, Node: "node-a", Type: "qemu"}
+	ctx := context.Background()
+	if err := d.trim(ctx, r, map[string]any{"boot": "order=scsi0", "scsi0": "local-zfs:base-9000-disk-0/vm-11001-disk-0,size=3G",
+		"ide2": "seeds:iso/x.iso,media=cdrom"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(wrote) != 1 || wrote[0] != "scsi0=local-zfs%3Abase-9000-disk-0%2Fvm-11001-disk-0%2Csize%3D3G%2Cdiscard%3Don" {
+		t.Fatalf("written: %v", wrote)
+	}
+	if err := d.trim(ctx, r, map[string]any{"boot": "order=scsi0", "scsi0": "local-zfs:vm-11001-disk-0,discard=on,size=3G"}); err != nil || len(wrote) != 1 {
+		t.Fatalf("a disk that says so already was written again: %v %v", wrote, err)
+	}
+	// one that says `ignore` is made to
+	if err := d.trim(ctx, r, map[string]any{"scsi0": "local-zfs:vm-11001-disk-0,discard=ignore,iothread=1,size=3G"}); err != nil || len(wrote) != 2 ||
+		wrote[1] != "scsi0=local-zfs%3Avm-11001-disk-0%2Ciothread%3D1%2Csize%3D3G%2Cdiscard%3Don" {
+		t.Fatalf("written: %v %v", wrote, err)
+	}
+	// a VM with no disk of its own (a shelf): nothing to write
+	if err := d.trim(ctx, r, map[string]any{"ide2": "seeds:iso/x.iso,media=cdrom"}); err != nil || len(wrote) != 2 {
+		t.Fatalf("a VM with no disk: %v %v", wrote, err)
+	}
+}

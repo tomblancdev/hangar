@@ -39,7 +39,7 @@ func TestBenchTheHours(t *testing.T) {
 	benchSSH := func(cmd string) (string, error) {
 		out, err := exec.Command("ssh", "-i", os.Getenv("HANGAR_BENCH_SSH_KEY"), "-p", os.Getenv("HANGAR_BENCH_SSH_PORT"),
 			"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
-			"root@127.0.0.1", cmd).CombinedOutput()
+			benchRoot(), cmd).CombinedOutput()
 		return strings.TrimSpace(string(out)), err
 	}
 	must := func(cmd string) string {
@@ -212,7 +212,16 @@ reconcile: {every: 10s}
 		made = append(made, who+" "+id)
 		_, r := call(who, "GET", "/v1/resources/"+id, nil)
 		ref, _ := r["observed"].(map[string]any)["engine_ref"].(string)
-		return id, ref[strings.LastIndex(ref, "/")+1:]
+		vmid = ref[strings.LastIndex(ref, "/")+1:]
+		// a Debian 13 guest fetches its packages' changelogs once, at the
+		// first top of the hour of its life (apt-listchanges.timer: hourly,
+		// then it disables itself) — a minute of network and CPU that is
+		// rightly not idle, and that sent this test red whenever it ran
+		// across an hour (read twice: 770 kB received by each container at
+		// :00). These machines are told not to, so the clock on the wall
+		// is no part of what is measured.
+		must("pct exec " + vmid + " -- sh -c 'systemctl disable --now apt-listchanges.timer >/dev/null 2>&1; true'")
+		return id, vmid
 	}
 	act := func(who, id, action string, params map[string]any) (int, map[string]any) {
 		var body any
@@ -323,8 +332,14 @@ reconcile: {every: 10s}
 	until("the machine let sleep is stopped", 90*time.Second, func() bool { return !runs(kv) })
 	t.Logf("at %s: let sleep, the machine kept awake was stopped %s later", since(), time.Since(silent).Round(time.Second))
 	until("the machine that talked is stopped", 9*time.Minute, func() bool { return !runs(tv) })
-	if quiet := time.Since(silent); quiet < 5*time.Minute {
-		t.Fatalf("stopped %s after its packets ended, before its idle_after", quiet.Round(time.Second))
+	// its idle_after is counted in the engine's own samples, a minute's
+	// average each: the minute its packets ended in may read quiet already
+	// (a few seconds of a packet a second average under the threshold), so
+	// it is stopped up to one sample before five minutes of silence by the
+	// clock — never more. Read on a faster bench: 4m59s, where a slower one
+	// had always landed past five.
+	if quiet := time.Since(silent); quiet < 4*time.Minute {
+		t.Fatalf("stopped %s after its packets ended: more than a sample before its idle_after", quiet.Round(time.Second))
 	}
 	t.Logf("at %s: the machine that talked was stopped %s after its last packet", since(), time.Since(silent).Round(time.Second))
 	// stopped for idleness, it starts again when its owner says

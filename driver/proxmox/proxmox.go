@@ -21,6 +21,9 @@
 //	vlan            a VLAN tag on it                               (optional)
 //	vmids           the ids this driver may take, "11000-11099"    (required)
 //	full_clone      "true": full clones even beside the template
+//	cpu_model       the processor a VM sees unless it asks for its host's
+//	                (default x86-64-v2-AES: what Proxmox's own form picks —
+//	                the API's own default, kvm64, has no AES and no SSE4.2)
 //	shelf_archive   a container archive to make volumes' container shelves
 //	                from (volumes.go); without one, a filesystem volume
 //	                lives on a container only
@@ -65,6 +68,19 @@ const Name = "proxmox"
 
 func init() { driver.Register(Name, Open) }
 
+// defaultCPUModel is the processor a VM sees when its zone names none. Left
+// unsaid, the API gives kvm64 — a 2003 processor: no AES, no SSE4.2, no AVX
+// (read on Proxmox VE 9.2: `-cpu kvm64`); the web form's own default is this.
+const defaultCPUModel = "x86-64-v2-AES"
+
+// cpuModelName: what a zone's cpu_model may be — a name, never a line of
+// options (the driver writes the flags).
+var cpuModelName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// nestedFlag is Proxmox's own word for virtualisation inside a VM (svm on
+// AMD, vmx on Intel — qemu-server 9.0.27, Proxmox VE 9.1).
+const nestedFlag = "nested-virt"
+
 // idTag is the tag that carries the core's id on a guest.
 const idTag = "hangar-id"
 
@@ -84,6 +100,7 @@ type Driver struct {
 	vlan     int
 	lo, hi   int
 	full     bool
+	cpuModel string        // the processor a VM sees unless it asks for its host's
 	shutdown int           // seconds a shutdown is waited for before a stop
 	listLag  time.Duration // pvestatd's pass: how late /cluster/resources may list a new guest
 	answerIn time.Duration // how long a node is given to answer a survey's question
@@ -105,7 +122,7 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	d := &Driver{
 		zone: p.Zone, node: o["node"], pool: o["pool"], images: o["images_pool"], storage: o["storage"],
 		seeds: o["seed_storage"], bridge: o["bridge"], full: o["full_clone"] == "true", shutdown: 60, listLag: 10 * time.Second,
-		answerIn: nodeAnswersWithin, shelfArchive: o["shelf_archive"],
+		answerIn: nodeAnswersWithin, shelfArchive: o["shelf_archive"], cpuModel: defaultCPUModel,
 	}
 	for _, ref := range p.Watch {
 		if n, err := strconv.Atoi(ref); err != nil || n < 100 {
@@ -119,6 +136,12 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 			return nil, fmt.Errorf("proxmox zone %s: shutdown_timeout %q: 1 to 3600 seconds", p.Zone, v)
 		}
 		d.shutdown = n
+	}
+	if v := o["cpu_model"]; v != "" {
+		if !cpuModelName.MatchString(v) {
+			return nil, fmt.Errorf("proxmox zone %s: cpu_model %q: a model's name, as Proxmox lists them (x86-64-v2-AES, host, EPYC-v4, custom-…)", p.Zone, v)
+		}
+		d.cpuModel = v
 	}
 	var missing []string
 	for _, k := range []string{"node", "pool", "storage", "seed_storage", "bridge", "vmids"} {
@@ -157,7 +180,8 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 		return nil, fmt.Errorf("proxmox zone %s: %w", p.Zone, err)
 	}
 	d.caps = []driver.Capability{driver.KindContainer, driver.KindVM, driver.GuestTags, driver.GuestActivity,
-		driver.ResizeLiveMemoryDown, driver.ResizeLiveCPUCap, driver.HookPreStart, driver.VolumeMoveBetweenGuests}
+		driver.ResizeLiveMemoryDown, driver.ResizeLiveCPUCap, driver.CPUHost, driver.CPUNested, driver.CPUWeight,
+		driver.HookPreStart, driver.VolumeMoveBetweenGuests}
 	why, err := d.fence(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: reading what the token may do: %w", p.Zone, err)
@@ -396,7 +420,10 @@ func (d *Driver) read(ctx context.Context, r resource, id string) (driver.Guest,
 		ID: guestID(str(cfg["tags"])), EngineRef: fmt.Sprintf("%s/%s/%d", r.Node, r.Type, r.VMID),
 		Kind: r.kind(), Node: r.Node, Running: st.Status == "running", Tags: tagMap(str(cfg["tags"])),
 		Holds: holdsOf(str(cfg["tags"])), Cores: num(cfg["cores"]), MemoryMB: memoryMB(cfg["memory"]),
-		CPULimit: int(math.Ceil(fnum(cfg["cpulimit"]))),
+		CPULimit: int(math.Ceil(fnum(cfg["cpulimit"]))), CPUWeight: driver.WeightOf(num(cfg["cpuunits"])),
+	}
+	if r.Type == "qemu" {
+		g.CPU, g.Virtualization = cpuOf(str(cfg["cpu"]))
 	}
 	if g.Running {
 		g.MemoryUsedMB = int((st.Mem + (1 << 20) - 1) >> 20)
@@ -615,6 +642,9 @@ func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Gu
 	if err != nil {
 		return driver.Guest{}, err
 	}
+	if err := cpuRefusal(s); err != nil {
+		return driver.Guest{}, err
+	}
 	r, err := d.find(ctx, s.ID)
 	switch {
 	case err == nil: // a retry: finish what the first call began
@@ -730,6 +760,7 @@ func (d *Driver) createContainer(ctx context.Context, vmid int, s driver.GuestSp
 		"ostemplate":   {s.Image},
 		"hostname":     {s.Name},
 		"cores":        {strconv.Itoa(s.Cores)},
+		"cpuunits":     {strconv.Itoa(driver.WeightOf(s.CPUWeight))},
 		"memory":       {strconv.Itoa(s.MemoryMB)},
 		"swap":         {"0"},
 		"rootfs":       {fmt.Sprintf("%s:%d", d.storage, disk)},
@@ -800,38 +831,112 @@ func (d *Driver) cloneVM(ctx context.Context, vmid int, s driver.GuestSpec) erro
 
 func seedName(id string) string { return "hangar-seed-" + id + ".iso" }
 
+// cpuRefusal says why a guest's processor cannot be what its spec asks.
+func cpuRefusal(s driver.GuestSpec) error {
+	switch {
+	case s.CPU != "" && s.CPU != driver.CPUModelHost:
+		return fmt.Errorf("%w: no processor %q here: %s, or none", driver.ErrRefused, s.CPU, driver.CPUModelHost)
+	case s.Kind == "container" && (s.CPU != "" || s.Virtualization):
+		return fmt.Errorf("%w: a container sees its host's processor already and runs no VM of its own: both are a VM's", driver.ErrRefused)
+	case s.Virtualization && s.CPU != driver.CPUModelHost:
+		// Proxmox's own advice on its flag: a model like the host's, never a
+		// generic one — the nested hypervisor reads the processor it runs on
+		return fmt.Errorf("%w: a VM that runs VMs of its own sees its host's processor: cpu %s with it", driver.ErrRefused, driver.CPUModelHost)
+	case s.CPUWeight < 0 || s.CPUWeight > driver.FullWeight:
+		return fmt.Errorf("%w: a weight of %d: 1 to %d", driver.ErrRefused, s.CPUWeight, driver.FullWeight)
+	}
+	return nil
+}
+
+// cpuLine is a VM's processor as Proxmox takes it: the zone's model or its
+// host's own, and virtualisation said either way — a model may carry it
+// (host does, wherever the node allows it), and a VM that did not ask is
+// given none.
+func (d *Driver) cpuLine(s driver.GuestSpec) string {
+	model, sign := d.cpuModel, "-"
+	if s.CPU == driver.CPUModelHost {
+		model = "host"
+	}
+	if s.Virtualization {
+		sign = "+"
+	}
+	return model + ",flags=" + sign + nestedFlag
+}
+
+// cpuOf reads a VM's cpu line: whether it sees its host's processor, and
+// whether it may run VMs of its own — said by the flag, and where the line
+// says nothing by the model: host carries it.
+func cpuOf(line string) (string, bool) {
+	parts := strings.Split(line, ",")
+	model, virt := "", false
+	if strings.TrimPrefix(parts[0], "cputype=") == "host" {
+		model, virt = driver.CPUModelHost, true
+	}
+	for _, p := range parts[1:] {
+		flags, ok := strings.CutPrefix(p, "flags=")
+		if !ok {
+			continue
+		}
+		for _, f := range strings.Split(flags, ";") {
+			switch f {
+			case "+" + nestedFlag:
+				virt = true
+			case "-" + nestedFlag:
+				virt = false
+			}
+		}
+	}
+	return model, virt
+}
+
+// trim makes a VM's system disk give back to its storage what is deleted
+// inside it (discard), unless its line says so already: a clone's disk says
+// what its template's did, and one baked before this said nothing — a thin
+// disk that only ever grew.
+func (d *Driver) trim(ctx context.Context, r resource, cfg map[string]any) error {
+	disk := bootDisk(cfg)
+	line := str(cfg[disk])
+	if v, _ := optOf(line, "discard"); disk == "" || v == "on" {
+		return nil
+	}
+	return d.c.run(ctx, http.MethodPost, r.path()+"/config", url.Values{disk: {withOpts(line, map[string]string{"discard": "on"})}})
+}
+
 // configureVM makes a clone the machine asked for — idempotent, so a retry
-// finishes a create that stopped half-way: its seed disc, size, network and
-// tags, then its disk grown to the size asked.
+// finishes a create that stopped half-way: its seed disc, size, processor,
+// network and tags, then its disk made to give space back and grown to the
+// size asked.
 func (d *Driver) configureVM(ctx context.Context, r resource, s driver.GuestSpec, tagStr string) error {
 	volid := d.seeds + ":iso/" + seedName(s.ID)
 	if err := d.upload(ctx, s, volid); err != nil {
 		return err
 	}
 	p := url.Values{
-		"cores":   {strconv.Itoa(s.Cores)},
-		"sockets": {"1"},
-		"memory":  {strconv.Itoa(s.MemoryMB)},
-		"numa":    {"1"},
-		"hotplug": {"disk,network,usb,memory"},
-		"net0":    {d.net0(false)},
-		"ide2":    {volid + ",media=cdrom"},
-		"tags":    {tagStr},
-		"agent":   {"enabled=1"},
-		"onboot":  {"0"},
+		"cores":    {strconv.Itoa(s.Cores)},
+		"sockets":  {"1"},
+		"cpu":      {d.cpuLine(s)},
+		"cpuunits": {strconv.Itoa(driver.WeightOf(s.CPUWeight))},
+		"memory":   {strconv.Itoa(s.MemoryMB)},
+		"numa":     {"1"},
+		"hotplug":  {"disk,network,usb,memory"},
+		"net0":     {d.net0(false)},
+		"ide2":     {volid + ",media=cdrom"},
+		"tags":     {tagStr},
+		"agent":    {"enabled=1"},
+		"onboot":   {"0"},
 	}
 	if err := d.c.run(ctx, http.MethodPost, r.path()+"/config", p); err != nil {
 		return err
-	}
-	if s.DiskGB == 0 {
-		return nil
 	}
 	var cfg map[string]any
 	if err := d.c.call(ctx, http.MethodGet, r.path()+"/config", nil, &cfg); err != nil {
 		return err
 	}
+	if err := d.trim(ctx, r, cfg); err != nil {
+		return err
+	}
 	disk := bootDisk(cfg)
-	if disk == "" || sizeGB(str(cfg[disk])) >= s.DiskGB {
+	if s.DiskGB == 0 || disk == "" || sizeGB(str(cfg[disk])) >= s.DiskGB {
 		return nil
 	}
 	return d.c.run(ctx, http.MethodPut, r.path()+"/resize", url.Values{"disk": {disk}, "size": {fmt.Sprintf("%dG", s.DiskGB)}})
@@ -985,6 +1090,29 @@ func (d *Driver) SetCPULimit(ctx context.Context, id string, cores int) (driver.
 	}
 	if err := d.cpuLimit(ctx, r, cores); err != nil {
 		return driver.Guest{}, d.engine(err)
+	}
+	return d.read(ctx, r, id)
+}
+
+// SetCPUWeight sets a guest's share of contended cores (cpuunits: the
+// cgroup's cpu.weight, live on both kinds), unless it already reads so.
+func (d *Driver) SetCPUWeight(ctx context.Context, id string, weight int) (driver.Guest, error) {
+	if weight < 0 || weight > driver.FullWeight {
+		return driver.Guest{}, fmt.Errorf("%w: a weight of %d: 1 to %d", driver.ErrRefused, weight, driver.FullWeight)
+	}
+	weight = driver.WeightOf(weight)
+	r, err := d.find(ctx, id)
+	if err != nil {
+		return driver.Guest{}, d.engine(err)
+	}
+	var cfg map[string]any
+	if err := d.c.call(ctx, http.MethodGet, r.path()+"/config", nil, &cfg); err != nil {
+		return driver.Guest{}, d.engine(err)
+	}
+	if driver.WeightOf(num(cfg["cpuunits"])) != weight {
+		if err := d.setConfig(ctx, r, url.Values{"cpuunits": {strconv.Itoa(weight)}}); err != nil {
+			return driver.Guest{}, d.engine(err)
+		}
 	}
 	return d.read(ctx, r, id)
 }

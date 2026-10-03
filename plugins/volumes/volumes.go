@@ -64,7 +64,8 @@ type Observed struct {
 	Machine   string `json:"machine,omitempty"`
 	Mount     string `json:"mount,omitempty"`
 	Device    string `json:"device,omitempty"`
-	// InGuest: where its machine finds it — a disk's stable path, or the mount.
+	// InGuest: where its machine finds it — a disk's path where it is plugged
+	// now, or the mount. Its serial is what follows a disk between machines.
 	InGuest string `json:"in_guest,omitempty"`
 }
 

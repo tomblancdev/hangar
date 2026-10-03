@@ -44,7 +44,7 @@ func TestBenchTheRoom(t *testing.T) {
 		t.Skip("no bench: sh tools/bench/bench.sh up, then eval its env")
 	}
 	sshArgs := []string{"-i", os.Getenv("HANGAR_BENCH_SSH_KEY"), "-p", os.Getenv("HANGAR_BENCH_SSH_PORT"),
-		"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "root@127.0.0.1"}
+		"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", benchRoot()}
 	benchSSH := func(cmd string, stdin ...[]byte) (string, error) {
 		c := exec.Command("ssh", append(sshArgs, cmd)...)
 		if len(stdin) > 0 {
@@ -153,9 +153,23 @@ reconcile: {every: 10s}
 		t.Fatal(err)
 	}
 	must("mkdir -p /var/lib/vz/snippets /etc/hangar && cat > /var/lib/vz/snippets/hangar-hook.new && chmod 755 /var/lib/vz/snippets/hangar-hook.new && mv /var/lib/vz/snippets/hangar-hook.new /var/lib/vz/snippets/hangar-hook", hookBin)
+	// the hook reaches this brain on the bench's OWN loopback, through a
+	// tunnel held open over the ssh the test already has: the same path
+	// wherever the bench is — a VM on this machine, or a machine elsewhere
 	port := addr[strings.LastIndex(addr, ":")+1:]
+	tunnel := exec.Command("ssh", append([]string{"-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15",
+		"-R", "127.0.0.1:" + port + ":127.0.0.1:" + port}, sshArgs...)...)
+	var tunnelErr bytes.Buffer
+	tunnel.Stderr = &tunnelErr
+	if err := tunnel.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tunnel.Process.Kill(); _ = tunnel.Wait() })
+	if out, err := benchSSH("for i in $(seq 1 40); do ss -ltn | grep -q '127.0.0.1:" + port + " ' && exit 0; sleep 0.5; done; exit 1"); err != nil {
+		t.Fatalf("no tunnel from the bench to this brain on port %s: %v %s %s", port, err, out, tunnelErr.String())
+	}
 	must(`cat > /etc/hangar/hook.json`, fmt.Appendf(nil,
-		`{"brain": "http://10.0.2.2:%s", "token_file": "/etc/hangar/hook.token", "zone": "bench", "timeout": "60s", "shutdown_timeout": "20s", "grace": "30s"}`, port)) // no-environment: ok — QEMU user networking's own address for its host, the same on every machine
+		`{"brain": "http://127.0.0.1:%s", "token_file": "/etc/hangar/hook.token", "zone": "bench", "timeout": "60s", "shutdown_timeout": "20s", "grace": "30s"}`, port))
 	must(`umask 077 && cat > /etc/hangar/hook.token`, []byte(hookToken+"\n"))
 	must("qm stop 100 >/dev/null 2>&1; rm -rf /run/hangar-hook; qm set 9000 --hookscript local:snippets/hangar-hook >/dev/null && qm set 100 --hookscript local:snippets/hangar-hook >/dev/null")
 	t.Cleanup(func() { _, _ = benchSSH("qm stop 100 >/dev/null 2>&1; true") })
@@ -225,6 +239,29 @@ reconcile: {every: 10s}
 			}
 		}
 	}
+	// gone deletes a machine at the test's end AND waits for it: a delete is
+	// only accepted when it is answered, and the brain is killed right after
+	// the cleanups — every run left its three guests running on the bench,
+	// and the next ran beside them (read on a second pass: a 6 GB bench that
+	// starved, and stopped answering)
+	gone := func(id string) {
+		code, acc := call("DELETE", "/v1/resources/"+id, nil)
+		if code != 202 {
+			return
+		}
+		op, _ := acc["operation"].(map[string]any)["id"].(string)
+		for deadline := time.Now().Add(3 * time.Minute); time.Now().Before(deadline); {
+			_, o := call("GET", "/v1/operations/"+op+"?wait=30", nil)
+			switch o["state"] {
+			case "succeeded":
+				return
+			case "failed":
+				t.Errorf("cleaning up %s: %v", id, o)
+				return
+			}
+		}
+		t.Errorf("cleaning up %s: its delete did not end", id)
+	}
 	get := func(id string) map[string]any { _, r := call("GET", "/v1/resources/"+id, nil); return r }
 	vmidOf := func(id string) string {
 		ref, _ := get(id)["observed"].(map[string]any)["engine_ref"].(string)
@@ -246,14 +283,14 @@ reconcile: {every: 10s}
 	kp := await("the key pair", code, acc)
 	code, acc = machine(map[string]any{"name": "spot-vm", "type": "t3.micro", "disk_gb": 4, "key_pairs": []string{kp}})
 	vm := await("the spot VM", code, acc)
-	t.Cleanup(func() { call("DELETE", "/v1/resources/"+vm, nil) })
+	t.Cleanup(func() { gone(vm) })
 	code, acc = machine(map[string]any{"name": "spot-once", "kind": "container", "type": "t3.micro", "disk_gb": 2, "resume": false})
 	once := await("the spot container", code, acc)
-	t.Cleanup(func() { call("DELETE", "/v1/resources/"+once, nil) })
+	t.Cleanup(func() { gone(once) })
 	code, acc = machine(map[string]any{"name": "floor", "kind": "container", "class": "guaranteed+spot", "cores": 2, "memory_gb": 2,
 		"floor_gb": 1, "cores_beside": 1, "disk_gb": 2})
 	gs := await("the floor", code, acc)
-	t.Cleanup(func() { call("DELETE", "/v1/resources/"+gs, nil) })
+	t.Cleanup(func() { gone(gs) })
 	vmID, onceID, gsID := vmidOf(vm), vmidOf(once), vmidOf(gs)
 	t.Logf("spot VM %s = %s, spot container %s = %s, floor %s = %s", vm, vmID, once, onceID, gs, gsID)
 	if out := must("qm config " + vmID); !strings.Contains(out, "hookscript: local:snippets/hangar-hook") || !strings.Contains(out, "admitted.1024") {

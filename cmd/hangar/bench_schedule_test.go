@@ -38,7 +38,7 @@ func TestBenchARecipeBakedAgainByItself(t *testing.T) {
 		defer cancel()
 		out, err := exec.CommandContext(ctx, "ssh", "-i", os.Getenv("HANGAR_BENCH_SSH_KEY"), "-p", os.Getenv("HANGAR_BENCH_SSH_PORT"),
 			"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
-			"-o", "ConnectTimeout=30", "root@127.0.0.1", cmd).CombinedOutput()
+			"-o", "ConnectTimeout=30", benchRoot(), cmd).CombinedOutput()
 		return strings.TrimSpace(string(out)), err
 	}
 

@@ -263,8 +263,9 @@ func TestBenchAVMsVolume(t *testing.T) {
 		}
 		b.dropShelves(t, "qm", owner)
 	})
+	pub, key := b.guestKey(t, "bench-vol")
 	for _, id := range []string{a, bb} {
-		if _, err := m.CreateGuest(ctx, driver.GuestSpec{ID: id, Kind: "vm", Cores: 1, MemoryMB: 1024, Image: "debian-13"}); err != nil {
+		if _, err := m.CreateGuest(ctx, driver.GuestSpec{ID: id, Kind: "vm", Cores: 1, MemoryMB: 1024, Image: "debian-13", SSHKeys: []string{pub}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -280,11 +281,22 @@ func TestBenchAVMsVolume(t *testing.T) {
 		t.Fatal(err)
 	}
 	serial := driver.SerialOf(vol)
-	if got.Guest != a || got.Backup || !strings.HasSuffix(got.InGuest, serial) || len(serial) != 20 {
+	if got.Guest != a || got.Backup || !strings.HasSuffix(got.InGuest, "_drive-"+got.Device) || len(serial) != 20 {
 		t.Fatalf("made on %s as %+v", a, got)
 	}
 	if s := b.serial(t, va, got.Device); s != serial {
 		t.Fatalf("the hot-plugged disk shows the serial %q, not %q", s, serial)
+	}
+	// and INSIDE the guest: the path the driver names is that disk — the one
+	// with the volume's serial —, and it passes on what is discarded
+	ipA := b.lease(t, va)
+	in := strings.Fields(b.inGuest(t, key, ipA, "dev=$(readlink -f "+got.InGuest+") && lsblk -dno SERIAL,DISC-MAX $dev"))
+	if len(in) != 2 || in[0] != serial || in[1] == "0B" {
+		t.Fatalf("in the guest %s is %q (want the serial %s and a disk that discards); it has: %s", got.InGuest, in, serial,
+			b.inGuest(t, key, ipA, "ls /dev/disk/by-id/; lsblk -dno NAME,SERIAL,DISC-MAX"))
+	}
+	if line := b.config(t, "qm", va, got.Device); !strings.Contains(line, "discard=on") {
+		t.Fatalf("on %s: %s", va, line)
 	}
 	b.marker(t, got.EngineRef, "le-hangar")
 	pidA := b.must(t, "cat /var/run/qemu-server/"+va+".pid")
@@ -324,8 +336,11 @@ func TestBenchAVMsVolume(t *testing.T) {
 	if s := b.serial(t, va, got.Device); s != serial {
 		t.Fatalf("on %s the disk shows the serial %q, not %q: its options did not travel", va, s, serial)
 	}
-	if line := b.config(t, "qm", va, got.Device); !strings.Contains(line, "backup=0") || !strings.Contains(line, "size=1G") {
+	if line := b.config(t, "qm", va, got.Device); !strings.Contains(line, "backup=0") || !strings.Contains(line, "size=1G") || !strings.Contains(line, "discard=on") {
 		t.Fatalf("on %s: %s", va, line)
+	}
+	if in := strings.Fields(b.inGuest(t, key, ipA, "dev=$(readlink -f "+got.InGuest+") && lsblk -dno SERIAL,DISC-MAX $dev")); len(in) != 2 || in[0] != serial || in[1] == "0B" {
+		t.Fatalf("back on %s, in the guest %s is %q", va, got.InGuest, in)
 	}
 	if mk := b.readMarker(t, got.EngineRef, 9); mk != "le-hangar" {
 		t.Fatalf("its bytes at %s: %q", got.EngineRef, mk)
@@ -347,6 +362,36 @@ func TestBenchAVMsVolume(t *testing.T) {
 	}
 	if mk := b.readMarker(t, got.EngineRef, 9); mk != "le-hangar" {
 		t.Fatalf("its bytes, parked at %s: %q", got.EngineRef, mk)
+	}
+
+	// a volume made before volumes gave their space back says nothing of it
+	// (its line stripped here, as root, on its shelf): it says so from its
+	// next move on — its size, its backup flag and its serial as they were
+	shelf := strings.TrimPrefix(got.EngineRef[strings.Index(got.EngineRef, ":")+1:], "vm-")
+	shelf = shelf[:strings.Index(shelf, "-")]
+	old := b.config(t, "qm", shelf, got.Device)
+	if !strings.Contains(old, ",discard=on") {
+		t.Fatalf("parked on shelf %s as %q", shelf, old)
+	}
+	b.must(t, "qm set "+shelf+" --"+got.Device+" '"+strings.Replace(old, ",discard=on", "", 1)+"' >/dev/null")
+	if line := b.config(t, "qm", shelf, got.Device); strings.Contains(line, "discard") {
+		t.Fatalf("the control: the shelf's line still says %q", line)
+	}
+	if got, err = v.PlaceVolume(ctx, vol, driver.Place{Guest: a, Owner: owner}); err != nil || got.Guest != a {
+		t.Fatalf("an older volume, plugged in: %+v %v", got, err)
+	}
+	if line := b.config(t, "qm", va, got.Device); !strings.Contains(line, "discard=on") || !strings.Contains(line, "size=3G") ||
+		strings.Contains(line, "backup=0") || !strings.Contains(line, "serial="+serial) {
+		t.Fatalf("an older volume on %s: %s", va, line)
+	}
+	if in := strings.Fields(b.inGuest(t, key, ipA, "dev=$(readlink -f "+got.InGuest+") && lsblk -dno SERIAL,DISC-MAX $dev")); len(in) != 2 || in[0] != serial || in[1] == "0B" {
+		t.Fatalf("an older volume, in the guest %s is %q", got.InGuest, in)
+	}
+	if got, err = v.PlaceVolume(ctx, vol, driver.Place{Owner: owner}); err != nil || got.Guest != "" {
+		t.Fatalf("parked again: %+v %v", got, err)
+	}
+	if mk := b.readMarker(t, got.EngineRef, 9); mk != "le-hangar" {
+		t.Fatalf("its bytes, parked again at %s: %q", got.EngineRef, mk)
 	}
 	if err := v.DeleteVolume(ctx, vol); err != nil {
 		t.Fatal(err)

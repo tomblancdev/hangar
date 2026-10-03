@@ -67,6 +67,9 @@ tiers:
       machines.key_pairs: 2
       machines.kind: [vm]      # untrusted people get VMs: their own kernel
       machines.class: [spot]
+      # machines.cpu: [host]             # a VM may ask for its host's own processor (`cpu: host`): faster
+      # machines.virtualization: [nested]   # and for VMs of its own (`virtualization: true`)
+      #                        #   a tier that names neither gives neither — these users get the zone's model
       volumes.count: 2
       volumes.size_gb: 20
       volumes.backup_gb: 5     # backups are a size: a tier that names none backs up nothing
@@ -80,7 +83,7 @@ zones:
     driver: fake
     endpoint: ./data/playground.json   # the fake engine's state: edit it to make it drift
     options:
-      capabilities: kind.container,kind.vm,guest.tags,guest.activity,resize.live.cpu_cap,fence.pool,volume.move_between_guests
+      capabilities: kind.container,kind.vm,guest.tags,guest.activity,resize.live.cpu_cap,cpu.host,cpu.nested,cpu.weight,fence.pool,volume.move_between_guests
     # room:                    # count the zone's memory in two pools (ARCHITECTURE.md §6)
     #   memory_gb: 16          #   what its resources may count on
     #   reservations:          #   room kept for others: always, or on a condition

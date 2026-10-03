@@ -1,5 +1,71 @@
 # Changelog
 
+## v0.3.0 — unreleased
+
+**A machine's processor.** What the first heavy runs on a real zone found: a
+VM the product made saw a 2003 processor. The image:
+`ghcr.io/tomblancdev/hangar:0.3.0`.
+
+- **The zone's own model is no longer an accident.** The Proxmox VE driver
+  never wrote a VM's processor, and through the API that is `kvm64`: no AES,
+  no SSE4.2, no AVX. It now writes it on every VM — the zone's `cpu_model`,
+  **`x86-64-v2-AES` unless said** (what Proxmox's own form picks) — and on
+  every bake's builder. A machine made before keeps the processor it has.
+- **`cpu: host`** — a VM that asks for it sees its host's own processor,
+  every instruction of it. Measured on a real zone: 2 to 4 % on a Go suite,
+  **a fifth on one that runs a database and an object store**. It then runs
+  on that kind of host only. Set at its birth.
+- **`virtualization: true`** — a VM that may run VMs of its own. It goes
+  with `cpu: host`, and it is a field of its own because it is a risk of
+  its own: **a VM that does not ask is given none, whatever its processor**
+  (Proxmox's `nested-virt` flag, written either way on every VM). Set at its
+  birth.
+- **Each is a tier's to open, nobody's by default**: two choices,
+  `machines.cpu: [host]` and `machines.virtualization: [nested]`, asked of
+  a tier only by a machine that wants them. A tier that names neither gives
+  neither, in words — and goes on making every other machine: **no tier
+  needs a line changed** (one that says `"*": unlimited` opens both, as it
+  opens everything).
+- **`cpu_weight`** (1 to 100) — a machine's share of the cores when others
+  want them too, a container's as a VM's: 25 yields to the others, and loses
+  nothing while cores are free. It only yields, so no tier is asked. Changed
+  while the machine runs — `set_cpu_weight`, and `apply` asks for that step —
+  and kept true on the engine at every look.
+- **A VM's disks give space back** (`discard`): what is deleted inside a
+  machine's system disk or a block volume returns to the storage — a thin
+  disk no longer only grows. On every new machine (whatever its image's
+  age), every bake, every new volume and every volume that moves.
+- **A volume's `in_guest` says the truth.** It named a path under
+  `/dev/disk/by-id` carrying the volume's serial; no such path exists — udev
+  names a QEMU disk after the slot it is plugged in. It is now that path
+  (`…_drive-scsi1`), and the docs say what follows a volume from guest to
+  guest: its serial (`lsblk -o NAME,SERIAL`).
+- **The command line and the console** draw the three fields and the action
+  from the schema, as everything else; a list says `host CPU`, `runs VMs`,
+  `CPU weight 25` where they are.
+- **Three capability flags** for a driver: `cpu.host`, `cpu.nested`,
+  `cpu.weight` — the plugin refuses, in words, what a zone's engine lacks —
+  and `SetCPUWeight` on its guests facet. **Proxmox VE 9.1 or newer** (the
+  `nested-virt` flag, qemu-server 9.0.27).
+- Proved on the bench, inside real guests: the processor each of the three
+  sees and whether `/dev/kvm` is there; a share moved on a running guest's
+  own cgroup; 300 MB written then deleted, back on the storage; a volume's
+  path read where its guest finds it.
+- **The bench's tests name a bench that is not on their own machine**
+  (`HANGAR_BENCH_SSH_HOST`), and the one whose bench calls the brain back
+  (the room's hook) holds a tunnel open over the ssh it already has — what
+  a bench that is a machine of a zone will need.
+- **What running them twice in a row found, in the tests themselves.** The
+  room's asked for its three machines' deletes and never waited for them:
+  every run left a VM and two containers running on the bench, and the next
+  ran beside them. The two that count quiet minutes went red whenever they
+  ran across the top of an hour: a fresh Debian 13 guest fetches its
+  packages' changelogs once, at the first hour of its life
+  (`apt-listchanges.timer`) — a minute that is rightly not idle. Their
+  guests are told not to. And the hours' asked that a machine be stopped
+  no sooner than five minutes after its last packet, where the engine
+  counts in minutes' averages: it now allows one sample.
+
 ## v0.2.0 — 2026-10-02
 
 **Names.** A resource a person can read, and call: what the first look at a

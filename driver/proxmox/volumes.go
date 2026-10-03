@@ -21,7 +21,11 @@ package proxmox
 //     on its target BEFORE it moves and takes the source's off AFTER, so a
 //     volume is found wherever a cut left it (locate).
 //   - A block volume shows its guest the serial driver.SerialOf(id), AWS's
-//     own form: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_vol0123….
+//     own form (`lsblk -o NAME,SERIAL`): it follows the volume wherever it
+//     goes. Its path under /dev/disk/by-id names the SLOT it is plugged in
+//     (scsi-0QEMU_QEMU_HARDDISK_drive-scsi1) — read in a Debian 13 guest:
+//     udev names a QEMU disk by its device id, which Proxmox sets to the
+//     slot, never by its serial.
 //   - A disk moves with its options only from a STOPPED guest (read on a
 //     throwaway, then in the source: a running VM lets go of a disk only by
 //     unplugging it, which makes it "unusedN" and drops its options; a
@@ -495,7 +499,7 @@ func (d *Driver) volumeOf(ctx context.Context, sp spot, id string) driver.Volume
 		if !unused {
 			v.InGuest = v.Mount
 			if v.Content == driver.ContentBlock {
-				v.InGuest = "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_" + driver.SerialOf(id)
+				v.InGuest = "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-" + sp.key
 			}
 		}
 	}
@@ -573,7 +577,8 @@ func (d *Driver) CreateVolume(ctx context.Context, s driver.VolumeSpec) (driver.
 		}
 		line += ",mp=" + mount
 	} else {
-		line += ",serial=" + driver.SerialOf(s.ID)
+		// what its guest deletes goes back to the storage (discard)
+		line += ",discard=on,serial=" + driver.SerialOf(s.ID)
 	}
 	h.keep, _ = withName(h.keep, s.ID, s.Label)
 	// the disk and the line that says whose it is, in one write
@@ -720,6 +725,19 @@ func (d *Driver) PlaceVolume(ctx context.Context, id string, at driver.Place) (d
 			}
 		}
 	}
+	if line := str(sp.h.cfg[sp.key]); typ == "qemu" && !strings.HasPrefix(sp.key, "unused") {
+		// a block volume made before volumes gave their space back says so
+		// from its next move on: written here, where it rests stopped (a
+		// running VM's was unplugged, and rested on its shelf)
+		if v, _ := optOf(line, "discard"); v != "on" {
+			if err := d.setConfig(ctx, sp.h.r, url.Values{sp.key: {withOpts(line, map[string]string{"discard": "on"})}}); err != nil {
+				return driver.Volume{}, d.engine(err)
+			}
+			if sp, err = d.refind(ctx, sp.h.r, id); err != nil {
+				return driver.Volume{}, err
+			}
+		}
+	}
 	if _, err := d.move(ctx, sp, target, id); err != nil {
 		return driver.Volume{}, err
 	}
@@ -817,6 +835,7 @@ func (d *Driver) restore(ctx context.Context, sp spot, id, was string) error {
 	}
 	if sp.h.r.Type == "qemu" {
 		set["serial"] = driver.SerialOf(id)
+		set["discard"] = "on"
 	}
 	next := withOpts(line, set)
 	if next == line {

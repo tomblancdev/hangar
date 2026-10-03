@@ -234,7 +234,7 @@ func TestAMachinesSentence(t *testing.T) {
 			known[k] = true
 		}
 	}
-	for _, f := range []string{"floor_gb", "image", "image_id", "addresses"} { // left out of an empty one's JSON
+	for _, f := range []string{"floor_gb", "image", "image_id", "addresses", "cpu", "virtualization", "cpu_weight"} { // left out of an empty one's JSON
 		known[f] = true
 	}
 	for _, part := range doc.Summary {

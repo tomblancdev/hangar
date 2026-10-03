@@ -8,7 +8,7 @@
 // Two types:
 //
 //   - machine (m-…): create · start · stop · reboot · resize · set_idle_after
-//     · keep_awake · let_sleep · delete.
+//     · set_cpu_weight · keep_awake · let_sleep · delete.
 //   - keypair (kp-…): a public key, imported. A pair is never generated
 //     here: the brain would then hold a private key. A machine names its key
 //     pairs by id ("x-hangar-ref"); the core checks they are the owner's own
@@ -23,6 +23,13 @@
 // the ones that stay while the room is held. The class, floor, cap and the
 // size admitted are written on the guest as tags, for the engine's node to
 // act on when the brain cannot be reached.
+//
+// A VM sees the processor its zone gives everyone, or — cpu: host — its
+// host's own, every instruction of it; virtualization: true lets it run VMs
+// of its own, and goes with cpu: host. Each is a choice a tier opens
+// (machines.cpu, machines.virtualization): a tier that names neither gives
+// neither. cpu_weight is a machine's share of the cores when they are
+// contended (1 to 100): it only ever yields, so no tier is asked.
 //
 // A machine that says idle_after is stopped once its CPU and what it sends
 // stayed quiet that long, as its engine's own history saw them (power.go);
@@ -79,6 +86,17 @@ const (
 	GuaranteedSpot = "guaranteed+spot"
 )
 
+// The choices a tier opens for a VM's processor. Each is asked of a tier only
+// by a machine that wants it: one that wants neither names neither, and a
+// tier written before them goes on making machines.
+const (
+	CPUChoice            = "machines.cpu"
+	VirtualizationChoice = "machines.virtualization"
+	// Nested is VirtualizationChoice's one value: VMs inside a VM. A word,
+	// so that no YAML reads it as a boolean.
+	Nested = "nested"
+)
+
 // usedMargin is what a running guest's memory must stay above what it holds
 // by when a hold shrinks it: a limit written below its use makes the kernel
 // kill inside it (read on Proxmox VE: the container's init died).
@@ -120,6 +138,15 @@ type Spec struct {
 	// CoresBeside: the CPU cap, in cores' worth, while the room is held (a
 	// machine that stays); 0 = never capped.
 	CoresBeside int `json:"cores_beside,omitempty"`
+	// CPU: a VM's processor — "host": its host's own, every instruction of
+	// it; "" = the model its zone gives everyone. Set at its birth.
+	CPU string `json:"cpu,omitempty"`
+	// Virtualization: a VM that may run VMs of its own; it goes with CPU
+	// host. Set at its birth.
+	Virtualization bool `json:"virtualization,omitempty"`
+	// CPUWeight: its share of the cores when they are contended, 1 to 99;
+	// 0 = a full share (100 is written 0).
+	CPUWeight int `json:"cpu_weight,omitempty"`
 	// Resume: a spot machine a hold stopped starts again when the room
 	// returns; false = it stays stopped until its owner starts it.
 	Resume   bool     `json:"resume"`
@@ -148,6 +175,13 @@ type Observed struct {
 	Addresses []string `json:"addresses,omitempty"`
 	// CPULimit: its CPU cap while the room is held; 0 = none.
 	CPULimit int `json:"cpu_limit,omitempty"`
+	// CPU, Virtualization: what its engine says of its processor — "host":
+	// its host's own; one that may run VMs of its own.
+	CPU            string `json:"cpu,omitempty"`
+	Virtualization bool   `json:"virtualization,omitempty"`
+	// CPUWeight: its share of contended cores as its engine reads, when it
+	// is not a full one.
+	CPUWeight int `json:"cpu_weight,omitempty"`
 	// Held: the reservations holding its room back, as its engine reads.
 	Held []string `json:"held,omitempty"`
 	// StartedAt: since when it runs, as its engine says.
@@ -180,7 +214,7 @@ const machineSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "x-hangar-summary": ["{kind}", "{cores} cores", "{memory_gb} GB[ ({floor_gb} guaranteed)]", "{class=spot?spot}", "{image|image_id}", "{addresses}"],
+  "x-hangar-summary": ["{kind}", "{cores} cores", "{cpu=host?host CPU}", "{virtualization?runs VMs}", "CPU weight {cpu_weight}", "{memory_gb} GB[ ({floor_gb} guaranteed)]", "{class=spot?spot}", "{image|image_id}", "{addresses}"],
   "x-hangar-status": { "field": "running", "on": "running", "off": "stopped" },
   "properties": {
     "kind":      { "type": "string", "enum": ["vm", "container"], "default": "vm",
@@ -189,6 +223,12 @@ const machineSchema = `{
                    "description": "A size by name: t3.micro … r5.2xlarge, or an alias the operator declared. Or give cores and memory_gb." },
     "cores":     { "type": "integer", "minimum": 1, "maximum": 128 },
     "memory_gb": { "type": "integer", "minimum": 1, "maximum": 1024 },
+    "cpu":       { "type": "string", "enum": ["host"],
+                   "description": "A VM's processor. host: its host's own, every instruction of it — faster, and it then runs on that kind of host only. Absent: the model the zone gives everyone." },
+    "virtualization": { "type": "boolean", "default": false,
+                   "description": "A VM that may run VMs of its own. It goes with cpu: host." },
+    "cpu_weight": { "type": "integer", "minimum": 1, "maximum": 100, "default": 100,
+                   "description": "Its share of the cores when others want them too: 100 a full share, 25 a quarter of one. It yields, and loses nothing while cores are free." },
     "disk_gb":   { "type": "integer", "minimum": 1, "maximum": 4096, "default": 8,
                    "description": "Its root disk." },
     "image":     { "type": "string", "minLength": 1, "maxLength": 128,
@@ -245,6 +285,17 @@ const idleAfterSchema = `{
   "properties": {
     "idle_after": { "type": "string", "maxLength": 16,
                     "description": "Stopped once idle this long (30m, 2h — 5m to 12h); never: it is not stopped for idleness." }
+  }
+}`
+
+const cpuWeightSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cpu_weight"],
+  "properties": {
+    "cpu_weight": { "type": "integer", "minimum": 1, "maximum": 100,
+                    "description": "Its share of the cores when others want them too: 100 a full share, 25 a quarter of one." }
   }
 }`
 
@@ -305,6 +356,8 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 						ParamsSchema: []byte(sizeSchema), ChangesUsage: true},
 					{Name: "set_idle_after", Description: "Set after how long idle it is stopped (30m), or never.",
 						ParamsSchema: []byte(idleAfterSchema), ChangesUsage: true, Requires: []string{driver.GuestActivity}},
+					{Name: "set_cpu_weight", Description: "Set its share of the cores when others want them too (1 to 100), at once, running or not.",
+						ParamsSchema: []byte(cpuWeightSchema), ChangesUsage: true, Requires: []string{driver.CPUWeight}},
 					{Name: "keep_awake", Description: "Keep it from being stopped for idleness: for a time (for: 8h), or until let_sleep. Its hours count as it runs.",
 						ParamsSchema: []byte(keepAwakeSchema), ChangesUsage: true},
 					{Name: "let_sleep", Description: "End a keep_awake: it is stopped again once idle for its idle_after."},
@@ -326,13 +379,15 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 				Description: "The hours their machines ran this month, each hour counted once per core (4 cores for 2 hours: 8)."},
 			{Name: "machines.kind", Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "The kinds allowed: vm, container."},
 			{Name: "machines.class", Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "The classes allowed: guaranteed, spot, guaranteed+spot."},
+			{Name: CPUChoice, Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "The processors a VM may ask for beside the zone's own model: host. A tier that names none gives the zone's model only."},
+			{Name: VirtualizationChoice, Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "Whether a VM may run VMs of its own: nested. A tier that does not name it gives none."},
 		},
 		Requires: []string{driver.GuestTags, driver.FencePool},
 		Credential: &pluginpb.Credential{Required: false,
 			Description: "Per zone, the engine's credential fenced to the product's own guests (Proxmox: an API token, user@realm!name=secret — the least it needs is in docs/proxmox.md). None for the fake engine."},
 		Events: []string{"machine.created", "machine.deleted", "machine.started", "machine.stopped", "machine.rebooted",
 			"machine.resized", "machine.repaired", "machine.held", "machine.released", "machine.idle", "machine.spent",
-			"machine.idle_after_set", "machine.kept_awake", "machine.let_sleep", "keypair.imported", "keypair.deleted"},
+			"machine.idle_after_set", "machine.cpu_weight_set", "machine.kept_awake", "machine.let_sleep", "keypair.imported", "keypair.deleted"},
 	}, nil
 }
 
@@ -551,6 +606,63 @@ func classRefusals(s Spec, zone string, g driver.Guests, caps []driver.Capabilit
 	return out
 }
 
+// cpuRefusals checks what a machine asks of its processor against its kind
+// and its zone.
+func cpuRefusals(s Spec, zone string, caps []driver.Capability) []*pluginpb.Refusal {
+	var out []*pluginpb.Refusal
+	switch {
+	case s.CPU == "":
+	case s.CPU != driver.CPUModelHost:
+		out = append(out, &pluginpb.Refusal{Field: "/cpu", Reason: fmt.Sprintf("no processor %q: %s, or none (the zone's own model)", s.CPU, driver.CPUModelHost)})
+	case s.Kind != "vm":
+		out = append(out, &pluginpb.Refusal{Field: "/cpu", Reason: "a container sees its host's processor already: cpu is a VM's"})
+	case !slices.Contains(caps, driver.CPUHost):
+		out = append(out, &pluginpb.Refusal{Field: "/cpu", Reason: fmt.Sprintf("zone %s gives no VM its host's processor", zone)})
+	}
+	switch {
+	case !s.Virtualization:
+	case s.Kind != "vm":
+		out = append(out, &pluginpb.Refusal{Field: "/virtualization", Reason: "a container runs no VM of its own: virtualization is a VM's"})
+	case !slices.Contains(caps, driver.CPUNested):
+		out = append(out, &pluginpb.Refusal{Field: "/virtualization", Reason: fmt.Sprintf("zone %s lets no VM run VMs of its own", zone)})
+	case s.CPU != driver.CPUModelHost:
+		out = append(out, &pluginpb.Refusal{Field: "/virtualization", Reason: "a VM that runs VMs of its own sees its host's processor: say cpu: host with it"})
+	}
+	if r := weightRefusal(s.CPUWeight, zone, caps); r != nil {
+		out = append(out, r)
+	}
+	return out
+}
+
+// weightRefusal: a weight that is not a full share needs a zone that weighs.
+func weightRefusal(weight int, zone string, caps []driver.Capability) *pluginpb.Refusal {
+	if weight != 0 && !slices.Contains(caps, driver.CPUWeight) {
+		return &pluginpb.Refusal{Field: "/cpu_weight", Reason: fmt.Sprintf("zone %s weighs no CPU: every machine there has a full share", zone)}
+	}
+	return nil
+}
+
+// weight writes a share as a spec keeps it: a full one is not written.
+func weight(n int) int {
+	if n >= driver.FullWeight {
+		return 0
+	}
+	return n
+}
+
+// choices are what a machine asks of its tier beside its numbers: its kind
+// and class always, a processor and virtualisation only when it wants them.
+func choices(s Spec) map[string]string {
+	c := map[string]string{"machines.kind": s.Kind, "machines.class": s.Class}
+	if s.CPU != "" {
+		c[CPUChoice] = s.CPU
+	}
+	if s.Virtualization {
+		c[VirtualizationChoice] = Nested
+	}
+	return c
+}
+
 func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.PlanResponse, error) {
 	g, caps, err := p.guests(req.GetZone())
 	if err != nil {
@@ -630,6 +742,8 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 			}
 			refuse(classRefusals(s, req.GetZone(), g, caps)...)
 		}
+		s.CPUWeight = weight(s.CPUWeight)
+		refuse(cpuRefusals(s, req.GetZone(), caps)...)
 		if s.UserData != "" && !g.Traits(s.Kind).UserData {
 			refuse(&pluginpb.Refusal{Field: "/user_data", Reason: fmt.Sprintf("a %s in zone %s boots no user data", kindWord(s.Kind), req.GetZone())})
 		}
@@ -646,6 +760,18 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 			return nil, err
 		}
 		refuse(p.setIdleAfter(&s, ip.IdleAfter, req.GetZone(), caps))
+	case "set_cpu_weight":
+		if err := sdk.Decode(req.GetCurrent().GetSpec(), &s); err != nil {
+			return nil, err
+		}
+		var wp struct {
+			CPUWeight int `json:"cpu_weight"`
+		}
+		if err := sdk.Decode(req.GetParams(), &wp); err != nil {
+			return nil, err
+		}
+		s.CPUWeight = weight(wp.CPUWeight)
+		refuse(weightRefusal(s.CPUWeight, req.GetZone(), caps))
 	case "keep_awake":
 		if err := sdk.Decode(req.GetCurrent().GetSpec(), &s); err != nil {
 			return nil, err
@@ -706,14 +832,15 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 		Meters:   meters,
 		Spec:     sdk.JSON(s),
 		Usage:    map[string]int64{"machines.count": 1, "machines.vcpu": int64(s.Cores), "machines.memory_gb": int64(s.MemoryGB), "machines.disk_gb": int64(s.DiskGB)},
-		Choices:  map[string]string{"machines.kind": s.Kind, "machines.class": s.Class},
+		Choices:  choices(s),
 		Refusals: refusals,
 		Room:     room(s),
 	}, nil
 }
 
 // PlanChange says what brings a machine to another spec: its size through
-// resize; everything else a machine is set at its birth. Power is no field
+// resize, its idle_after and its CPU weight through their own actions;
+// everything else a machine is set at its birth. Power is no field
 // of the spec: a change never starts nor stops a machine. A field the wanted
 // spec leaves out is wanted at its default — but for disk_gb, whose default
 // follows its image: only a disk_gb written is compared.
@@ -781,6 +908,8 @@ func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) 
 	fixed("/class", in.Class != was.Class, was.Class, "a machine's class")
 	fixed("/floor_gb", in.FloorGB != was.FloorGB, strconv.Itoa(was.FloorGB)+" GB", "a machine's floor")
 	fixed("/cores_beside", in.CoresBeside != was.CoresBeside, strconv.Itoa(was.CoresBeside), "a machine's cores_beside")
+	fixed("/cpu", in.CPU != was.CPU, or(was.CPU, "the zone's own model"), "a machine's processor")
+	fixed("/virtualization", in.Virtualization != was.Virtualization, strconv.FormatBool(was.Virtualization), "whether a machine runs VMs of its own")
 	fixed("/resume", in.Resume != was.Resume, strconv.FormatBool(was.Resume), "whether a spot machine resumes")
 	fixed("/key_pairs", !sameSet(in.KeyPairs, was.KeyPairs), or(strings.Join(was.KeyPairs, ", "), "none"), "a machine's key pairs")
 	fixed("/user_data", in.UserData != was.UserData, "other user data", "what a machine's first boot is handed")
@@ -793,6 +922,9 @@ func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) 
 	}
 	if fmtIdleAfter(idle) != was.IdleAfter {
 		out.Steps = append(out.Steps, sdk.Step("set_idle_after", map[string]any{"idle_after": or(fmtIdleAfter(idle), "never")}))
+	}
+	if weight(in.CPUWeight) != was.CPUWeight {
+		out.Steps = append(out.Steps, sdk.Step("set_cpu_weight", map[string]any{"cpu_weight": driver.WeightOf(weight(in.CPUWeight))}))
 	}
 	if want.Type != was.Type || want.Cores != was.Cores || want.MemoryGB != was.MemoryGB {
 		if want.Type != "" {
@@ -912,6 +1044,7 @@ func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*plug
 		ID: r.GetId(), Kind: s.Kind, Name: r.GetName(), Label: sdk.Label(r, "machine"),
 		Cores: s.Cores, MemoryMB: w.memoryMB, DiskGB: s.DiskGB,
 		Image: ref, SSHKeys: keys, UserData: []byte(s.UserData), Tags: tagsOf(s), Holds: w.holds, CPULimit: w.cpuLimit,
+		CPU: s.CPU, Virtualization: s.Virtualization, CPUWeight: s.CPUWeight,
 		Stopped: !w.running,
 	})
 	if err != nil {
@@ -977,6 +1110,10 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 	case "set_idle_after":
 		// planned: the spec carries it already
 		ev = sdk.Event("machine.idle_after_set", "", map[string]string{"idle_after": cmp.Or(s.IdleAfter, "never")})
+	case "set_cpu_weight":
+		// planned: the spec carries it already
+		guest, err = g.SetCPUWeight(ctx, r.GetId(), s.CPUWeight)
+		ev = sdk.Event("machine.cpu_weight_set", "", map[string]string{"cpu_weight": strconv.Itoa(driver.WeightOf(s.CPUWeight))})
 	case "keep_awake":
 		ev = sdk.Event("machine.kept_awake", "", map[string]string{"until": s.Awake})
 	case "let_sleep":
@@ -1085,6 +1222,12 @@ func converge(ctx context.Context, g driver.Guests, id string, s Spec, hold, lab
 			return guest, fixed, short, err
 		}
 		fixed = append(fixed, "cpu cap")
+	}
+	if driver.WeightOf(guest.CPUWeight) != driver.WeightOf(s.CPUWeight) {
+		if guest, err = g.SetCPUWeight(ctx, id, s.CPUWeight); err != nil {
+			return guest, fixed, short, err
+		}
+		fixed = append(fixed, "cpu weight")
 	}
 	if !entering {
 		if err := retag(); err != nil {
@@ -1267,7 +1410,8 @@ func (p *Plugin) machine(r *pluginpb.Resource) (driver.Guests, Spec, error) {
 
 func observe(g driver.Guest) Observed {
 	o := Observed{EngineRef: g.EngineRef, Node: g.Node, Kind: g.Kind, Name: g.Name, Cores: g.Cores,
-		MemoryMB: g.MemoryMB, DiskGB: g.DiskGB, Running: g.Running, Addresses: g.Addresses, CPULimit: g.CPULimit, Held: g.Holds}
+		MemoryMB: g.MemoryMB, DiskGB: g.DiskGB, Running: g.Running, Addresses: g.Addresses, CPULimit: g.CPULimit, Held: g.Holds,
+		CPU: g.CPU, Virtualization: g.Virtualization, CPUWeight: weight(g.CPUWeight)}
 	if g.Running && g.StartedAt != nil {
 		at := g.StartedAt.UTC().Truncate(time.Second)
 		o.StartedAt = &at

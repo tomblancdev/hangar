@@ -270,11 +270,24 @@ func (e *Engine) CreateGuest(_ context.Context, s driver.GuestSpec) (driver.Gues
 	if s.CPULimit > 0 && !e.has(driver.ResizeLiveCPUCap) {
 		return driver.Guest{}, fmt.Errorf("%w: this zone caps no CPU", driver.ErrRefused)
 	}
+	switch {
+	case s.CPU != "" && s.CPU != driver.CPUModelHost:
+		return driver.Guest{}, fmt.Errorf("%w: no processor %q: %s, or none", driver.ErrRefused, s.CPU, driver.CPUModelHost)
+	case s.CPU != "" && (s.Kind != "vm" || !e.has(driver.CPUHost)):
+		return driver.Guest{}, fmt.Errorf("%w: this zone gives no %s its host's processor", driver.ErrRefused, s.Kind)
+	case s.Virtualization && (s.Kind != "vm" || !e.has(driver.CPUNested)):
+		return driver.Guest{}, fmt.Errorf("%w: this zone lets no %s run VMs of its own", driver.ErrRefused, s.Kind)
+	case driver.WeightOf(s.CPUWeight) != driver.FullWeight && !e.has(driver.CPUWeight):
+		return driver.Guest{}, fmt.Errorf("%w: this zone weighs no CPU", driver.ErrRefused)
+	case s.CPUWeight < 0 || s.CPUWeight > driver.FullWeight:
+		return driver.Guest{}, fmt.Errorf("%w: a weight of %d", driver.ErrRefused, s.CPUWeight)
+	}
 	g := &driver.Guest{
 		ID: s.ID, EngineRef: fmt.Sprintf("fake-%d", e.state.Seq), Kind: s.Kind, Name: name, Node: "fake",
 		Label: s.Label,
 		Cores: s.Cores, MemoryMB: s.MemoryMB, DiskGB: s.DiskGB, Running: !s.Stopped, Tags: maps.Clone(s.Tags),
 		Holds: sortedHolds(s.Holds), CPULimit: s.CPULimit,
+		CPU: s.CPU, Virtualization: s.Virtualization, CPUWeight: driver.WeightOf(s.CPUWeight),
 	}
 	if g.Running {
 		at := e.now()
@@ -407,6 +420,26 @@ func (e *Engine) SetCPULimit(_ context.Context, id string, cores int) (driver.Gu
 		return driver.Guest{}, fmt.Errorf("%w: this zone caps no CPU", driver.ErrRefused)
 	}
 	g.CPULimit = cores
+	return e.clone(g), e.save()
+}
+
+func (e *Engine) SetCPUWeight(_ context.Context, id string, weight int) (driver.Guest, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.fail(); err != nil {
+		return driver.Guest{}, err
+	}
+	g, ok := e.state.Guests[id]
+	if !ok {
+		return driver.Guest{}, driver.ErrNotFound
+	}
+	if !e.has(driver.CPUWeight) {
+		return driver.Guest{}, fmt.Errorf("%w: this zone weighs no CPU", driver.ErrRefused)
+	}
+	if weight < 0 || weight > driver.FullWeight {
+		return driver.Guest{}, fmt.Errorf("%w: a weight of %d", driver.ErrRefused, weight)
+	}
+	g.CPUWeight = driver.WeightOf(weight)
 	return e.clone(g), e.save()
 }
 

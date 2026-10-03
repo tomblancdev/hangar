@@ -22,6 +22,10 @@ import (
 
 type bench struct {
 	url, ca, token, wide, key, port string
+	// host: where root on the bench answers ssh — this machine, through
+	// bench.sh's forwarded port, unless HANGAR_BENCH_SSH_HOST names a bench
+	// that answers by itself (a machine that is one)
+	host string
 }
 
 func onBench(t *testing.T) *bench {
@@ -29,7 +33,10 @@ func onBench(t *testing.T) *bench {
 	b := &bench{
 		url: os.Getenv("HANGAR_BENCH_URL"), ca: os.Getenv("HANGAR_BENCH_CA_FILE"),
 		token: os.Getenv("HANGAR_BENCH_TOKEN_FILE"), wide: os.Getenv("HANGAR_BENCH_WIDE_TOKEN_FILE"),
-		key: os.Getenv("HANGAR_BENCH_SSH_KEY"), port: os.Getenv("HANGAR_BENCH_SSH_PORT"),
+		key: os.Getenv("HANGAR_BENCH_SSH_KEY"), port: os.Getenv("HANGAR_BENCH_SSH_PORT"), host: "127.0.0.1",
+	}
+	if h := os.Getenv("HANGAR_BENCH_SSH_HOST"); h != "" {
+		b.host = h
 	}
 	if b.url == "" {
 		t.Skip("no bench: sh tools/bench/bench.sh up, then eval its env")
@@ -42,7 +49,7 @@ func onBench(t *testing.T) *bench {
 func (b *bench) ssh(t *testing.T, cmd string, stdin ...string) (string, error) {
 	t.Helper()
 	c := exec.Command("ssh", "-i", b.key, "-p", b.port, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "root@127.0.0.1", cmd)
+		"-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "root@"+b.host, cmd)
 	if len(stdin) > 0 {
 		c.Stdin = strings.NewReader(stdin[0])
 	}

@@ -45,7 +45,10 @@ hypervisor (it drives yours) and not an EC2 clone.
 > `idle_after: 30m` is stopped once its engine saw it quiet that long, the
 > hours machines run are counted against a tier's month — once per core —
 > and when the month is spent what still runs is shut down; `keep_awake`
-> holds the idle stop off, for a time or until told. **And the console**: the
+> holds the idle stop off, for a time or until told. **And a VM's processor**:
+the zone's own model, or — `cpu: host` — its host's own, `virtualization:
+true` for VMs inside it, each a tier's to open; `cpu_weight` for a machine
+that yields its cores when others want them. **And the console**: the
 > same catalogue in a browser — every type a list, a form drawn from its
 > schema and its actions as buttons —, signed in at your identity provider,
 > the sign-in kept by the console's server and a cookie in the browser; inside

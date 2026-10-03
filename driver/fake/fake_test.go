@@ -158,3 +158,54 @@ func TestTheClockAndTheActivity(t *testing.T) {
 		t.Fatalf("the engine's clock reads %s", e.Now())
 	}
 }
+
+// A guest's processor and its share of the cores are kept as they were asked,
+// and each needs the zone's flag for it.
+func TestAGuestsProcessor(t *testing.T) {
+	ctx := context.Background()
+	e := open(t, "", nil)
+	g, err := e.CreateGuest(ctx, driver.GuestSpec{ID: "m-1", Kind: "vm", Cores: 2, MemoryMB: 1024, CPU: driver.CPUModelHost, Virtualization: true, CPUWeight: 25})
+	if err != nil || g.CPU != driver.CPUModelHost || !g.Virtualization || g.CPUWeight != 25 {
+		t.Fatalf("%+v %v", g, err)
+	}
+	if g, err = e.CreateGuest(ctx, driver.GuestSpec{ID: "m-2", Kind: "container", Cores: 1, MemoryMB: 512}); err != nil || g.CPU != "" || g.Virtualization || g.CPUWeight != driver.FullWeight {
+		t.Fatalf("one that asks nothing: %+v %v", g, err)
+	}
+	if g, err = e.SetCPUWeight(ctx, "m-2", 40); err != nil || g.CPUWeight != 40 {
+		t.Fatalf("a share set: %+v %v", g, err)
+	}
+	if g, err = e.SetCPUWeight(ctx, "m-2", 0); err != nil || g.CPUWeight != driver.FullWeight {
+		t.Fatalf("none named is a full share: %+v %v", g, err)
+	}
+	for name, s := range map[string]driver.GuestSpec{
+		"another model":           {ID: "x-1", Kind: "vm", CPU: "EPYC"},
+		"a container's processor": {ID: "x-2", Kind: "container", CPU: driver.CPUModelHost},
+		"VMs inside a container":  {ID: "x-3", Kind: "container", Virtualization: true},
+		"more than a full share":  {ID: "x-4", Kind: "vm", CPUWeight: 101},
+		"less than nothing":       {ID: "x-5", Kind: "vm", CPUWeight: -1},
+	} {
+		if _, err := e.CreateGuest(ctx, s); !errors.Is(err, driver.ErrRefused) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := e.SetCPUWeight(ctx, "m-2", 101); !errors.Is(err, driver.ErrRefused) {
+		t.Errorf("a share above a full one: %v", err)
+	}
+	// a zone without the flags
+	bare := open(t, "", map[string]string{"capabilities": "kind.vm,kind.container,guest.tags,fence.pool"})
+	for name, s := range map[string]driver.GuestSpec{
+		"its host's processor": {ID: "y-1", Kind: "vm", CPU: driver.CPUModelHost},
+		"VMs inside":           {ID: "y-2", Kind: "vm", Virtualization: true},
+		"a share":              {ID: "y-3", Kind: "vm", CPUWeight: 25},
+	} {
+		if _, err := bare.CreateGuest(ctx, s); !errors.Is(err, driver.ErrRefused) {
+			t.Errorf("a bare zone, %s: %v", name, err)
+		}
+	}
+	if g, err := bare.CreateGuest(ctx, driver.GuestSpec{ID: "y-4", Kind: "vm", Cores: 1, MemoryMB: 512, CPUWeight: driver.FullWeight}); err != nil || g.CPUWeight != driver.FullWeight {
+		t.Fatalf("a full share where nothing is weighed: %+v %v", g, err)
+	}
+	if _, err := bare.SetCPUWeight(ctx, "y-4", 25); !errors.Is(err, driver.ErrRefused) {
+		t.Errorf("a share set where nothing is weighed: %v", err)
+	}
+}

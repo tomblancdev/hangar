@@ -292,7 +292,7 @@ func (d *Driver) makeBuilder(ctx context.Context, s driver.BakeSpec) (driver.Ima
 			return d.c.run(ctx, http.MethodPost, "/nodes/"+url.PathEscape(d.node)+"/qemu", url.Values{
 				"vmid": {strconv.Itoa(vmid)}, "name": {s.ID}, "pool": {d.images}, "description": {desc},
 				"ostype": {"l26"}, "cores": {strconv.Itoa(cores)}, "memory": {strconv.Itoa(mem)},
-				"scsihw": {"virtio-scsi-single"}, "scsi0": {d.storage + ":0,import-from=" + s.Base},
+				"scsihw": {"virtio-scsi-single"}, "scsi0": {d.storage + ":0,import-from=" + s.Base + ",discard=on"},
 				"boot": {"order=scsi0"}, "serial0": {"socket"}, "vga": {"serial0"}, "agent": {"enabled=1"},
 				"net0": {d.net0(false)}, "ide2": {seed + ",media=cdrom"}, "onboot": {"0"},
 			})
@@ -315,10 +315,17 @@ func (d *Driver) makeBuilder(ctx context.Context, s driver.BakeSpec) (driver.Ima
 	if err != nil {
 		return driver.Image{}, err
 	}
+	// its processor is the zone's own model: what a machine born from the
+	// image sees, unless it asks otherwise (a clone begins with its
+	// template's line)
 	if err := d.c.run(ctx, http.MethodPost, r.path()+"/config", url.Values{
 		"cores": {strconv.Itoa(cores)}, "memory": {strconv.Itoa(mem)}, "net0": {d.net0(false)},
+		"cpu":  {d.cpuLine(driver.GuestSpec{})},
 		"ide2": {seed + ",media=cdrom"}, "agent": {"enabled=1"}, "tags": {tagStr}, "onboot": {"0"},
 	}); err != nil {
+		return driver.Image{}, err
+	}
+	if err := d.trim(ctx, r, cfg); err != nil {
 		return driver.Image{}, err
 	}
 	if disk := bootDisk(cfg); disk != "" && sizeGB(str(cfg[disk])) < s.DiskGB {

@@ -8,7 +8,9 @@ may touch, and the plugin refuses a zone whose token reaches further (the
 
 Everything below was read on a live Proxmox VE 9.2 (the bench,
 [`tools/bench`](../tools/bench/)), and each grant carries the reason it is
-there.
+there. **It needs Proxmox VE 9.1 or newer**: every VM's processor is written
+with the `nested-virt` flag, which came with qemu-server 9.0.27 — an older
+release refuses the line.
 
 ## What the operator prepares, once
 
@@ -155,6 +157,45 @@ set a container's feature flags other than `nesting`; pass a device through.
   take an uploaded ISO. Running, a VM's memory grows (a DIMM hot-plugged);
   its cores and a shrink wait for a stop. Addresses are read through the
   QEMU guest agent when the image runs one.
+- **A VM's processor is always written** (`cpu`), never left to the API's
+  own default — `kvm64`, a 2003 processor with no AES, no SSE4.2 and no AVX
+  (read: `-cpu kvm64`; the web form's default is another). A VM that asks
+  nothing sees the zone's `cpu_model` (default **`x86-64-v2-AES`**); one that
+  asks `cpu: host` sees **its node's own processor**, every instruction of
+  it — and then runs on a node of that kind only: it is never live-migrated
+  to another. **Virtualisation is said either way, on every VM**: Proxmox's
+  `nested-virt` flag (`svm` on AMD, `vmx` on Intel), `-` unless the VM asked
+  for `virtualization`, `+` when it did — because a model may carry it by
+  itself (`host` does; so do the named vendor models), and a VM that did not
+  ask is given none. Read inside Debian 13 guests on the bench:
+
+  | the line | the guest's processor | `vmx`/`svm` | `/dev/kvm` |
+  |---|---|---|---|
+  | `x86-64-v2-AES,flags=-nested-virt` | « QEMU Virtual CPU », AES and SSE4.2, no AVX2 | no | no |
+  | `host,flags=-nested-virt` | the node's own model, AVX2 | no | no |
+  | `host,flags=+nested-virt` | the node's own model | yes | yes |
+
+  Virtualisation goes with `cpu: host` (Proxmox's own advice on its flag: a
+  model like the host's, never a generic one — a hypervisor inside reads the
+  processor it runs on), and it needs **the node's own module to allow it**
+  (`cat /sys/module/kvm_amd/parameters/nested`, or `kvm_intel`: `1` or `Y`,
+  the kernel's default for years) — where it does not, the VM starts without
+  it. Both are `VM.Config.CPU`, which the token holds for a VM's cores. A
+  container sees its node's processor already, and runs no VM of its own.
+- **A guest's share of the cores** is its `cpuunits` — the cgroup's own
+  `cpu.weight`, 100 unless said — written at its birth and changed **live on
+  both kinds** (read on the bench: the cgroup's file moved at once, nothing
+  left pending, the same QEMU). The product writes 1 to 100: a machine may
+  yield its cores to the others, never take theirs. It weighs nothing while
+  cores are free.
+- **A VM's disks give back what is deleted inside them** (`discard=on`): its
+  system disk — set on the builder at a bake, and on every clone at its
+  birth, so a template baked before this is no trap — and every block
+  volume. Read on the bench, on ZFS: a system disk held 14 MB, 416 MB with
+  300 MB written, 117 MB once the file was deleted and the guest trimmed
+  (Debian's cloud image mounts its root with `discard`, and trims weekly).
+  Without it a thin disk only ever grows to its ceiling. A guest that mounts
+  a volume says `discard` itself, or runs `fstrim`.
 - **Delete** stops the guest, destroys it with `purge` and its unreferenced
   disks, then deletes its seed disc — **unless it holds a volume**: then it
   is refused, naming them (the core refuses it first; this is the engine's
@@ -226,9 +267,16 @@ and **renamed when it moves** to another (`target-vmid`, qemu-server's
   and the next placement finishes it. (`qm config` and `pct config` print the
   description url-encoded; the API gives it as written.)
 - **A block volume shows its guest the serial `vol0123…`** — the id without
-  its dash, AWS's own form, all a drive's 20-byte serial holds:
-  `/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_vol0123…`. Read in QEMU's
-  monitor (`qom-get … serial`) on a hot-plugged disk.
+  its dash, AWS's own form, all a drive's 20-byte serial holds — read in
+  QEMU's monitor (`qom-get … serial`) on a hot-plugged disk, and inside the
+  guest: `lsblk -o NAME,SERIAL`. **The serial follows the volume; its path
+  under `/dev/disk/by-id` does not**: there it is named after the **slot**
+  it is plugged in — `scsi-0QEMU_QEMU_HARDDISK_drive-scsi1` — because udev
+  names a QEMU disk by its device id, and Proxmox sets that to the slot
+  (read inside a Debian 13 guest; an earlier page of this file said the
+  path carried the serial: it never did). A volume's `in_guest` is that
+  path, as it is now; a guest that must find a volume wherever it is plugged
+  reads the serial (`lsblk -dno NAME,SERIAL | awk '$2 == "vol0123…"'`).
 - **A disk moves with its options only from a stopped guest.** Read on a
   throwaway, then in the source: a running VM lets go of a disk only by
   unplugging it (it becomes `unusedN`, its options dropped — the backup flag
@@ -414,6 +462,9 @@ zones:
       bridge: vnet1                # a bridge or an SDN vnet
       vlan: "30"                   # optional
       vmids: 11000-11099
+      cpu_model: x86-64-v2-AES     # optional: the processor a VM sees unless it asks for its host's
+                                   #   (this is the default; an older node may need kvm64, a cluster of
+                                   #   one kind of node may say its vendor's model)
       shutdown_timeout: "60"       # seconds a guest is asked before it is made to stop
       shelf_archive: local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst   # container shelves (volumes)
       ca_file: /etc/hangar/pve-root-ca.pem   # or fingerprint: <sha256 of the API's certificate>

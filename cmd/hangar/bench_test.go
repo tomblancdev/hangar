@@ -15,6 +15,16 @@ import (
 	"time"
 )
 
+// benchRoot is root on the bench: on this machine through bench.sh's
+// forwarded port, or wherever HANGAR_BENCH_SSH_HOST says a bench answers by
+// itself (a bench that is a machine somewhere, not a VM on this one).
+func benchRoot() string {
+	if h := os.Getenv("HANGAR_BENCH_SSH_HOST"); h != "" {
+		return "root@" + h
+	}
+	return "root@127.0.0.1"
+}
+
 // The binary against a real Proxmox VE — the throwaway tools/bench/bench.sh
 // makes — as an operator runs it: checked, a first token, served, and asked
 // through its API for a key pair and a machine that is resized live,
@@ -30,7 +40,7 @@ func TestBenchThroughTheAPI(t *testing.T) {
 	benchSSH := func(cmd string) (string, error) {
 		out, err := exec.Command("ssh", "-i", os.Getenv("HANGAR_BENCH_SSH_KEY"), "-p", os.Getenv("HANGAR_BENCH_SSH_PORT"),
 			"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
-			"root@127.0.0.1", cmd).CombinedOutput()
+			benchRoot(), cmd).CombinedOutput()
 		return strings.TrimSpace(string(out)), err
 	}
 	archive, err := benchSSH(`ls /var/lib/vz/template/cache/ | grep "^debian-13-standard_.*_$(dpkg --print-architecture)\." | sort -V | tail -1`)
