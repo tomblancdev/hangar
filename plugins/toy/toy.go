@@ -1,8 +1,8 @@
 // Package toy is the smallest plugin that exercises the whole contract: a
 // "box" — a pretend guest on any driver with the guests facet — with a create,
-// a delete, three actions (one that changes what it holds, one that needs a
-// capability not every zone has), quantity and choice dimensions, events and a
-// reconcile that repairs what it can.
+// a delete, its actions (one that changes what it holds, one that needs a
+// capability not every zone has, one whose params hold an object), quantity
+// and choice dimensions, events and a reconcile that repairs what it can.
 //
 // It is the example to copy when writing a plugin, and the one the core's
 // tests run end to end on the fake engine. It is not a machines plugin: it
@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"sync"
@@ -31,7 +32,10 @@ type Spec struct {
 	Kind     string `json:"kind"`
 	Cores    int    `json:"cores"`
 	MemoryGB int    `json:"memory_gb"`
-	Running  bool   `json:"running"`
+	// Labels: a field that is an object — what a schema gives no flag and no
+	// box of its own, typed as it is written.
+	Labels  map[string]string `json:"labels,omitempty"`
+	Running bool              `json:"running"`
 }
 
 // Observed is what the engine reports of a box.
@@ -48,6 +52,10 @@ type resizeParams struct {
 	MemoryGB *int `json:"memory_gb"`
 }
 
+type labelParams struct {
+	Labels map[string]string `json:"labels"`
+}
+
 const boxSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
@@ -58,7 +66,10 @@ const boxSchema = `{
     "kind":      { "type": "string", "enum": ["container", "vm"], "default": "container",
                    "description": "A container shares the host's kernel; a VM has its own." },
     "cores":     { "type": "integer", "minimum": 1, "maximum": 64, "default": 1 },
-    "memory_gb": { "type": "integer", "minimum": 1, "maximum": 1024, "default": 1 }
+    "memory_gb": { "type": "integer", "minimum": 1, "maximum": 1024, "default": 1 },
+    "labels":    { "type": "object", "maxProperties": 8,
+                   "additionalProperties": { "type": "string", "maxLength": 63 },
+                   "description": "Yours, to tell boxes apart: a word for each name." }
   }
 }`
 
@@ -70,6 +81,18 @@ const resizeSchema = `{
   "properties": {
     "cores":     { "type": "integer", "minimum": 1, "maximum": 64 },
     "memory_gb": { "type": "integer", "minimum": 1, "maximum": 1024 }
+  }
+}`
+
+const labelSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["labels"],
+  "properties": {
+    "labels": { "type": "object", "maxProperties": 8,
+                "additionalProperties": { "type": "string", "maxLength": 63 },
+                "description": "Its labels from now on: a word for each name; {} = none." }
   }
 }`
 
@@ -106,6 +129,7 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 				{Name: "start", Description: "Power the box on."},
 				{Name: "stop", Description: "Power the box off."},
 				{Name: "resize", Description: "Set its cores and memory.", ParamsSchema: []byte(resizeSchema), ChangesUsage: true},
+				{Name: "label", Description: "Set its labels.", ParamsSchema: []byte(labelSchema)},
 				{Name: "suspend", Description: "Power it off keeping its memory on disk.", Requires: []string{driver.GuestSuspendToDisk}},
 			},
 		}},
@@ -117,7 +141,7 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 		},
 		Requires:   []string{driver.GuestTags},
 		Credential: &pluginpb.Credential{Required: false, Description: "None for the fake engine, unless its zone expects one."},
-		Events:     []string{"box.created", "box.deleted", "box.started", "box.stopped", "box.resized", "box.suspended", "box.repaired"},
+		Events:     []string{"box.created", "box.deleted", "box.started", "box.stopped", "box.resized", "box.labelled", "box.suspended", "box.repaired"},
 	}, nil
 }
 
@@ -159,7 +183,7 @@ func (p *Plugin) guests(zone string) (driver.Guests, []driver.Capability, error)
 }
 
 // PlanChange says what brings a box to another spec: its cores and memory
-// through resize; its kind is set at its birth.
+// through resize, its labels through label; its kind is set at its birth.
 func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) (*pluginpb.PlanChangeResponse, error) {
 	if req.GetCurrent().GetType() != "box" {
 		return nil, sdk.Refuse("no type %q here", req.GetCurrent().GetType())
@@ -178,6 +202,13 @@ func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) 
 	}
 	if want.Cores != was.Cores || want.MemoryGB != was.MemoryGB {
 		out.Steps = append(out.Steps, sdk.Step("resize", map[string]any{"cores": want.Cores, "memory_gb": want.MemoryGB}))
+	}
+	if !maps.Equal(want.Labels, was.Labels) {
+		labels := want.Labels
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		out.Steps = append(out.Steps, sdk.Step("label", map[string]any{"labels": labels}))
 	}
 	return out, nil
 }
@@ -227,6 +258,15 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 			refusals = append(refusals, &pluginpb.Refusal{Field: "/memory_gb",
 				Reason: fmt.Sprintf("zone %s cannot shrink a running box's memory: stop it first", req.GetZone())})
 		}
+	case "label":
+		if err := sdk.Decode(req.GetCurrent().GetSpec(), &s); err != nil {
+			return nil, err
+		}
+		var lp labelParams
+		if err := sdk.Decode(req.GetParams(), &lp); err != nil {
+			return nil, err
+		}
+		s.Labels = lp.Labels
 	default:
 		return nil, sdk.Refuse("no action %q on a box", req.GetAction())
 	}
@@ -296,6 +336,15 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 		}
 		guest, err = g.ResizeGuest(ctx, r.GetId(), s.Cores, s.MemoryGB*1024)
 		ev = sdk.Event("box.resized", "", map[string]string{"cores": strconv.Itoa(s.Cores), "memory_gb": strconv.Itoa(s.MemoryGB)})
+	case "label":
+		// its labels are the brain's to keep: the engine is only read
+		var lp labelParams
+		if err := sdk.Decode(req.GetParams(), &lp); err != nil {
+			return nil, err
+		}
+		s.Labels = lp.Labels
+		guest, err = g.Guest(ctx, r.GetId())
+		ev = sdk.Event("box.labelled", "", map[string]string{"labels": strconv.Itoa(len(s.Labels))})
 	default:
 		return nil, sdk.Refuse("no action %q on a box", req.GetAction())
 	}

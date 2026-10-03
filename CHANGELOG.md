@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Le JSON lisible — the console's JSON.** A value that does not read on
+  one line — an object, a list that holds one, a text of several lines — was
+  one raw line (an image's `from`: its recipe and its first-boot script, two
+  and a half thousand characters of it). It is **listed as JSON a person
+  reads**: indented, what is short kept on one line, a script as its own
+  lines, an id inside still a link, the rest folded past twelve lines,
+  *copy* for the whole of it — on a resource's page, in « Now: » and in an
+  operation's line, where plain params read as the command line writes them
+  (`cores=4 · memory_gb=8`). And where JSON is typed, **an editor** instead
+  of three blank lines — CodeMirror 6: numbered lines, colours, pairs,
+  folds, a search, several cursors —, with the console's own verdict under
+  it as it is typed: it reads, or the line and column it breaks at and what
+  was expected there (the same answer as the browser's own reader on
+  whether it is JSON), that line lit; and a refusal that points inside what
+  was typed (`/labels/stage`) said in words, its line lit too. **It is the
+  app's first dependency, and it is vendored**: one file, built from pinned
+  versions by `tools/editor/build.sh` and held to them by CI, fetched only
+  by a form that has a JSON field, and set in a root of its own so the
+  page's policy stays as strict as it was
+  ([docs/console.md](docs/console.md#the-one-file-the-app-did-not-write)).
+  The toy plugin gains what proves it: `labels`, a field that is an object,
+  and `label`, an action that takes one.
+
 - **The bench as machines** (`tools/bench/shards.sh`, `tools/bench/pve.sh` —
   tools: the image is `0.3.0`'s). Where a zone has cores to spare, a bench
   is a machine of it: a Debian 13 made a Proxmox VE as Proxmox documents

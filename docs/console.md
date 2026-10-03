@@ -141,11 +141,25 @@ property** is a field. Its control comes from the schema alone:
 | `integer`, `number` | a number, its `minimum` and `maximum` |
 | `string` | a line; a text area past `maxLength` 256 (a first-boot script) |
 | an array of strings | one per line |
-| anything else | JSON |
+| anything else (an object, a list of them) | **JSON, in an editor** (CodeMirror 6): numbered lines, colours, a bracket or a quote bringing its pair, indentation kept, folds, a search (Ctrl-F), several cursors, its own undo — and under it the console's verdict: it reads, or the line and column it breaks at and what was expected there, that line lit |
 
 A field left empty is left out: the brain's default applies. An action's
 form shows what each field is **now**. A refusal lands beside the field its
-violation points at; a limit's or a room's, on a notice, with the numbers.
+violation points at — and, inside what was typed as JSON (`/labels/stage`),
+with the place in words and its line lit —; a limit's or a room's, on a
+notice, with the numbers.
+
+**How a value is shown.** A plain value reads as it is: `yes`, `a, b`, an id
+as a link by its name. A value that does not read on one line — an object, a
+list that holds one, a text of several lines — is **listed as JSON a person
+reads**: indented, one thing a line, what is short kept on one, a text of
+several lines as its own lines (a first-boot script, never one string of
+`\n`), an id inside still a link. Past twelve lines the rest waits behind
+*show all* — what was unfolded stays so while the page looks again —, and
+*copy* puts the whole of it, as JSON, on the clipboard. One listing serves a
+resource's page (as asked, as seen), « Now: » in an action's form and an
+operation's line — where an action's params that are plain read as the
+command line writes them: `cores=4 · memory_gb=8`.
 
 **What a resource reads as is the brain's**, not the page's: its `name` (its
 id when unnamed), the word it wears and its colour (`status`, `light` —
@@ -161,7 +175,8 @@ the field, with the id that holds it. **Home** draws everything you hold as
 ## Its look
 
 `ui/console/` holds the app as it is served: hand-written ES modules, no
-build step, no dependency — what is in the directory is what runs.
+build step — what is in the directory is what runs — and **one file the app
+did not write**, below.
 `theme.css` holds the tokens (colours, faces, corners, how much a notice
 tilts, a screen's lines); `app.css` builds on them. Three things, in this
 order:
@@ -181,6 +196,36 @@ order:
 The faces are Big Shoulders Stencil, IBM Plex Mono and Sedgwick Ave Display,
 embedded with their licences (SIL OFL).
 
+## The one file the app did not write
+
+The box JSON is typed in is **CodeMirror 6**, vendored:
+`ui/console/vendor/codemirror.js`, one file of 364 KB (118 KB compressed),
+with the licences of what is in it beside it (MIT, each as its authors wrote
+it). Everything else about that box is the console's own, in `code.js`: its
+look (the console's tokens), its verdict (`json.js` reads what is typed, in
+words — the browser's own reader says whether, seldom where, and never the
+same from one browser to the next), the line a refusal lights.
+
+- **How it is made, and held.** `tools/editor/` pins every package
+  (`package-lock.json`); `sh tools/editor/build.sh` builds the file in a
+  container (no package's install script runs, nothing of Node on the
+  machine); `--check` builds it again aside and compares, byte for byte —
+  CI runs that, so what is vendored is what the lock builds. A version
+  moves in `package.json`, then `--lock`, then a build: the diff is read.
+- **Fetched by a form that has such a field, never before.** A page with no
+  JSON to type pays nothing for it; a plain box holds what is typed until
+  the editor is there, and stays if it never comes — the verdict under it is
+  the same.
+- **The page's policy is as it was** (`style-src 'self'`, no inline style):
+  an editor writes its styles by script, which on a page means a style tag
+  the policy refuses. It sits in **a root of its own** (a shadow root),
+  where its styles are sheets the root adopts; the console's tokens reach
+  it through that root, so it wears the same colours and faces.
+- **The app's own guard reads it like the rest** (`TestTheAppHoldsNoWayIn`:
+  no markup sink, no storage, nothing loaded from elsewhere), but for one
+  name: the one every SVG is written under, in an image it draws from its
+  own bytes.
+
 ## Proving it
 
 `internal/console` holds the server's tests (each run on the console inside
@@ -189,4 +234,11 @@ driven over the DevTools protocol on a pipe (`internal/browsertest`, the
 standard library alone). `HANGAR_BROWSER=/path/to/chromium go test
 ./internal/console/` — without it the browser tests skip; `HANGAR_SHOTS=dir`
 keeps pictures. `TestBenchTheConsole` (`cmd/hangar`) is the same on the
-repo's throwaway Proxmox VE.
+repo's throwaway Proxmox VE. JSON has two of its own: `TestJSONTypedAndListed`
+holds the reader to the browser's own verdict on what is JSON and to its
+words on where it breaks, the listing to its lines, and the box to its
+verdict, its look and its styles (none of them a style tag); and
+`TestAnObjectTypedAndRead` types an object into the toy plugin's `labels` as
+a keyboard does — broken, refused by the brain inside it, then made, changed
+by an action and read back — on a page that fetched no editor before it
+needed one.

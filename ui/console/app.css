@@ -216,6 +216,35 @@ textarea.input { font-size: 14px; line-height: 1.5; resize: vertical; }
 .action-panel { border-color: var(--toxic); display: grid; gap: 16px; }
 .action-panel .form { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
+/* ---- JSON: a value that does not read on one line, and a box to type one in ---- */
+.json { display: grid; gap: 4px; min-width: 0; font-size: 13px; line-height: 1.55; }
+.json-lines { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* a line that wraps keeps its place: what runs on is pushed in, not thrown back to the edge */
+.json-line { min-height: 1.55em; padding-left: calc(var(--depth, 0) * 2ch + 2ch); text-indent: -2ch; }
+/* a text of several lines: its own lines, a rule down their side */
+.json-line.text { margin-left: calc(var(--depth, 0) * 2ch - 1ch); padding-left: 1.5ch; text-indent: 0; border-left: 2px solid var(--rebar); }
+.j-key { color: var(--ash); }
+.j-dim { color: var(--ash); opacity: .7; }
+.j-num { color: var(--toxic); }
+.j-note { color: var(--ash); font-style: italic; }
+.json-keys { display: flex; gap: 16px; flex-wrap: wrap; }
+.json-key { min-height: 30px; padding: 0; font: 600 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ash); background: none; border: 0; border-bottom: 1px dashed var(--rebar); border-radius: 0; cursor: pointer; }
+.json-key:hover { color: var(--toxic); border-bottom-color: var(--toxic); }
+.json-key[disabled] { opacity: .4; cursor: default; }
+.op .json { grid-column: 2 / -1; }
+.code { min-width: 0; background: var(--glass); border: 1px solid var(--rebar); border-radius: var(--radius); box-shadow: inset 0 2px 6px rgba(0, 0, 0, .5); }
+.code:focus-within { border-color: var(--toxic); }
+/* the editor sits in a root of its own (code.js): its look is said there, in
+   the console's tokens. Until it is there — and if it never comes — a plain box */
+.code-box { min-width: 0; }
+.code-plain { display: block; width: 100%; margin: 0; padding: 11px 12px; font: 400 14px/1.5 var(--mono); tab-size: 2; white-space: pre; overflow: auto; resize: vertical; color: var(--chalk); caret-color: var(--toxic); background: transparent; border: 0; border-radius: 0; outline: none; color-scheme: dark; }
+.code-plain::placeholder { color: var(--ash); }
+.code-foot { display: flex; align-items: center; gap: 6px 16px; flex-wrap: wrap; min-height: 34px; padding: 2px 12px; border-top: 1px solid var(--rebar); background: var(--steel); font-size: 12px; color: var(--ash); }
+.code-says.on { color: var(--toxic); }
+.code-says.bad { color: var(--hazard); }
+.code-says.wait { color: var(--ash); }
+.code-hint { font-size: 11px; opacity: .8; }
+
 /* ---- a notice: paper, taped over the panel it speaks of ---- */
 .flyer { position: relative; background: var(--chalk); color: var(--tar); padding: 28px 22px 22px; margin: 14px 4px 10px; box-shadow: 0 10px 0 rgba(0, 0, 0, .5); display: grid; gap: 12px; overflow-wrap: anywhere; transform: rotate(calc(.8deg * var(--tilt))); }
 .flyer.tilt { transform: rotate(calc(-.8deg * var(--tilt))); }
@@ -266,7 +295,7 @@ textarea.input { font-size: 14px; line-height: 1.5; resize: vertical; }
   #notice { padding: 0 16px; }
   .signin { padding: 28px 16px; gap: 28px; }
   .op { grid-template-columns: 72px minmax(0, 1fr); }
-  .op > :last-child { grid-column: 2; }
+  .op > :nth-child(n+3) { grid-column: 2; }
   .kv-row { grid-template-columns: 110px minmax(0, 1fr); }
   .asks .btn.primary { flex: 1; }
   .flyer { margin-left: 2px; margin-right: 2px; }

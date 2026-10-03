@@ -3,6 +3,7 @@ package toy
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestPlanAppliesDefaultsAndNamesWhatItHolds(t *testing.T) {
 	}
 	var s Spec
 	_ = json.Unmarshal(plan.GetSpec(), &s)
-	if s != (Spec{Kind: "container", Cores: 3, MemoryGB: 1, Running: true}) {
+	if !reflect.DeepEqual(s, Spec{Kind: "container", Cores: 3, MemoryGB: 1, Running: true}) {
 		t.Fatalf("%+v", s)
 	}
 	if plan.GetUsage()["toy.cores"] != 3 || plan.GetUsage()["toy.boxes"] != 1 || plan.GetChoices()["toy.kind"] != "container" {

@@ -31,8 +31,12 @@ tmp=$(mktemp); hatch=$(mktemp)
 trap 'rm -f "$tmp" "$hatch"' EXIT INT TERM
 
 # Everything git tracks, minus this file — which is full of the shapes it
-# forbids and would fail itself.
-files=$(git ls-files | grep -v "^$self$")
+# forbids and would fail itself — and minus the licences of what the console
+# vendors: their authors' own words, kept as they wrote them, their names and
+# mailboxes with them (tools/editor/build.sh writes that file, and --check
+# holds it to what the lock builds).
+licences='ui/console/vendor/codemirror.licenses.txt'
+files=$(git ls-files | grep -v -e "^$self$" -e "^$licences$")
 # Prose, where a hostname is written plainly rather than quoted. Code and
 # config are excluded from the unquoted rule: `p.local`, `s.home` and Jinja's
 # `item.home` are field accesses, not houses. In those files a bare hostname
@@ -78,7 +82,7 @@ scan "$files" "a MAC address that is not documentation (RFC 7042: 00:00:5E:00:53
 # ---- names ---------------------------------------------------------------
 # Dependencies a build or a reader genuinely reaches for are named here, once.
 # Anything else is somebody's domain.
-dep='(([a-z0-9-]+\.)*(example\.(com|net|org)|github\.com|githubusercontent\.com|google\.com|ghcr\.io|docker\.io|golang\.org|go\.dev|gopkg\.in|w3\.org|opensource\.org|sil\.org|flathub\.org|freedesktop\.org|kernel\.org|ietf\.org|rfc-editor\.org|schema\.org|openapis\.org|htmx\.org|alpinelinux\.org|json-schema\.org|modernc\.org|buf\.build|gonum\.org|connectrpc\.com|pluginrpc\.com|go\.uber\.org|proxmox\.com|debian\.org|openssh\.com)|[a-z0-9-]+\.example|localhost)'
+dep='(([a-z0-9-]+\.)*(example\.(com|net|org)|github\.com|githubusercontent\.com|google\.com|ghcr\.io|docker\.io|golang\.org|go\.dev|gopkg\.in|npmjs\.org|w3\.org|opensource\.org|sil\.org|flathub\.org|freedesktop\.org|kernel\.org|ietf\.org|rfc-editor\.org|schema\.org|openapis\.org|htmx\.org|alpinelinux\.org|json-schema\.org|modernc\.org|buf\.build|gonum\.org|connectrpc\.com|pluginrpc\.com|go\.uber\.org|proxmox\.com|debian\.org|openssh\.com)|[a-z0-9-]+\.example|localhost)'
 scan "$files" "a URL to somewhere real (documentation uses example.com — RFC 2606)" \
 	'https?://[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}' \
 	"https?://$dep"

@@ -118,8 +118,9 @@ differs stops everything before anything changes. *(Designed: **a rebuild**
 shown in the plan and asked.)*
 
 **The console is built** ([docs/console.md](docs/console.md)): an app a
-browser loads from `/console/` — hand-written modules, no build step, no
-dependency — and a small server behind it. Every type is a list, a form (a
+browser loads from `/console/` — hand-written modules, no build step, one
+dependency (the editor JSON is typed in, vendored as one file) — and a small
+server behind it. Every type is a list, a form (a
 field per top-level property of its schema, the control its kind and marks
 call for: what a reference may name, the newest a schedule made, the groups
 a share may reach) and a page with **its actions as buttons**; a refusal
@@ -757,7 +758,7 @@ of the engines'.
 | The console's server keeps the sign-in (authorization code + PKCE, the same public client); the browser holds a cookie no script reads | a provider's tokens never reach a page's script, and the provider needs no cross-origin set-up — as Incus, Argo CD and Grafana do; one client for every door, still no secret |
 | A sign-in is kept in memory, never on disk | nothing at rest names a session or holds a refresh token; a restart costs people a redirect |
 | The console reaches the brain through its API alone, with the person's own token — inside the brain, or a process of its own | the audit names the person, not a door; the process on a public door holds none of the plugins' keys |
-| The console's app is hand-written modules: no build step, no dependency | what is in the repository is what runs in the browser; nothing behind the page that holds the door |
+| The console's app is hand-written modules: no build step; one dependency, vendored — the editor JSON is typed in (CodeMirror 6: one file, built from pinned versions by `tools/editor/build.sh`, held to them by CI, fetched only by a form that has such a field) | what is in the repository is what runs in the browser; nothing behind the page that holds the door. An editor is the one piece worth someone else's years of work — and it sits in a root of its own, so the page's policy stays as strict as it was |
 | `apply` runs in the client; the brain is its state (two tags), only the caller's own resources counted | no state file to lose or share; the API stays one ask flow; an operator's listing of everyone's never becomes their plan |
 | What brings a resource to a spec is its plugin's say (`PlanChange`), asked beforehand and run as ordinary actions | the plugin knows which action changes which field; every step is admitted and audited as if asked by hand |
 | A resource that left the file is deleted — after asking (`--yes` for scripts; refused with no one at stdin) | the file is the whole truth, as Terraform's; nothing goes unasked |

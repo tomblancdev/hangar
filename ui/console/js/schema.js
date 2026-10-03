@@ -6,6 +6,8 @@
 // The brain checks everything. This only decides which control a field gets
 // and turns what was typed into JSON.
 
+import {check} from './json.js';
+
 function kindOf(t) {
   if (typeof t === 'string') return t;
   if (Array.isArray(t)) return t.find((x) => typeof x === 'string' && x !== 'null') || '';
@@ -85,9 +87,11 @@ export function read(f, raw) {
       return n;
     }
     case 'json': {
-      const s = String(raw).trim();
-      if (s === '') return undefined;
-      try { return JSON.parse(s); } catch { throw new Error('not JSON'); }
+      if (String(raw).trim() === '') return undefined;
+      // where it breaks, and what was expected there: as its box says it
+      const got = check(String(raw));
+      if (got.message) throw new Error(`line ${got.line}, column ${got.column}: ${got.message}`);
+      return got.value;
     }
     case 'textarea': {
       // kept as typed: a first-boot script's blank lines and indentation are its own
@@ -140,6 +144,13 @@ export function summary(fields, spec, skip = []) {
 export function fieldOf(pointer) {
   const m = /^\/?([^/]+)/.exec(pointer || '');
   return m ? m[1].replace(/~1/g, '/').replace(/~0/g, '~') : '';
+}
+
+// insideOf is the rest of that pointer: where, inside the field, a
+// violation points (/rules/1/port → /1/port); '' when at the field itself.
+export function insideOf(pointer) {
+  const m = /^\/?[^/]+(\/.*)$/.exec(pointer || '');
+  return m ? m[1] : '';
 }
 
 // plural: a type's title, for a list of them.

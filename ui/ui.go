@@ -1,6 +1,7 @@
 // Package ui carries the mark, and the console: the app a browser loads,
 // drawn from what the brain serves — static files, embedded as they are (no
-// build step: what is in this directory is what runs).
+// build step: what is in this directory is what runs; console/vendor holds
+// the one file of it the app did not write, made by tools/editor).
 package ui
 
 import (

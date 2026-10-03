@@ -49,6 +49,15 @@ jobs:
         with: { go-version-file: tools/go.mod }
       - run: sh tools/protogen.sh --check
 
+  # The one file in the console's app that the app did not write — its
+  # editor — is what tools/editor's lock builds, byte for byte.
+  editor:
+    needs: [no-environment]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh tools/editor/build.sh --check
+
   # What the image carries beside the binary — the certificate authorities it
   # verifies https with — asked of the binary inside it, and of the same
   # image built without them (the control).
@@ -60,7 +69,7 @@ jobs:
       - run: sh tools/image-test.sh
 
   image:
-    needs: [no-environment, go, protocol, image-test]
+    needs: [no-environment, go, protocol, editor, image-test]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:

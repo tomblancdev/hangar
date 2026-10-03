@@ -4,7 +4,9 @@
 // about it.
 
 import {h, clear} from './dom.js';
-import {widget, label, collect, fieldOf, show} from './schema.js';
+import {widget, label, collect, fieldOf, insideOf, show} from './schema.js';
+import {nested} from './json.js';
+import {listing, editor} from './code.js';
 
 let seq = 0;
 
@@ -19,19 +21,25 @@ let seq = 0;
 export function buildForm({fields, refs = {}, groups = [], current = null, submit, danger = false, extra = [], onSubmit, onCancel}) {
   const controls = {};
   const slots = {};
+  const editors = {};
   const rows = fields.map((f) => {
     const id = 'f' + (++seq);
     const w = widget(f);
     const err = h('div', {class: 'field-err', role: 'alert'});
     slots[f.name] = err;
-    const now = current && current[f.name] !== undefined ? show(current[f.name]) : '';
-    const help = h('div', {class: 'help'}, f.desc, now ? h('span', {class: 'now'}, (f.desc ? ' ' : '') + 'Now: ' + now + '.') : null);
+    const was = current ? current[f.name] : undefined;
+    const now = was !== undefined ? show(was) : '';
+    // what does not read on one line is listed under the description
+    const help = h('div', {class: 'help'}, f.desc, nested(was) ? h('div', {class: 'now'}, 'Now:', listing(was))
+      : now ? h('span', {class: 'now'}, (f.desc ? ' ' : '') + 'Now: ' + now + '.') : null);
     const name = [label(f.name), f.ref ? h('span', {class: 'points'}, ' → ' + label(f.ref)) : null, f.required ? h('span', {class: 'req', title: 'required'}, ' *') : null];
-    const [control, getter, wide, grouped] = make(f, w, id, {refs, groups});
+    const [control, getter, wide, grouped, ed] = make(f, w, id, {refs, groups});
     controls[f.name] = getter;
+    if (ed) editors[f.name] = ed;
     const body = grouped
       ? h('fieldset', {class: 'field' + (wide ? ' wide' : '')}, h('legend', {class: 'lbl'}, name), control, help, err)
-      : h('div', {class: 'field' + (wide ? ' wide' : '')}, h('label', {class: 'lbl', for: id}, name), control, help, err);
+      // a label leads to its field: an editor is not one a browser knows to lead to
+      : h('div', {class: 'field' + (wide ? ' wide' : '')}, h('label', {class: 'lbl', for: id, onclick: ed ? () => ed.focus() : null}, name), control, help, err);
     body.dataset.field = f.name;
     return body;
   });
@@ -59,19 +67,24 @@ export function buildForm({fields, refs = {}, groups = [], current = null, submi
     values,
     notice,
     busy(on) { go.disabled = on; go.classList.toggle('working', on); },
-    // what the brain refused, field by field: beside the field it names
+    // what the brain refused, field by field: beside the field it names —
+    // and, inside what was typed as JSON, where: in words, and its line lit
     setViolations(violations) {
       const rest = [];
       for (const v of violations || []) {
-        const slot = slots[fieldOf(v.field)];
-        if (slot) slot.append(h('div', {}, v.reason)); else rest.push(v);
+        const name = fieldOf(v.field);
+        const slot = slots[name];
+        if (!slot) { rest.push(v); continue; }
+        const inside = insideOf(v.field);
+        slot.append(h('div', {}, inside ? h('b', {}, inside.slice(1).split('/').map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~')).join(' › ') + ': ') : null, v.reason));
+        if (inside && editors[name]) editors[name].mark(inside);
       }
       return rest;
     },
   };
 }
 
-// make builds one control: [node, getter, wide, grouped].
+// make builds one control: [node, getter, wide, grouped, editor].
 function make(f, w, id, {refs, groups}) {
   switch (w) {
     case 'ref': {
@@ -119,11 +132,14 @@ function make(f, w, id, {refs, groups}) {
         placeholder: f.def !== undefined ? `default ${f.def}` : range});
       return [inp, () => inp.value, false, false];
     }
-    case 'textarea':
-    case 'lines':
     case 'json': {
+      const ed = editor({id, label: label(f.name)});
+      return [ed.node, () => ed.value, true, false, ed];
+    }
+    case 'textarea':
+    case 'lines': {
       const ta = h('textarea', {id, class: 'input', rows: w === 'textarea' ? 6 : 3, spellcheck: 'false',
-        placeholder: w === 'lines' ? 'one per line' : w === 'json' ? 'JSON' : ''});
+        placeholder: w === 'lines' ? 'one per line' : ''});
       return [ta, () => ta.value, true, false];
     }
     default: {

@@ -182,6 +182,9 @@ func TestEveryActionFromABrowser(t *testing.T) {
 	p.Shot("06-action-form")
 	p.Submit()
 	done("resize")
+	// in its history: what the action was asked with, as the command line writes it
+	p.Sees("cores=2 · memory_gb=3")
+	p.Lacks(`{"cores"`)
 	p.Press("start")
 	done("start")
 	p.Reads(stamp, "RUNNING")
@@ -419,6 +422,12 @@ func TestTwoPeopleAndAPhone(t *testing.T) {
 	baked := made(op)
 	op.Reads(stamp, "AVAILABLE")
 	op.Sees("shared with")
+	// what it was baked from is an object, a script in it: listed as JSON a
+	// person reads, the script as its own lines — never one line of \n
+	op.Wait("its recipe, listed", `(() => { const l = [...document.querySelectorAll('.kv .json-line')].map((x) => x.textContent);
+	  return l.includes('"disk_gb": 10,') && l.includes('#cloud-config') && l.includes('packages: [qemu-guest-agent]'); })()`)
+	op.Lacks(`\npackages`)
+	op.Shot("19-image-recipe")
 	// a bake that fails on its own waits to be asked again
 	op.Open("#/t/image/new")
 	op.Fill("recipe", "broken")
@@ -501,4 +510,87 @@ func TestTwoPeopleAndAPhone(t *testing.T) {
 		t.Error("the audit does not name the operator for what she did to alice's machine")
 	}
 	op.Quiet()
+}
+
+// A field that is an object, from a real browser, under the page's own
+// policy: typed in an editor — a bracket brings its pair, a new line its
+// indentation — that says where it breaks as it is typed; refused by the
+// brain inside what was typed, the place said in words and its line lit;
+// read back as JSON a person reads — on its page, in an action's form, in
+// its history.
+func TestAnObjectTypedAndRead(t *testing.T) {
+	br := browsertest.Start(t)
+	s := stacktest.New(t, tokensOnly, "toy")
+	p := br.Page(1280, 900, false)
+	p.Goto(s.URL + "/console/")
+	p.Sees("COME IN")
+	p.Fill("API token", s.Token(t, "alice", "users"))
+	p.Press("SIGN IN")
+	p.Sees("YOUR LIMITS")
+	// the editor's own code is fetched by a form that has such a field, never before
+	fetched := `performance.getEntriesByType('resource').some((e) => e.name.endsWith('/vendor/codemirror.js'))`
+	p.Wait("a page with no JSON to type, and no editor fetched for it", "!("+fetched+")")
+	p.Open("#/t/box/new")
+	p.Sees("ASK FOR A BOX")
+	slot := `__t.field('labels').closest('.field').querySelector('.field-err').textContent`
+	// the line the editor lights: its number, in the root the editor sits in
+	lit := func(n string) string {
+		return `(() => { const b = document.querySelector('.code-box'); const l = b && b.shadowRoot ? [...b.shadowRoot.querySelectorAll('.cm-lineNumbers .cm-lit-n')].map((x) => x.textContent).join() : 'no editor'; return l === '` + n + `'; })()`
+	}
+
+	// ---- it is an editor: typed as a keyboard types, a brace brings its pair, Enter its indentation
+	p.Wait("the editor, in the box", `(() => { const b = document.querySelector('.code-box'); return !!b && !!b.shadowRoot && !document.querySelector('.code textarea'); })()`)
+	p.Wait("fetched by the form that needs it", fetched)
+	// reached as a person reaches a field: by its label
+	if err := p.Eval(`[...document.querySelectorAll('label.lbl')].find((l) => l.textContent === 'labels').click()`, nil); err != nil {
+		t.Fatal(err)
+	}
+	p.Type("{", true)
+	p.Wait("a pair, and the line between them pushed in", `__t.field('labels').value === '{\n  \n}'`)
+	p.Type(`"team": "infra"`, false)
+	p.Reads(".code-says", "reads as JSON · 3 lines")
+
+	// ---- what is not JSON is said as it is typed, and asks nothing
+	p.Fill("name", "labelled")
+	p.Fill("labels", "{\n  \"team\": \"infra\"\n  \"stage\": 3\n}")
+	p.Reads(".code-says", "line 3, column 3: a comma or a } is expected")
+	p.Wait("the line it breaks at, lit", lit("3"))
+	p.Shot("30-json-broken")
+	p.Submit()
+	p.Wait("the same, beside the field", slot+` === 'line 3, column 3: a comma or a } is expected'`)
+	if h := p.Hash(); h != "#/t/box/new" {
+		t.Fatalf("what does not read was asked for: the page is %s", h)
+	}
+
+	// ---- what the brain refuses inside it: where, in words, and its line lit
+	p.Fill("labels", "{\n  \"team\": \"infra\",\n  \"stage\": 3\n}")
+	p.Reads(".code-says", "reads as JSON · 4 lines")
+	p.Submit()
+	p.Sees("REFUSED")
+	p.Wait("the place inside, in words", slot+`.startsWith('stage: ')`)
+	p.Wait("the line the brain points at, lit", lit("3"))
+	p.Shot("31-json-refused")
+	p.Fill("labels", "{\n  \"team\": \"infra\",\n  \"stage\": \"prod\"\n}")
+	p.Wait("a line no longer lit once it is typed over", lit(""))
+	p.Submit()
+	p.Wait("the new resource's page", "location.hash.startsWith('#/r/')")
+	p.Sees("LABELLED")
+	p.Reads(stamp, "RUNNING")
+	p.Wait("its labels, short enough for one line", `[...document.querySelectorAll('.kv .json-line')].some((l) => l.textContent === '{ "stage": "prod", "team": "infra" }')`)
+
+	// ---- an action that takes an object: what it is now listed, the box, tidy
+	p.Press("label")
+	p.Wait("what it is now, listed under the field", `(() => { const n = document.querySelector('.action-panel .now .json'); return !!n && n.textContent.includes('"team": "infra"'); })()`)
+	p.Fill("labels", `{"team": "infra", "stage": "prod", "owner": "alice", "since": "2026", "why": "a label for every question"}`)
+	p.Press("tidy")
+	p.Wait("written again, indented", `__t.field('labels').value.split('\n').length === 7`)
+	p.Shot("32-json-action")
+	p.Submit()
+	p.Sees("label: done")
+	// more than a line holds: listed, on its page and under its line in the history
+	p.Wait("its labels, listed", `[...document.querySelectorAll('.kv .json-line')].some((l) => l.textContent === '"why": "a label for every question"')`)
+	p.Wait("what the action was asked with, listed under its line", `[...document.querySelectorAll('.ops .json-line')].some((l) => l.textContent === '"owner": "alice",')`)
+	p.Lacks(`{"labels"`)
+	p.Shot("33-json-read")
+	p.Quiet()
 }

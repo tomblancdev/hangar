@@ -8,6 +8,8 @@
 import {api, Problem, clientToken, settled, session} from './api.js';
 import {h, clear, bar, ago, day, took, fmtNumber} from './dom.js';
 import {summary, label, plural, show, fieldsOf} from './schema.js';
+import {nested, pairs} from './json.js';
+import {listing} from './code.js';
 import {buildForm, refusal} from './form.js';
 
 const idShape = /^[a-z][a-z0-9]{0,7}-[0-9a-f]{17}$/;
@@ -144,15 +146,21 @@ function held(ctx, all) {
 
 function opLine(op, ctx) {
   const what = op.kind === 'action' ? label(op.action) : op.kind;
+  // what an action was asked with, as the command line writes it (cores=4 ·
+  // memory_gb=8) — listed under the line when a param does not read on one;
+  // a create's and a delete's are the core's own notes
+  const asked = op.kind === 'action' && op.params && Object.keys(op.params).length ? op.params : null;
+  const flat = asked ? pairs(asked) : null;
+  const leads = (x) => (typeof x === 'string' && idShape.test(x) ? h('a', {href: '#/r/' + x}, x) : null);
   const res = op.state === 'running' ? h('span', {class: 'busy'}, 'running…')
     : op.state === 'failed' ? h('span', {class: 'bad'}, 'failed: ' + (op.error || ''))
     : h('span', {class: 'muted'}, 'done in ' + took(op.created_at, op.finished_at || op.updated_at));
   return h('div', {class: 'op'},
     h('div', {class: 'muted'}, ago(op.created_at)),
     h('div', {}, h('b', {}, what), ' ', h('a', {href: '#/r/' + op.resource_id, title: op.resource_id}, op.resource_name || op.resource_id), ctx.me.operator && op.owner !== ctx.me.subject ? h('span', {class: 'muted'}, ' · ' + (op.owner_name || op.owner)) : null,
-      // what an action was asked with; a create's and a delete's are the core's own notes
-      op.kind === 'action' && op.params && Object.keys(op.params).length ? h('span', {class: 'muted'}, ' ' + show(op.params)) : null),
-    h('div', {}, res));
+      flat ? h('span', {class: 'muted'}, ' ', flat.map(([k, v], i) => [i ? ' · ' : '', k + '=', leads(v) || (Array.isArray(v) ? v.join(',') : String(v))])) : null),
+    h('div', {}, res),
+    asked && !flat ? listing(asked, {link: leads}) : null);
 }
 
 function problemNode(p) {
@@ -410,6 +418,8 @@ export function resource(ctx, id) {
     section('WHAT IT NAMES', '', names), section('WHAT NAMES IT', '', namedBy), section('ITS HISTORY', '', history), danger);
   let open = '';
   let gone = false;
+  // what a person unfolded stays unfolded while the page is looked at again
+  const unfolded = new Set();
 
   async function look() {
     let r;
@@ -455,7 +465,7 @@ export function resource(ctx, id) {
   function drawPairs(into, t, r) {
     const spec = r.spec || {};
     const keys = [...new Set([...(t ? t.fields.map((f) => f.name) : []), ...Object.keys(spec)])].filter((k) => spec[k] !== undefined);
-    clear(into, keys.length ? keys.map((k) => pair(k, linked(spec[k], r.names || {}))) : h('p', {class: 'muted'}, 'Everything at its default.'),
+    clear(into, keys.length ? keys.map((k) => pair(k, linked(spec[k], r.names || {}, 'asked.' + k))) : h('p', {class: 'muted'}, 'Everything at its default.'),
       Object.keys(r.tags || {}).length ? pair('tags', Object.entries(r.tags).map(([k, v]) => `${k}=${v}`).join(', ')) : null,
       r.shared_with && r.shared_with.length ? pair('shared with', r.shared_with.map((g) => (g === '*' ? 'everyone' : g)).join(', ')) : null);
   }
@@ -465,7 +475,7 @@ export function resource(ctx, id) {
     const held = Object.entries(r.usage || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(' · ');
     const room = r.room && (r.room.guaranteed_mb || r.room.spot_mb) ?
       [r.room.guaranteed_mb ? `${r.room.guaranteed_mb} MB guaranteed` : '', r.room.spot_mb ? `${r.room.spot_mb} MB of the spot pool` : ''].filter(Boolean).join(' · ') : '';
-    clear(into, Object.keys(obs).map((k) => pair(k, /_at$/.test(k) && typeof obs[k] === 'string' ? ago(obs[k]) : linked(obs[k], r.names || {}))),
+    clear(into, Object.keys(obs).map((k) => pair(k, /_at$/.test(k) && typeof obs[k] === 'string' ? ago(obs[k]) : linked(obs[k], r.names || {}, 'seen.' + k))),
       held ? pair('holds', held) : null, room ? pair('room', room) : null, r.tier ? pair('counted under', 'tier ' + r.tier) : null,
       !Object.keys(obs).length && !held ? h('p', {class: 'muted'}, 'Nothing reported yet.') : null);
   }
@@ -474,11 +484,13 @@ export function resource(ctx, id) {
     return h('div', {class: 'kv-row'}, h('div', {class: 'muted'}, label(k)), h('div', {class: 'kv-val'}, v));
   }
 
-  // linked: a value that is an id leads to that resource.
-  function linked(v, names = {}) {
+  // linked: a value that is an id leads to that resource; one that does not
+  // read on one line — an object, a text of several lines — is listed.
+  function linked(v, names = {}, key = '') {
     const one = (x) => h('a', {href: '#/r/' + x, title: x}, names[x] || x);
     if (typeof v === 'string' && idShape.test(v)) return one(v);
     if (Array.isArray(v) && v.length && v.every((x) => typeof x === 'string' && idShape.test(x))) return v.map((x, i) => [i ? ', ' : '', one(x)]);
+    if (nested(v)) return listing(v, {link: (x) => (idShape.test(x) ? one(x) : null), unfolded, key});
     return show(v);
   }
 
