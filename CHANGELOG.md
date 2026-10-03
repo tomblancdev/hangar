@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **The bench as machines** (`tools/bench/shards.sh`, `tools/bench/pve.sh` —
+  tools: the image is `0.3.0`'s). Where a zone has cores to spare, a bench
+  is a machine of it: a Debian 13 made a Proxmox VE as Proxmox documents
+  it, saved once as an image by its owner (no operator, no recipe), born
+  again in under a minute for each shard of the tests; the shards, balanced
+  by the tests' measured times, run at once
+  ([docs/proxmox.md](docs/proxmox.md#the-bench-as-machines)). Proved on a
+  real zone, the benches made with `0.3.0`'s own `cpu: host` and
+  `virtualization`: **the twenty tests in 18 min 23 s on three of them, eighty on
+  a laptop's one.** What a machine made a Proxmox VE needs that an
+  installer's disk has by itself is written beside each line of `pve.sh` —
+  its guests' way out among them: the node told to forward, to answer
+  their names, and to answer their clock.
+
 ## v0.3.0 — 2026-10-03
 
 **A machine's processor.** What the first heavy runs on a real zone found: a

@@ -529,3 +529,67 @@ recipe installs.
 priority guest (VM 100), and go test runs packages side by side unless told
 not to (read: the watcher test started VM 100 while the room test was about
 to). CI does not run them: they need a hypervisor.
+
+### The bench as machines
+
+One bench runs the tests one after the other, on the machine that asks. Where
+a hangar zone has cores to spare, **a bench is a machine of that zone** — a
+Proxmox VE born from an image in seconds — and the tests run in shards, one
+bench each, at once (`tools/bench/shards.sh`):
+
+```sh
+sh tools/bench/shards.sh seed        # once: a machine made a Proxmox VE, saved as the image pve-bench
+sh tools/bench/shards.sh up 3        # three benches born from it
+sh tools/bench/shards.sh test        # each made ready, then its share of the tests
+sh tools/bench/shards.sh down
+```
+
+- **Who may**: someone whose tier opens a VM's host processor and
+  virtualisation (`machines.cpu: [host]`, `machines.virtualization:
+  [nested]` — a bench's guests are VMs inside a VM) and lets them save an
+  image of their own machine (`images.source: [machine]`). **No operator's
+  hand**: the image is a saved machine, not a recipe.
+- **The seed** is a Debian 13 machine made a Proxmox VE as Proxmox documents
+  it for a stock Debian (`tools/bench/pve.sh`: its repository and kernel, a
+  reboot, its packages), then set up by the same `setup.sh` as the bench on
+  one machine. Read on a zone of Proxmox VE 9.2 (a six-core host): five and
+  a half minutes from nothing to a saved image; three benches born from it
+  in under a minute; **the twenty tests in 18 min 23 s on the three**, where one
+  bench on a laptop took eighty.
+- **What an installer's disk would not need, and why each is there**: the
+  guests' disks on a ZFS pool made of one sparse file, named as the installer
+  names its own (the tests name `local-zfs`); the node's name kept
+  `pve-bench` whatever the machine is called, and cloud-init told to leave
+  the host name, `/etc/hosts` and its choice of network files alone (with
+  Proxmox's ifupdown installed it would write a clone's interface where
+  nothing reads it); the boot loader told its disk (Proxmox's own build of
+  it asks at its upgrade); `interfaces.new`, which Proxmox's packages leave
+  and the first network reload moves over anything written before. And
+  **the guests' way out**, which the installer's own network gives by
+  itself: the node told to forward (a guest's answers stopped at it); its
+  resolvers made the real ones, and its DHCP server told to read them (the
+  image's file names only its own stub, and the image's resolver brings a
+  `resolvconf` that sends Debian's start of that server to a file nothing
+  writes — every name a guest asked came back refused); and the guests'
+  clock answered by the node itself, whatever server they name — a zone's
+  network may let only the web out, and a guest asking the world's time
+  servers every ten seconds is never read as idle. Each was found the same
+  way: a test that waited for ever, then `tcpdump` on the guests' bridge.
+- **At every birth** (`pve.sh node`, seconds): a bench's address is a lease,
+  another each time — it is written where Proxmox reads its own, the
+  certificate made anew for it, and the guests' network applied again: their
+  way out is written with the node's address in it, and the rule a clone
+  boots with names the image's — what leaves by another address than the
+  machine's is dropped on its way. Root's keys are set where Proxmox keeps
+  them (cloud-init's own line for root, a command in place of a shell, would
+  win: the first line that matches a key does).
+- **The shards**: every bench test of the two packages, the heaviest first,
+  each given to the shard that is lightest so far (`shards.sh list`); a test
+  the list of weights does not know is still run. A shard is green only if
+  every test it was given said so.
+- **`test` may run elsewhere than `up`** — nearer the benches: it needs `go`,
+  `ssh` and their ports 22 and 8006, where `up` needs the command line signed
+  in. Its key first (`shards.sh key` there, `up --key` here), then the
+  addresses. The tests reach a bench that is not on their own machine by
+  `HANGAR_BENCH_SSH_HOST`, and the one test whose bench calls the brain back
+  (the room's hook) holds a tunnel open over the ssh it already has.
