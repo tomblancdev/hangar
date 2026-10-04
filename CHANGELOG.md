@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 — 2026-10-04
 
 - **Les réseaux — a network of one's own.** A new plugin, **`networks`**, and
   its type **`network`** (`net-…`): a private network only its machines are
