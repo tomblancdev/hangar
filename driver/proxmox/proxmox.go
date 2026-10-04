@@ -19,6 +19,19 @@
 //	seed_storage    a storage of its own for VMs' seed discs (iso) (required)
 //	bridge          the bridge or SDN vnet their network joins     (required)
 //	vlan            a VLAN tag on it                               (optional)
+//	subnet          the range its guests are GIVEN their address in,
+//	                "192.0.2.0/24": none asks a DHCP (net.go)       (optional)
+//	first_address   the address the first id of vmids is given; a guest's is
+//	                that plus (its id − the first)            (with subnet)
+//	gateway         their way out                                  (optional)
+//	resolvers       their resolvers, comma-separated   (default: the gateway)
+//	firewall        "on": every guest is born behind Proxmox's firewall,
+//	                alone, sending only as itself — it needs subnet, and
+//	                the cluster's firewall on (net.go)
+//	firewall_groups security groups of the operator's, worn first by every
+//	                guest, comma-separated                (with firewall)
+//	firewall_log    the level a refusal is logged at on the node
+//	                (default nolog)                       (with firewall)
 //	vmids           the ids this driver may take, "11000-11099"    (required)
 //	full_clone      "true": full clones even beside the template
 //	cpu_model       the processor a VM sees unless it asks for its host's
@@ -98,6 +111,7 @@ type Driver struct {
 	seeds    string
 	bridge   string
 	vlan     int
+	lane     lane // the addresses its guests are given, and their wall
 	lo, hi   int
 	full     bool
 	cpuModel string        // the processor a VM sees unless it asks for its host's
@@ -107,6 +121,12 @@ type Driver struct {
 	watch    []string
 	caps     []driver.Capability
 	fenceErr string // why fence.pool is not advertised, when it is not
+
+	// the walls written a moment ago, by VMID: a start waits for Proxmox to
+	// have them on the wire (net.go)
+	wmu      sync.Mutex
+	walledAt map[int]time.Time
+	wallWait time.Duration
 
 	mu sync.Mutex // one create at a time: a VMID is picked, then taken
 	// volumes: one volume change at a time (a free key is picked, then taken)
@@ -123,6 +143,7 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 		zone: p.Zone, node: o["node"], pool: o["pool"], images: o["images_pool"], storage: o["storage"],
 		seeds: o["seed_storage"], bridge: o["bridge"], full: o["full_clone"] == "true", shutdown: 60, listLag: 10 * time.Second,
 		answerIn: nodeAnswersWithin, shelfArchive: o["shelf_archive"], cpuModel: defaultCPUModel,
+		walledAt: map[int]time.Time{}, wallWait: wallSettle,
 	}
 	for _, ref := range p.Watch {
 		if n, err := strconv.Atoi(ref); err != nil || n < 100 {
@@ -168,6 +189,10 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	if !ok || d.lo < 100 || d.hi < d.lo || d.hi > 999999999 {
 		return nil, fmt.Errorf("proxmox zone %s: vmids %q: a range such as 11000-11099", p.Zone, o["vmids"])
 	}
+	var err error
+	if d.lane, err = laneOf(o, d.lo, d.hi); err != nil {
+		return nil, fmt.Errorf("proxmox zone %s: %w", p.Zone, err)
+	}
 	c, err := newClient(p.Endpoint, p.Credential, o)
 	if err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: %w", p.Zone, err)
@@ -182,6 +207,9 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	d.caps = []driver.Capability{driver.KindContainer, driver.KindVM, driver.GuestTags, driver.GuestActivity,
 		driver.ResizeLiveMemoryDown, driver.ResizeLiveCPUCap, driver.CPUHost, driver.CPUNested, driver.CPUWeight,
 		driver.HookPreStart, driver.VolumeMoveBetweenGuests}
+	if d.lane.wall {
+		d.caps = append(d.caps, driver.NetFirewall)
+	}
 	why, err := d.fence(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: reading what the token may do: %w", p.Zone, err)
@@ -425,6 +453,10 @@ func (d *Driver) read(ctx context.Context, r resource, id string) (driver.Guest,
 	if r.Type == "qemu" {
 		g.CPU, g.Virtualization = cpuOf(str(cfg["cpu"]))
 	}
+	if a, ok := given(r.Type, cfg); ok {
+		g.Address = a.String()
+	}
+	g.Wall = d.walled(ctx, r, cfg)
 	if g.Running {
 		g.MemoryUsedMB = int((st.Mem + (1 << 20) - 1) >> 20)
 		// its uptime is its process's own age, whichever API worker answers
@@ -686,6 +718,11 @@ func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Gu
 		// runs a second uncapped
 		err = d.cpuLimit(ctx, r, s.CPULimit)
 	}
+	if err == nil {
+		// behind its wall before its first start: one that cannot be written
+		// fails the create, and nothing starts without it
+		_, err = d.wallUp(ctx, r)
+	}
 	if err != nil {
 		return driver.Guest{}, d.engine(err)
 	}
@@ -730,20 +767,6 @@ func (d *Driver) freeVMID(ctx context.Context) (int, error) {
 	return 0, fmt.Errorf("%w: every id of %d-%d is taken", driver.ErrRefused, d.lo, d.hi)
 }
 
-func (d *Driver) net0(container bool) string {
-	var b strings.Builder
-	if container {
-		b.WriteString("name=eth0,ip=dhcp,")
-	} else {
-		b.WriteString("virtio,")
-	}
-	b.WriteString("bridge=" + d.bridge)
-	if d.vlan > 0 {
-		fmt.Fprintf(&b, ",tag=%d", d.vlan)
-	}
-	return b.String()
-}
-
 func (d *Driver) createContainer(ctx context.Context, vmid int, s driver.GuestSpec) error {
 	if s.Image == "" {
 		return fmt.Errorf("%w: a container starts from a template archive; none named", driver.ErrRefused)
@@ -764,7 +787,7 @@ func (d *Driver) createContainer(ctx context.Context, vmid int, s driver.GuestSp
 		"memory":       {strconv.Itoa(s.MemoryMB)},
 		"swap":         {"0"},
 		"rootfs":       {fmt.Sprintf("%s:%d", d.storage, disk)},
-		"net0":         {d.net0(true)},
+		"net0":         {d.card(true, vmid, "")},
 		"pool":         {d.pool},
 		"unprivileged": {"1"},
 		"features":     {"nesting=1"},
@@ -773,6 +796,9 @@ func (d *Driver) createContainer(ctx context.Context, vmid int, s driver.GuestSp
 	}
 	if len(s.SSHKeys) > 0 {
 		p.Set("ssh-public-keys", strings.Join(s.SSHKeys, "\n"))
+	}
+	if list := d.lane.resolverList(); list != "" {
+		p.Set("nameserver", list)
 	}
 	return d.c.run(ctx, http.MethodPost, "/nodes/"+url.PathEscape(d.node)+"/lxc", p)
 }
@@ -907,23 +933,30 @@ func (d *Driver) trim(ctx context.Context, r resource, cfg map[string]any) error
 // network and tags, then its disk made to give space back and grown to the
 // size asked.
 func (d *Driver) configureVM(ctx context.Context, r resource, s driver.GuestSpec, tagStr string) error {
-	volid := d.seeds + ":iso/" + seedName(s.ID)
-	if err := d.upload(ctx, s, volid); err != nil {
+	// its card first: the seed disc names the card's MAC where the zone
+	// gives the VM its address
+	p, sn, err := d.vmNet(ctx, r)
+	if err != nil {
 		return err
 	}
-	p := url.Values{
-		"cores":    {strconv.Itoa(s.Cores)},
-		"sockets":  {"1"},
-		"cpu":      {d.cpuLine(s)},
-		"cpuunits": {strconv.Itoa(driver.WeightOf(s.CPUWeight))},
-		"memory":   {strconv.Itoa(s.MemoryMB)},
-		"numa":     {"1"},
-		"hotplug":  {"disk,network,usb,memory"},
-		"net0":     {d.net0(false)},
-		"ide2":     {volid + ",media=cdrom"},
-		"tags":     {tagStr},
-		"agent":    {"enabled=1"},
-		"onboot":   {"0"},
+	volid := d.seeds + ":iso/" + seedName(s.ID)
+	if err := d.upload(ctx, s, sn, volid); err != nil {
+		return err
+	}
+	for k, v := range map[string]string{
+		"cores":    strconv.Itoa(s.Cores),
+		"sockets":  "1",
+		"cpu":      d.cpuLine(s),
+		"cpuunits": strconv.Itoa(driver.WeightOf(s.CPUWeight)),
+		"memory":   strconv.Itoa(s.MemoryMB),
+		"numa":     "1",
+		"hotplug":  "disk,network,usb,memory",
+		"ide2":     volid + ",media=cdrom",
+		"tags":     tagStr,
+		"agent":    "enabled=1",
+		"onboot":   "0",
+	} {
+		p.Set(k, v)
 	}
 	if err := d.c.run(ctx, http.MethodPost, r.path()+"/config", p); err != nil {
 		return err
@@ -943,12 +976,13 @@ func (d *Driver) configureVM(ctx context.Context, r resource, s driver.GuestSpec
 }
 
 // upload puts the VM's seed disc on the seed storage, unless it is there.
-func (d *Driver) upload(ctx context.Context, s driver.GuestSpec, volid string) error {
+// net: the network its first boot is told (nil: it asks a DHCP).
+func (d *Driver) upload(ctx context.Context, s driver.GuestSpec, net *seedNet, volid string) error {
 	have, err := d.seedExists(ctx, volid)
 	if err != nil || have {
 		return err
 	}
-	iso := nocloudSeed(s.ID, s.Name, s.SSHKeys, s.UserData, time.Now())
+	iso := nocloudSeed(s.ID, s.Name, s.SSHKeys, s.UserData, net, time.Now())
 	var upid string
 	path := "/nodes/" + url.PathEscape(d.node) + "/storage/" + url.PathEscape(d.seeds) + "/upload"
 	if err := d.c.upload(ctx, path, map[string]string{"content": "iso"}, seedName(s.ID), iso, &upid); err != nil {
@@ -1053,6 +1087,10 @@ func (d *Driver) power(ctx context.Context, r resource, on bool) error {
 		return nil
 	}
 	if on {
+		// a wall just written is not on the wire yet: the start waits for it
+		if err := d.settled(ctx, r); err != nil {
+			return err
+		}
 		return d.c.run(ctx, http.MethodPost, r.path()+"/status/start", nil)
 	}
 	return d.c.run(ctx, http.MethodPost, r.path()+"/status/shutdown",

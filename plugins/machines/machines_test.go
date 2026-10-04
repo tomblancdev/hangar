@@ -221,7 +221,7 @@ func TestAMachinesSentence(t *testing.T) {
 	if err := json.Unmarshal([]byte(machineSchema), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(doc.Summary, "{addresses}") || doc.Summary[0] != "{kind}" || doc.Status.Field != "running" || doc.Status.On != "running" || doc.Status.Off != "stopped" {
+	if !slices.Contains(doc.Summary, "{address|addresses}") || doc.Summary[0] != "{kind}" || doc.Status.Field != "running" || doc.Status.On != "running" || doc.Status.Off != "stopped" {
 		t.Fatalf("%+v", doc)
 	}
 	// every hole is a field the spec or what is observed carries
@@ -234,7 +234,7 @@ func TestAMachinesSentence(t *testing.T) {
 			known[k] = true
 		}
 	}
-	for _, f := range []string{"floor_gb", "image", "image_id", "addresses", "cpu", "virtualization", "cpu_weight"} { // left out of an empty one's JSON
+	for _, f := range []string{"floor_gb", "image", "image_id", "addresses", "address", "wall", "cpu", "virtualization", "cpu_weight"} { // left out of an empty one's JSON
 		known[f] = true
 	}
 	for _, part := range doc.Summary {

@@ -21,6 +21,8 @@ release refuses the line.
 | container template archives on a storage (`vztmpl`) | containers are created from an archive (the image's `container:` form, a volume id) |
 | a **storage of its own for seed discs**: a `dir` storage with content `iso` only (`hangar-seeds`) | a VM's first boot reads its user data from a small disc the driver uploads — see below |
 | a bridge or an SDN vnet for the guests, and a VMID range nobody else uses | the zone's `bridge`, `vlan` and `vmids` options |
+| to **give the guests their addresses**: a stretch of their subnet that no DHCP gives out, as long as the VMID range | the zone's `subnet`, `first_address`, `gateway`, `resolvers` — see [Addresses and the wall](#addresses-and-the-wall) |
+| for **the wall**: the cluster's firewall **turned on** (Datacenter → Firewall → Options), and the security groups every guest is to wear | a guest's own firewall is enforced only while the cluster's is on; a group is the operator's to make (`Sys.Modify` on `/`, which no token of the product's holds). The zone's `firewall`, `firewall_groups`, `firewall_log` |
 | a user and its **privilege-separated API token** | the plugin's one credential, `user@realm!name=secret` |
 | for the volumes plugin: **its own** user and token, narrower (below), and the zone's `shelf_archive` — a container archive | its credential; a container's volume parked on no machine rests on a stopped container made from that archive — see [Volumes](#volumes) |
 | for the images plugin: **its own** user and token (below), and the base disk images its recipes start from on an `import` storage (Debian's `genericcloud` qcow2, say) | its credential; a bake imports the base into its builder — see [Images](#images) |
@@ -59,6 +61,14 @@ refused delete read, nothing of their power or config:
 | `/storage/<where the base disk images are>` | `Datastore.Audit` | `import-from` a disk image of content `import` asks `Datastore.AllocateSpace` **or** `Datastore.Audit` on its storage (`PVE::Storage::check_volume_access`) — read, not written |
 | `/storage/<seed storage>` | `Datastore.Allocate`, `Datastore.AllocateTemplate`, `Datastore.Audit` | the builder's first boot arrives on a seed disc, as a VM's does |
 | `/sdn/zones/<zone>/<vnet>` (with SDN) | `SDN.Use` | a builder's first boot fetches its packages |
+
+**The wall and the addresses ask for nothing more.** A guest's firewall —
+its options, its address set, its rules — is written with
+`VM.Config.Network` on that guest and read with `VM.Audit` (`Firewall.pm`,
+`rules_modify_permissions`), and so is a VM's `ipconfig0`: both tokens that
+make guests hold them on their pool already. Neither can touch the
+cluster's firewall or make a security group (read live: « Permission check
+failed (/, Sys.Modify) »).
 
 A shelf container is made **without a host name**: pve-container counts
 `hostname` as network (`VM.Config.Network`, read live and in
@@ -200,6 +210,117 @@ set a container's feature flags other than `nesting`; pass a device through.
   disks, then deletes its seed disc — **unless it holds a volume**: then it
   is refused, naming them (the core refuses it first; this is the engine's
   own guard).
+
+## Addresses and the wall
+
+Two things a zone may say of its guests' network. Each is off unless said,
+and a zone that says neither is as it always was: its guests ask a DHCP, and
+nothing stands between two of them.
+
+### `subnet` — a guest is given its address at its birth
+
+None asks a DHCP. The address is **derived, never counted**:
+
+```text
+address = first_address + (the guest's VMID − the first of vmids)
+```
+
+A VMID is the one number Proxmox hands out with no race, so two creates at
+the same moment cannot be given the same address; nothing is allocated,
+nothing is kept — and an address in a log gives its guest back by
+arithmetic. With `vmids: 11000-11099` and `first_address: 192.0.2.100`,
+guest 11012 is `192.0.2.112`. A zone whose ids would run past its subnet, or
+onto its gateway, is refused when it is opened, in those words.
+
+| | how it is told its address |
+|---|---|
+| a container | on its card — `ip=192.0.2.112/24,gw=192.0.2.1` — and `nameserver`: Proxmox writes them inside it at every start |
+| a VM | on its seed disc: `network-config` (version 2), the card **matched by its MAC** — the one match every renderer of cloud-init understands, and the driver knows it: the card is written before the disc, and a card written again keeps its MAC. `ipconfig0` keeps the address on the VM's own config: Proxmox uses that line only for a cloud-init drive of its own making, which these VMs do not have, so here it is the record of what the VM was told |
+| a bake's builder | as a VM: it is one |
+
+A machine's page says it as `address`, running or not (`addresses` is what
+the guest itself reports while it runs). **An address is given at a birth,
+never under a running guest**: one born before its zone said `subnet` keeps
+asking for its lease until it is made again.
+
+### `firewall: on` — a guest is born behind its wall
+
+It needs `subnet` (a wall pins a guest to the address it was given) and the
+cluster's firewall on. Every guest the driver makes — a machine, a builder —
+then stands behind Proxmox's firewall **before its first start**, alone:
+
+```ini
+[OPTIONS]
+enable: 1
+policy_in: DROP          # nothing comes in…
+policy_out: ACCEPT       # …it reaches out, and is answered
+macfilter: 1             # it sends from its card's MAC
+ipfilter: 0              # (the set below is this card's alone)
+dhcp: 0                  # 1 for a guest that asks for a lease
+log_level_in: nolog      # the zone's firewall_log
+
+[IPSET ipfilter-net0] # hangar: what this guest may send as
+192.0.2.112
+
+[RULES]
+GROUP floor                                  # the zone's firewall_groups, in its order
+OUT DROP -p udp -sport 67 # hangar: no guest answers as a DHCP server
+```
+
+- **Nothing comes in but what the operator's groups let.** A group is the
+  operator's own (`[group floor]` in the cluster's firewall): what every
+  guest must hear — an admin's ssh — and what none may. Nobody writes a
+  rule through the product in this version: the wall is the zone's.
+- **It sends only as itself**: its MAC and the one address it was given.
+  Proxmox turns the set into an ARP filter too, so it cannot answer for a
+  neighbour, nor for the gateway.
+- **The driver owns the guest's whole firewall file**, through the API
+  (Proxmox checks each line as it is made). A rule that is not the zone's is
+  taken out, an address that is not the guest's too: **a clone is born with
+  its template's file** — its builder's address, and any door someone opened
+  there.
+- **A wall that cannot be written fails the create**; nothing starts
+  without it.
+- **A wall just written is not yet on the wire.** Proxmox's firewall daemon
+  applies a guest's file on its own pass, every ten seconds, and a start
+  does not ask it to (`PVE/Service/pve_firewall.pm`). So the driver starts a
+  guest whose wall it has just written **fifteen seconds after the write**:
+  that is what « born closed » costs, at a birth and at no other start.
+- **Every look puts it back.** The machines plugin asks the driver for the
+  wall at each reconcile and before each start; what a hand changed is
+  written again and named (`repaired`: « put back: [wall (options, rules)] »).
+  What was put back is on the wire at the daemon's next pass.
+- **A running guest is walled as it runs**: only the card's flag moves, the
+  card is plugged again behind its wall, and its open connections go on.
+- **A guest that asks for a lease** (born before `subnet`) is pinned to the
+  zone's subnet, DHCP let through: it cannot pose as anything outside its
+  lane, and may still take a neighbour's address. Its page says
+  `wall: range`; a guest given its address says `wall: exact`.
+- **What a wall refuses is logged on the node** with the guest's number,
+  at the level `firewall_log` names (`/var/log/pve-firewall.log`).
+- **A deleted guest's file goes with it** (Proxmox's own).
+
+A zone that turned its wall on advertises `net.firewall`.
+
+**What it does not do.** A connection that was open before a wall went up
+goes on: Proxmox lets an established one through. IPv6: a walled guest
+speaks from its link-local address and no other (the set holds IPv4; on a
+lane that advertises IPv6 prefixes that is a design of its own). Rules of an
+owner's own — a door between two of one's machines — are not written here.
+
+**Read on a bench** (Proxmox VE 9.2.21, 2026-10-04; `TestBenchAMachineBornBehindItsWall`,
+`TestBenchAVMBornBehindItsWall`), each a claim this page rests on:
+
+| read | what it gave |
+|---|---|
+| the fenced token writes a guest's options, set and rules; a security group or the cluster's options are refused it | the fence holds with the role as it was |
+| a rule made without `enable=1` is written dead (`\|IN ACCEPT …`), and a new rule lands first | the driver says `enable=1` on each, and makes its lines from the last |
+| `dhcp` left unsaid lets DHCP through (Proxmox's page says the default is off; its code and the chain say on) | the option is always written |
+| a clone copies its template's firewall file | the driver owns the whole file |
+| a rule naming a group nobody made is accepted, and compiles to an empty group: « no such security group » on the node | the guest stays closed; the operator's check is the operator's |
+| a guest started right after its wall was written answered its neighbour's ping in two rounds of five — and went on answering once its rules were in | the fifteen seconds |
+| the card's flag moved on a running VM and a running container: an ssh session and a ping went on across both | a live wall |
+| Debian 13's cloud image took its address from `network-config`, matched by MAC, and answered ssh 29 s after its start | a VM's address |
 
 ## Idleness and hours
 
@@ -462,6 +583,14 @@ zones:
       bridge: vnet1                # a bridge or an SDN vnet
       vlan: "30"                   # optional
       vmids: 11000-11099
+      subnet: 192.0.2.0/24         # optional: every guest is GIVEN its address, none asks a DHCP
+      first_address: 192.0.2.100   #   the address of the first id of vmids; a guest's is that + (its id − the first)
+      gateway: 192.0.2.1           #   optional: their way out
+      resolvers: 192.0.2.1         #   optional, comma-separated (default: the gateway)
+      firewall: "on"               # optional: every guest is born behind Proxmox's firewall (it needs subnet,
+                                   #   and the cluster's firewall on)
+      firewall_groups: floor       #   security groups of the operator's, worn first by every guest
+      firewall_log: info           #   the level a refusal is logged at on the node (default nolog)
       cpu_model: x86-64-v2-AES     # optional: the processor a VM sees unless it asks for its host's
                                    #   (this is the default; an older node may need kvm64, a cluster of
                                    #   one kind of node may say its vendor's model)
@@ -524,6 +653,13 @@ go test -p 1 ./driver/proxmox/ ./cmd/hangar/ -run Bench -v
 The images' tests bake from the cloud image `setup.sh` already put on the
 bench's `import` storage: nothing more to download but the packages a
 recipe installs.
+
+The wall's tests need what an operator turns on: `setup.sh` switches the
+bench's cluster firewall on — the node's own off, a bench being reached from
+wherever its tests run — and makes one security group, `hangar-floor` (the
+node, on ssh: how a test enters a walled guest). They open the bench as a
+zone that gives addresses and keeps a wall; the other tests open it as one
+that does neither.
 
 `-p 1`: one package at a time — both packages' tests drive the bench's one
 priority guest (VM 100), and go test runs packages side by side unless told

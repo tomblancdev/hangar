@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+- **La carte et le mur — a machine is given its address, and is born behind
+  a wall.** Two things a Proxmox zone may now say, each off unless said
+  ([docs/proxmox.md](docs/proxmox.md#addresses-and-the-wall)).
+  **`subnet`**: every guest is given its address at its birth, and none asks
+  a DHCP. The address is *derived, never counted* — the first address of the
+  zone plus the guest's own VMID less the first of the zone's: the one
+  number Proxmox hands out with no race, so there is no allocator, no state
+  and nothing two creates can be given twice. A container is told on its
+  card, a VM on its seed disc (`network-config`, its card matched by the MAC
+  it keeps), a bake's builder as a VM; a machine's page says it as
+  `address`, running or not. **`firewall: on`**: every guest the driver makes
+  stands behind Proxmox's firewall *before its first start*, alone — nothing
+  comes in but what the operator's own security groups let
+  (`firewall_groups`), and it sends only as itself: its card's MAC and the
+  one address it was given, which Proxmox makes an ARP filter too. The
+  driver owns the guest's whole firewall file (a clone is born with its
+  template's — a door left there does not come with it), and **every look
+  puts back what a hand changed**, naming it: `repaired`, « put back: [wall
+  (options, rules)] ». A guest born before, with a lease, is walled as it
+  runs — its open connections go on — and pinned to the zone's subnet until
+  it is made again (`wall: range`; a guest given its address: `wall: exact`).
+  A zone that turned its wall on advertises the new flag `net.firewall`; the
+  tokens need nothing they did not hold. **What it costs:** Proxmox applies a
+  guest's firewall on its own pass, every ten seconds, and a start does not
+  ask it to — read on a bench, a guest started right after its wall was
+  written answered its neighbour, and went on answering once its rules were
+  in. So a guest whose wall has just been written starts **fifteen seconds
+  later**: at a birth, and at no other start. Proved on a real Proxmox VE
+  (`TestBenchAMachineBornBehindItsWall`, `TestBenchAVMBornBehindItsWall`): a
+  neighbour that pinged a machine's address from before its birth was never
+  answered; as another address, as the gateway and from another MAC it was
+  dropped on its own card, where the same lie from a guest with no wall
+  passed; a wall opened by hand let the neighbour in, and the next look shut
+  it. The fake engine keeps a wall too, so the plugin's own tests hold it.
+  *No rule is written by anyone through the product in this version: the
+  wall is the zone's.*
+
 ## v0.3.1 — 2026-10-03
 
 - **Le JSON lisible — the console's JSON.** A value that does not read on

@@ -26,6 +26,11 @@
 // when each guest was last busy (absent: quiet since it started), which is
 // all the fake keeps of a history of CPU and network.
 //
+// A zone that carries net.firewall gives each guest an address at its birth
+// and puts it behind a wall ("address", "wall" in the file): taking the wall
+// off there is someone opening a guest behind the brain's back, and Wall
+// puts it back.
+//
 // Zone options:
 //
 //	capabilities              comma-separated flags; default: every documented
@@ -293,6 +298,11 @@ func (e *Engine) CreateGuest(_ context.Context, s driver.GuestSpec) (driver.Gues
 		at := e.now()
 		g.StartedAt = &at
 	}
+	if e.has(driver.NetFirewall) {
+		// derived from the one number the engine hands out, as a real one's
+		g.Address = fmt.Sprintf("203.0.113.%d", (e.state.Seq-1)%254+1)
+		g.Wall = driver.WallExact
+	}
 	e.state.Guests[s.ID] = g
 	if e.state.Specs == nil {
 		e.state.Specs = map[string]driver.GuestSpec{}
@@ -545,6 +555,30 @@ func (e *Engine) QuietFor(_ context.Context, id string, window time.Duration, _ 
 	return max(0, min(e.now().Sub(since), window)), nil
 }
 
+// Wall puts a guest back behind its wall, where the zone keeps one: pinned to
+// the address it was given, or — a guest of the file that has none — to its
+// zone's range.
+func (e *Engine) Wall(_ context.Context, id string) ([]string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.fail(); err != nil {
+		return nil, err
+	}
+	g, ok := e.state.Guests[id]
+	if !ok {
+		return nil, driver.ErrNotFound
+	}
+	want := driver.WallExact
+	if g.Address == "" {
+		want = driver.WallRange
+	}
+	if !e.has(driver.NetFirewall) || g.Wall == want {
+		return nil, nil
+	}
+	g.Wall = want
+	return []string{"card"}, e.save()
+}
+
 // ---- What tests do to the engine behind the registry's back ----------------
 
 // Forget drops a guest as if someone deleted it on the engine directly.
@@ -633,4 +667,5 @@ var (
 	_ driver.Watcher  = (*Engine)(nil)
 	_ driver.Volumes  = (*Engine)(nil)
 	_ driver.Activity = (*Engine)(nil)
+	_ driver.Walls    = (*Engine)(nil)
 )

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -86,6 +87,11 @@ zones:
       bridge: hbnet
       vmids: 11000-11019
       ca_file: %s
+      subnet: 198.51.100.0/24   # a machine is given its address: its number's
+      first_address: 198.51.100.20
+      gateway: 198.51.100.1
+      firewall: "on"            # and is born behind its wall
+      firewall_groups: hangar-floor
     room:                     # the bench's priority guest, VM 100: the token reads its power
       memory_gb: 6
       reservations: [{name: priority, memory_gb: 3, while_running: "100"}]
@@ -202,6 +208,16 @@ reconcile: {every: 5s}
 	}
 	vmid := ref[strings.LastIndex(ref, "/")+1:]
 	t.Logf("%s is %s", id, ref)
+	// its page says the address its zone gave it — its number's — and its
+	// wall; the address is the one inside it
+	n, _ := strconv.Atoi(vmid)
+	given := fmt.Sprintf("198.51.100.%d", 20+n-11000)
+	if sum, _ := m["summary"].(string); obs(m, "address") != given || obs(m, "wall") != "exact" || !strings.Contains(sum, given+" · walled") {
+		t.Fatalf("its page: address %v, wall %v, %q — want %s, exact", obs(m, "address"), obs(m, "wall"), m["summary"], given)
+	}
+	if inside, _ := benchSSH("pct exec " + vmid + " -- ip -4 -o addr show eth0"); !strings.Contains(inside, "inet "+given+"/24") {
+		t.Fatalf("inside it: %q", inside)
+	}
 	if keys, _ := benchSSH("pct exec " + vmid + " -- cat /root/.ssh/authorized_keys"); !strings.Contains(keys, strings.Fields(string(key))[1]) {
 		t.Fatalf("the key pair did not reach the machine: %q", keys)
 	}
@@ -240,6 +256,28 @@ reconcile: {every: 5s}
 	}
 	if !strings.Contains(logs.String(), `"result":"repaired"`) {
 		t.Errorf("no repaired line in the audit")
+	}
+	// its wall opened by hand on Proxmox: the brain's next look shuts it,
+	// and says what it put back
+	fw := "/nodes/pve-bench/lxc/" + vmid + "/firewall"
+	if out, err := benchSSH("pvesh set " + fw + "/options --enable 0 && pvesh create " + fw + "/rules --type in --action ACCEPT --enable 1"); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		file, _ := benchSSH("cat /etc/pve/firewall/" + vmid + ".fw")
+		if strings.Contains(file, "enable: 1") && !strings.Contains(file, "IN ACCEPT") && strings.Contains(file, "GROUP hangar-floor") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reconcile did not put the wall back:\n%s\n%s", file, logs.String())
+		}
+		time.Sleep(time.Second)
+	}
+	if !strings.Contains(logs.String(), "wall (options, rules)") {
+		t.Errorf("the audit does not say what was put back of its wall:\n%s", logs.String())
+	}
+	if got := obs(get(id), "wall"); got != "exact" {
+		t.Errorf("after the repair its page says wall %v", got)
 	}
 
 	code, acc = call("POST", "/v1/resources/"+id+"/actions/stop", nil)

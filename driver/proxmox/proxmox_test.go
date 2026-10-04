@@ -29,6 +29,9 @@ type api struct {
 	tasks map[string][2]string // upid -> exit status, log line
 	calls []string
 	h     map[string]http.HandlerFunc
+	// any: asked before the answers below, for the paths that carry a part
+	// of their own (a rule's position); true = it answered
+	any func(w http.ResponseWriter, r *http.Request, path string) bool
 }
 
 func newAPI() *api {
@@ -60,6 +63,9 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(r.URL.Path, "/api2/json")
 	if h, ok := a.h[r.Method+" "+p]; ok {
 		h(w, r)
+		return
+	}
+	if a.any != nil && a.any(w, r, p) {
 		return
 	}
 	switch {
@@ -98,6 +104,7 @@ func open(t *testing.T, a *api, opts map[string]string) *Driver {
 	}
 	pd := d.(*Driver)
 	pd.c.poll = time.Millisecond
+	pd.wallWait = 0 // a wall is on the double's wire the moment it is written
 	return pd
 }
 
@@ -322,10 +329,33 @@ func TestReadingTheConfig(t *testing.T) {
 	}
 }
 
-// The seed disc, read back the way a guest would find its files: the Joliet
-// tree's names, the label, the data at each extent.
+// The seed disc of a VM that asks a DHCP: its user data, its name and keys,
+// and nothing said of its network.
 func TestTheSeedDisc(t *testing.T) {
-	img := nocloudSeed("m-0123456789abcdef0", "dev", []string{"ssh-ed25519 AAAAC3Nza key"}, []byte("#cloud-config\n"), time.Unix(0, 0))
+	img := nocloudSeed("m-0123456789abcdef0", "dev", []string{"ssh-ed25519 AAAAC3Nza key"}, []byte("#cloud-config\n"), nil, time.Unix(0, 0))
+	files := discFiles(t, img)
+	if string(files["user-data"]) != "#cloud-config\n" {
+		t.Fatalf("user-data %q (files %v)", files["user-data"], keys(files))
+	}
+	md := string(files["meta-data"])
+	for _, want := range []string{"instance-id: m-0123456789abcdef0", "local-hostname: dev", `- "ssh-ed25519 AAAAC3Nza key"`} {
+		if !strings.Contains(md, want) {
+			t.Errorf("meta-data lacks %q:\n%s", want, md)
+		}
+	}
+	// the same inputs make the same disc
+	if !bytes.Equal(img, nocloudSeed("m-0123456789abcdef0", "dev", []string{"ssh-ed25519 AAAAC3Nza key"}, []byte("#cloud-config\n"), nil, time.Unix(0, 0))) {
+		t.Error("not deterministic")
+	}
+	if _, told := files["network-config"]; told {
+		t.Error("a VM that asks a DHCP was told a network")
+	}
+}
+
+// discFiles reads a seed disc back the way a guest finds its files: the
+// Joliet tree's names, the label, the data at each extent.
+func discFiles(t *testing.T, img []byte) map[string][]byte {
+	t.Helper()
 	if len(img)%sector != 0 || len(img) < 26*sector {
 		t.Fatalf("size %d", len(img))
 	}
@@ -353,19 +383,7 @@ func TestTheSeedDisc(t *testing.T) {
 		size := binary.LittleEndian.Uint32(rec[10:])
 		files[fromUCS2(id)] = img[int(at)*sector : int(at)*sector+int(size)]
 	}
-	if string(files["user-data"]) != "#cloud-config\n" {
-		t.Fatalf("user-data %q (files %v)", files["user-data"], keys(files))
-	}
-	md := string(files["meta-data"])
-	for _, want := range []string{"instance-id: m-0123456789abcdef0", "local-hostname: dev", `- "ssh-ed25519 AAAAC3Nza key"`} {
-		if !strings.Contains(md, want) {
-			t.Errorf("meta-data lacks %q:\n%s", want, md)
-		}
-	}
-	// the same inputs make the same disc
-	if !bytes.Equal(img, nocloudSeed("m-0123456789abcdef0", "dev", []string{"ssh-ed25519 AAAAC3Nza key"}, []byte("#cloud-config\n"), time.Unix(0, 0))) {
-		t.Error("not deterministic")
-	}
+	return files
 }
 
 func fromUCS2(b []byte) string {

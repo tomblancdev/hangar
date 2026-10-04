@@ -280,9 +280,6 @@ func (d *Driver) makeBuilder(ctx context.Context, s driver.BakeSpec) (driver.Ima
 		return driver.Image{}, err
 	}
 	seed := d.seeds + ":iso/" + seedName(s.ID)
-	if err := d.upload(ctx, driver.GuestSpec{ID: s.ID, Name: s.ID, UserData: bakeUserData(s.UserData)}, seed); err != nil {
-		return driver.Image{}, err
-	}
 	desc := marker(s.ID) + fmt.Sprintf("\nhangar bake %d started %d", s.Attempt, time.Now().Unix())
 	cores, mem := max(s.Cores, 1), max(s.MemoryMB, 512)
 	d.mu.Lock()
@@ -294,7 +291,7 @@ func (d *Driver) makeBuilder(ctx context.Context, s driver.BakeSpec) (driver.Ima
 				"ostype": {"l26"}, "cores": {strconv.Itoa(cores)}, "memory": {strconv.Itoa(mem)},
 				"scsihw": {"virtio-scsi-single"}, "scsi0": {d.storage + ":0,import-from=" + s.Base + ",discard=on"},
 				"boot": {"order=scsi0"}, "serial0": {"socket"}, "vga": {"serial0"}, "agent": {"enabled=1"},
-				"net0": {d.net0(false)}, "ide2": {seed + ",media=cdrom"}, "onboot": {"0"},
+				"net0": {d.card(false, vmid, "")}, "onboot": {"0"},
 			})
 		}
 		// a template: copied whole, into the images pool
@@ -315,14 +312,26 @@ func (d *Driver) makeBuilder(ctx context.Context, s driver.BakeSpec) (driver.Ima
 	if err != nil {
 		return driver.Image{}, err
 	}
+	// its card, then its first boot's disc: where the zone gives addresses
+	// the disc names the card's MAC — and a builder is given its own, as a
+	// machine is
+	p, sn, err := d.vmNet(ctx, r)
+	if err != nil {
+		return driver.Image{}, err
+	}
+	if err := d.upload(ctx, driver.GuestSpec{ID: s.ID, Name: s.ID, UserData: bakeUserData(s.UserData)}, sn, seed); err != nil {
+		return driver.Image{}, err
+	}
 	// its processor is the zone's own model: what a machine born from the
 	// image sees, unless it asks otherwise (a clone begins with its
 	// template's line)
-	if err := d.c.run(ctx, http.MethodPost, r.path()+"/config", url.Values{
-		"cores": {strconv.Itoa(cores)}, "memory": {strconv.Itoa(mem)}, "net0": {d.net0(false)},
-		"cpu":  {d.cpuLine(driver.GuestSpec{})},
-		"ide2": {seed + ",media=cdrom"}, "agent": {"enabled=1"}, "tags": {tagStr}, "onboot": {"0"},
-	}); err != nil {
+	for k, v := range map[string]string{
+		"cores": strconv.Itoa(cores), "memory": strconv.Itoa(mem), "cpu": d.cpuLine(driver.GuestSpec{}),
+		"ide2": seed + ",media=cdrom", "agent": "enabled=1", "tags": tagStr, "onboot": "0",
+	} {
+		p.Set(k, v)
+	}
+	if err := d.c.run(ctx, http.MethodPost, r.path()+"/config", p); err != nil {
 		return driver.Image{}, err
 	}
 	if err := d.trim(ctx, r, cfg); err != nil {
@@ -332,6 +341,14 @@ func (d *Driver) makeBuilder(ctx context.Context, s driver.BakeSpec) (driver.Ima
 		if err := d.c.run(ctx, http.MethodPut, r.path()+"/resize", url.Values{"disk": {disk}, "size": {fmt.Sprintf("%dG", s.DiskGB)}}); err != nil {
 			return driver.Image{}, err
 		}
+	}
+	// a builder too is born behind the wall: it fetches its packages, and
+	// hears nobody
+	if _, err := d.wallUp(ctx, r); err != nil {
+		return driver.Image{}, err
+	}
+	if err := d.settled(ctx, r); err != nil {
+		return driver.Image{}, err
 	}
 	if err := d.c.run(ctx, http.MethodPost, r.path()+"/status/start", nil); err != nil {
 		return driver.Image{}, err

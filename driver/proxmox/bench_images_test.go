@@ -18,21 +18,7 @@ import (
 // VMIDs of its own.
 func (b *bench) openRange(t *testing.T, tokenFile, vmids string) *Driver {
 	t.Helper()
-	tok, err := os.ReadFile(tokenFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, err := Open(context.Background(), driver.Params{
-		Zone: "bench", Endpoint: b.url, Credential: tok,
-		Options: map[string]string{
-			"node": "pve-bench", "pool": "hangar", "images_pool": "hangar-images", "storage": "local-zfs",
-			"seed_storage": "hangar-seeds", "bridge": "hbnet", "vmids": vmids, "ca_file": b.ca,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return d.(*Driver)
+	return b.openWith(t, tokenFile, vmids, nil, nil)
 }
 
 // bakeUntil calls Bake until the bake is over (or the deadline), as the

@@ -37,6 +37,13 @@
 // machine runs are counted, each once per core — the meter machines.vcpu_hours,
 // a tier's limit a month — and when its owner's month is spent it is stopped.
 //
+// Where its zone gives addresses a machine is told its own at its birth —
+// its for its life, on its page running or not — and where its zone keeps a
+// wall (net.firewall) it is born behind it, before its first start: nothing
+// comes in but what the zone's operator lets every machine hear, and it sends
+// only as itself. Nobody writes a rule: the wall is the zone's, and every
+// look puts back what a hand took off it.
+//
 // It requires fence.pool: a zone whose credential reaches beyond the
 // product's own guests is not one it will act on.
 //
@@ -173,6 +180,13 @@ type Observed struct {
 	DiskGB    int      `json:"disk_gb,omitempty"`
 	Running   bool     `json:"running"`
 	Addresses []string `json:"addresses,omitempty"`
+	// Address: the address its zone gave it at its birth; absent: it asks
+	// its network for one (Addresses says which it got, while it runs).
+	Address string `json:"address,omitempty"`
+	// Wall: it stands behind its zone's wall — "exact": it sends only as its
+	// own address; "range": only from its zone's range (it was born asking
+	// for a lease). Absent: its zone keeps no wall.
+	Wall string `json:"wall,omitempty"`
 	// CPULimit: its CPU cap while the room is held; 0 = none.
 	CPULimit int `json:"cpu_limit,omitempty"`
 	// CPU, Virtualization: what its engine says of its processor — "host":
@@ -214,7 +228,7 @@ const machineSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "x-hangar-summary": ["{kind}", "{cores} cores", "{cpu=host?host CPU}", "{virtualization?runs VMs}", "CPU weight {cpu_weight}", "{memory_gb} GB[ ({floor_gb} guaranteed)]", "{class=spot?spot}", "{image|image_id}", "{addresses}"],
+  "x-hangar-summary": ["{kind}", "{cores} cores", "{cpu=host?host CPU}", "{virtualization?runs VMs}", "CPU weight {cpu_weight}", "{memory_gb} GB[ ({floor_gb} guaranteed)]", "{class=spot?spot}", "{image|image_id}", "{address|addresses}", "{wall=exact?walled}", "{wall=range?walled, to its zone's range}"],
   "x-hangar-status": { "field": "running", "on": "running", "off": "stopped" },
   "properties": {
     "kind":      { "type": "string", "enum": ["vm", "container"], "default": "vm",
@@ -1171,6 +1185,20 @@ func converge(ctx context.Context, g driver.Guests, id string, s Spec, hold, lab
 	var fixed []string
 	var short string
 	var err error
+	// its wall first, whatever else is owed: a machine never starts, and
+	// never goes on running, without the one its zone keeps
+	if walls, ok := g.(driver.Walls); ok {
+		put, werr := walls.Wall(ctx, id)
+		if werr != nil {
+			return guest, fixed, "", fmt.Errorf("its wall: %w", werr)
+		}
+		if len(put) > 0 {
+			fixed = append(fixed, "wall ("+strings.Join(put, ", ")+")")
+			if guest, err = g.Guest(ctx, id); err != nil {
+				return guest, fixed, "", err
+			}
+		}
+	}
 	// what it is called, where the engine shows it: a line for people — one
 	// that cannot be written now changes nothing, and is written at the next
 	// look
@@ -1410,7 +1438,8 @@ func (p *Plugin) machine(r *pluginpb.Resource) (driver.Guests, Spec, error) {
 
 func observe(g driver.Guest) Observed {
 	o := Observed{EngineRef: g.EngineRef, Node: g.Node, Kind: g.Kind, Name: g.Name, Cores: g.Cores,
-		MemoryMB: g.MemoryMB, DiskGB: g.DiskGB, Running: g.Running, Addresses: g.Addresses, CPULimit: g.CPULimit, Held: g.Holds,
+		MemoryMB: g.MemoryMB, DiskGB: g.DiskGB, Running: g.Running, Addresses: g.Addresses, Address: g.Address, Wall: g.Wall,
+		CPULimit: g.CPULimit, Held: g.Holds,
 		CPU: g.CPU, Virtualization: g.Virtualization, CPUWeight: weight(g.CPUWeight)}
 	if g.Running && g.StartedAt != nil {
 		at := g.StartedAt.UTC().Truncate(time.Second)

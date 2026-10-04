@@ -42,13 +42,14 @@ const (
 	GPUShared               Capability = "gpu.shared"
 	GPUPassthrough          Capability = "gpu.passthrough"
 	FencePool               Capability = "fence.pool"
+	NetFirewall             Capability = "net.firewall"
 )
 
 // Known lists every flag, in the order the documentation gives them.
 var Known = []Capability{
 	KindContainer, KindVM, ResizeLiveMemoryDown, ResizeLiveCPUCap, CPUHost, CPUNested, CPUWeight,
 	VolumeMoveBetweenGuests, GuestSuspendToDisk, GuestTags, GuestActivity, HookPreStart,
-	GPUShared, GPUPassthrough, FencePool,
+	GPUShared, GPUPassthrough, FencePool, NetFirewall,
 }
 
 // IsKnown reports whether c is one of the documented flags.
@@ -210,6 +211,28 @@ type Activity interface {
 	QuietFor(ctx context.Context, id string, window time.Duration, q Quiet) (time.Duration, error)
 }
 
+// Walls is the facet of a driver whose engine filters a guest's own network
+// card (net.firewall): where the zone says so, every guest is born behind a
+// wall — nothing in but what the zone's operator lets every guest hear, and
+// nothing out but as itself — written before its first start. A driver whose
+// engine has none does not implement it.
+type Walls interface {
+	// Wall brings a guest's wall to what its zone says and returns what it
+	// had to put back, in the engine's own words (none: it stood). A zone
+	// that keeps no wall has nothing to put back. Idempotent.
+	Wall(ctx context.Context, id string) ([]string, error)
+}
+
+// What a guest's wall pins it to (Guest.Wall).
+const (
+	// WallExact: it sends only as the address it was given.
+	WallExact = "exact"
+	// WallRange: it sends only from its zone's own range — a guest that asks
+	// for a lease, born before its zone gave addresses: it cannot pose as
+	// anything outside its lane, and may still take a neighbour's address.
+	WallRange = "range"
+)
+
 // Quiet is what a guest stays under to count as idle, sample after sample of
 // its engine's history.
 type Quiet struct {
@@ -305,6 +328,13 @@ type Guest struct {
 	Tags      map[string]string `json:"tags,omitempty"`
 	// Holds: the reservations' keys written on it (see GuestSpec.Holds).
 	Holds []string `json:"holds,omitempty"`
+	// Address: the address it was given at its birth, where its zone gives
+	// one — its own for its life, read on the engine, running or not; "" =
+	// it asks its network for one (Addresses says which it got).
+	Address string `json:"address,omitempty"`
+	// Wall: it stands behind its engine's firewall, pinned to WallExact or
+	// WallRange; "" = no wall (its zone keeps none, or its own is down).
+	Wall string `json:"wall,omitempty"`
 	// CPULimit: its CPU cap in cores' worth; 0 = none.
 	CPULimit int `json:"cpu_limit,omitempty"`
 	// CPU, Virtualization, CPUWeight: as GuestSpec's, read on the engine.

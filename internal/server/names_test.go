@@ -185,7 +185,7 @@ func TestANameGoesWhereAnIdGoes(t *testing.T) {
 			"spec": map[string]any{"kind": "container", "image": "debian-13"}})
 	}
 	dev := ok(machine(alice, "dev")).str("resource", "id")
-	if r := s.do("GET", "/v1/resources/"+dev, alice, nil); r.str("summary") != "container · 2 cores · 1 GB · spot · debian-13" || r.str("status") != "running" {
+	if r := s.do("GET", "/v1/resources/"+dev, alice, nil); r.str("summary") != "container · 2 cores · 1 GB · spot · debian-13 · 203.0.113.1 · walled" || r.str("status") != "running" {
 		t.Fatalf("a machine reads: %q, %q", r.str("summary"), r.str("status"))
 	}
 	guests, _ := engineOf(t, s)

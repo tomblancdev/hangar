@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -11,10 +12,11 @@ import (
 )
 
 // A VM's first boot reads its user data from a NoCloud seed: a disc labelled
-// "cidata" holding meta-data, user-data and, optionally, network-config
-// (cloud-init's NoCloud datasource). Proxmox builds such a disc itself only
-// from a user data file on a node's snippets storage, which its API cannot
-// write; it CAN take an uploaded ISO. So the driver writes the disc: this
+// "cidata" holding meta-data, user-data and — where the zone gives the VM its
+// address — network-config (cloud-init's NoCloud datasource). Proxmox builds
+// such a disc itself only from a user data file on a node's snippets storage,
+// which its API cannot write; it CAN take an uploaded ISO. So the driver
+// writes the disc: this
 // file is the smallest ISO 9660 writer that does it — one root directory,
 // a handful of files, and a Joliet tree, because ISO 9660's own names cannot
 // hold the dash in "user-data" and Linux reads the Joliet names when they are
@@ -28,8 +30,40 @@ type seedFile struct {
 	data []byte
 }
 
-// nocloudSeed builds the disc for one guest.
-func nocloudSeed(id, hostname string, keys []string, userData []byte, now time.Time) []byte {
+// seedNet is the network a VM's first boot is told: the address its zone
+// gave it, on the card that carries this MAC.
+type seedNet struct {
+	mac       string
+	address   netip.Prefix
+	gateway   netip.Addr // not valid: no way out
+	resolvers []netip.Addr
+}
+
+// config is cloud-init's network-config, version 2. The card is matched by
+// its MAC: the one match every renderer of cloud-init understands (a name's
+// glob is netplan's alone), and the driver knows it — Proxmox drew it before
+// the disc is written. The way out is a route to everything, the form old and
+// new netplan both take.
+func (n seedNet) config() []byte {
+	var b strings.Builder
+	fmt.Fprintf(&b, "version: 2\nethernets:\n  net0:\n    match: {macaddress: %q}\n    addresses: [%q]\n",
+		strings.ToLower(n.mac), n.address.String())
+	if n.gateway.IsValid() {
+		fmt.Fprintf(&b, "    routes: [{to: \"0.0.0.0/0\", via: %q}]\n", n.gateway.String())
+	}
+	if len(n.resolvers) > 0 {
+		list := make([]string, len(n.resolvers))
+		for i, r := range n.resolvers {
+			list[i] = fmt.Sprintf("%q", r.String())
+		}
+		fmt.Fprintf(&b, "    nameservers: {addresses: [%s]}\n", strings.Join(list, ", "))
+	}
+	return []byte(b.String())
+}
+
+// nocloudSeed builds the disc for one guest. net: the network its first boot
+// is told (nil: it asks a DHCP, cloud-init's own default).
+func nocloudSeed(id, hostname string, keys []string, userData []byte, net *seedNet, now time.Time) []byte {
 	var md strings.Builder
 	fmt.Fprintf(&md, "instance-id: %s\nlocal-hostname: %s\n", id, hostname)
 	if len(keys) > 0 {
@@ -38,10 +72,14 @@ func nocloudSeed(id, hostname string, keys []string, userData []byte, now time.T
 			fmt.Fprintf(&md, "  - %q\n", strings.TrimSpace(k))
 		}
 	}
-	return isoImage("cidata", []seedFile{
+	files := []seedFile{
 		{name: "meta-data", data: []byte(md.String())},
 		{name: "user-data", data: userData},
-	}, now)
+	}
+	if net != nil {
+		files = append(files, seedFile{name: "network-config", data: net.config()})
+	}
+	return isoImage("cidata", files, now)
 }
 
 // isoImage writes an ISO 9660 image with a Joliet tree: sectors 0–15 empty,

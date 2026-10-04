@@ -77,7 +77,7 @@ func TestAPersonReadsTheirLists(t *testing.T) {
 	out, _ = alice.ok("list")
 	want = []string{
 		"set dev · zone lab",
-		"box machine running container · 4 cores · 8 GB (2 guaranteed) · debian-13",
+		"box machine running container · 4 cores · 8 GB (2 guaranteed) · debian-13 · 203.0.113.1 · walled",
 		"├ cache volume attached 8 GB · on box at /srv/cache",
 		"├ home volume attached 4 GB · on box at /home · backed up",
 		"└ me key pair ready ssh-ed25519 · alice@laptop",

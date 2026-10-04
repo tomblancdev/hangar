@@ -19,6 +19,12 @@
 #      power (VM.Audit on it) and nothing else there. The hook itself
 #      (cmd/hangar-hook) is a build of this repo: the room's bench test puts
 #      it in place, on this guest and on the VM template.
+#   6. the wall: the cluster's firewall on — a guest's own is enforced only
+#      then — the node's own left off (a bench is reached from wherever its
+#      tests run), and one security group as an operator's, `hangar-floor`:
+#      what every guest of a walled zone hears — the node, on ssh, which is
+#      how the tests enter a guest. No token of the product's can do any of
+#      it (Sys.Modify on /).
 #
 # The token's secret is written to /root/hangar-token (0600) as
 # `user@realm!name=secret`, for bench.sh to copy out; it is never printed —
@@ -203,5 +209,22 @@ if [ ! -s /root/wide-token ]; then
 	secret=$(pveum user token add root@pam wide --privsep 0 --output-format json |
 		sed -n 's/.*"value":"\([^"]*\)".*/\1/p')
 	(umask 077 && printf 'root@pam!wide=%s\n' "$secret" >/root/wide-token)
+fi
+# ---- 6. the wall ------------------------------------------------------------
+# The node's own firewall is said off BEFORE the cluster's is turned on: with
+# both on, the node would hear its own subnet only, and the tests come from
+# elsewhere.
+if ! grep -q '^\[group hangar-floor\]' /etc/pve/firewall/cluster.fw 2>/dev/null; then
+	say "the cluster's firewall on, the node's own off, the group hangar-floor"
+	mkdir -p /etc/pve/firewall
+	printf '[OPTIONS]\nenable: 0\n' >"/etc/pve/nodes/$node/host.fw"
+	cat >/etc/pve/firewall/cluster.fw <<'FW'
+[OPTIONS]
+enable: 1
+
+[group hangar-floor] # what every guest of a walled zone hears
+
+IN ACCEPT -source 198.51.100.1 -p tcp -dport 22 -log nolog # the node, on ssh
+FW
 fi
 say "done on $node"

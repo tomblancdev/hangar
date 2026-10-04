@@ -68,17 +68,25 @@ func (b *bench) must(t *testing.T, cmd string, stdin ...string) string {
 
 func (b *bench) open(t *testing.T, tokenFile string) *Driver {
 	t.Helper()
+	return b.openWith(t, tokenFile, "11000-11019", []string{"100"}, nil) // 100: the bench's priority guest
+}
+
+// openWith opens the bench as one plugin's token would, on a range of VMIDs,
+// with what else the zone says.
+func (b *bench) openWith(t *testing.T, tokenFile, vmids string, watch []string, more map[string]string) *Driver {
+	t.Helper()
 	tok, err := os.ReadFile(tokenFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := Open(context.Background(), driver.Params{
-		Zone: "bench", Endpoint: b.url, Credential: tok, Watch: []string{"100"}, // the bench's priority guest
-		Options: map[string]string{
-			"node": "pve-bench", "pool": "hangar", "images_pool": "hangar-images", "storage": "local-zfs",
-			"seed_storage": "hangar-seeds", "bridge": "hbnet", "vmids": "11000-11019", "ca_file": b.ca,
-		},
-	})
+	o := map[string]string{
+		"node": "pve-bench", "pool": "hangar", "images_pool": "hangar-images", "storage": "local-zfs",
+		"seed_storage": "hangar-seeds", "bridge": "hbnet", "vmids": vmids, "ca_file": b.ca,
+	}
+	for k, v := range more {
+		o[k] = v
+	}
+	d, err := Open(context.Background(), driver.Params{Zone: "bench", Endpoint: b.url, Credential: tok, Watch: watch, Options: o})
 	if err != nil {
 		t.Fatal(err)
 	}
