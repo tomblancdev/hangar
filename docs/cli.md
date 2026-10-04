@@ -131,9 +131,18 @@ hangar <type> --help                         its fields and actions, from its sc
   (or `--memory_gb`); an integer, a boolean (`--resume=false`), a string, an
   array (repeated, or comma-separated), anything else as YAML. A reference
   (`x-hangar-ref`) takes the name of one of yours, an id, or `@<schedule>`
-  for the newest it made.
+  for the newest it made; one left out that has a default (a machine's
+  `network`) is the brain's to give — your own of that name, made then if
+  you have none.
   `--set key=value` reaches any field (its value YAML), and `-f` reads a
   whole spec (flags are written over it).
+- **Into a machine on a network**: its page says its `address`, its
+  network's says where your key pairs jump through (`jump`) —
+
+  ```sh
+  hangar network set-key-pairs default --key-pairs laptop   # a default network names no key pair until you do
+  ssh -J "$(hangar network get default -o json | jq -r .observed.jump)" debian@203.0.113.22
+  ```
 - **The zone**: `--zone`, else `$HANGAR_ZONE`, else the only zone the type is
   offered in.
 - **Waiting**: a create, delete or action waits for its operation and says

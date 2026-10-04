@@ -67,6 +67,7 @@ func (c *Core) PlanChange(ctx context.Context, who *Caller, id string, spec json
 	if len(spec) == 0 {
 		spec = json.RawMessage("{}")
 	}
+	spec = keepDefaults(t.Refs, spec, r.Spec)
 	spec, p = c.keepLatest(ctx, t.Refs, spec, r.Spec)
 	if p != nil {
 		return nil, c.refused(ctx, p)

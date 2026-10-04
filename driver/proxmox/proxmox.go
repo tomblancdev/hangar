@@ -40,6 +40,17 @@
 //	shelf_archive   a container archive to make volumes' container shelves
 //	                from (volumes.go); without one, a filesystem volume
 //	                lives on a container only
+//	net_bridge      networks of the cloud's own (networks.go): a bridge with
+//	                no port, VLAN-aware, on the zone's node — and with it:
+//	net_tag         the first network's tag there; the n-th's is that plus n
+//	net_block       the range networks are cut from, "203.0.113.0/24"
+//	net_size        a network's own length (default 24: the n-th /24 of the block)
+//	net_vmids       the ids of the networks' gateways, "11200-11219": a
+//	                network's number is its gateway's id less the first
+//	net_pool        the pool the gateways are made in
+//	net_address     the first gateway's address on the zone's lane; the
+//	                n-th's is that plus n
+//	net_archive     the archive a gateway is born from (tools/gateway)
 //	shutdown_timeout how long a guest is asked to shut down before it is
 //	                made to, in seconds                            (default 60)
 //	ca_file         a CA bundle to verify the API's certificate
@@ -79,7 +90,19 @@ import (
 // Name is the name the driver registers under.
 const Name = "proxmox"
 
-func init() { driver.Register(Name, Open) }
+func init() {
+	driver.Register(Name, Open)
+	driver.RegisterCheck(Name, func(p driver.Params) error { _, err := parse(p); return err })
+}
+
+// options are the zone options this driver reads. A zone that says another
+// is refused: a word mistyped would be a lever left off, and nobody told.
+var options = []string{
+	"node", "pool", "images_pool", "storage", "seed_storage", "bridge", "vlan", "subnet", "first_address", "gateway",
+	"resolvers", "firewall", "firewall_groups", "firewall_log", "vmids", "full_clone", "cpu_model", "shelf_archive",
+	"shutdown_timeout", "ca_file", "fingerprint", "tls_server_name",
+	"net_bridge", "net_tag", "net_block", "net_size", "net_vmids", "net_pool", "net_address", "net_archive",
+}
 
 // defaultCPUModel is the processor a VM sees when its zone names none. Left
 // unsaid, the API gives kvm64 — a 2003 processor: no AES, no SSE4.2, no AVX
@@ -112,6 +135,7 @@ type Driver struct {
 	bridge   string
 	vlan     int
 	lane     lane // the addresses its guests are given, and their wall
+	nets     nets // the networks it cuts for them (networks.go)
 	lo, hi   int
 	full     bool
 	cpuModel string        // the processor a VM sees unless it asks for its host's
@@ -128,22 +152,36 @@ type Driver struct {
 	walledAt map[int]time.Time
 	wallWait time.Duration
 
+	// the gateways being started for a guest about to start, by VMID: none is
+	// put to rest meanwhile (networks.go)
+	gmu      sync.Mutex
+	starting map[int]int
+
 	mu sync.Mutex // one create at a time: a VMID is picked, then taken
 	// volumes: one volume change at a time (a free key is picked, then taken)
 	vmu          sync.Mutex
 	shelfArchive string
 }
 
-// Open opens a zone: it checks the options, reaches the API with the token,
-// and reads what the token may do (fence.pool is advertised only when it can
-// act on nothing outside its pools).
-func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
+// parse reads a zone's options into a driver that has reached nothing yet:
+// everything a zone's file can get wrong is said here, the engine not asked.
+func parse(p driver.Params) (*Driver, error) {
 	o := p.Options
 	d := &Driver{
 		zone: p.Zone, node: o["node"], pool: o["pool"], images: o["images_pool"], storage: o["storage"],
 		seeds: o["seed_storage"], bridge: o["bridge"], full: o["full_clone"] == "true", shutdown: 60, listLag: 10 * time.Second,
 		answerIn: nodeAnswersWithin, shelfArchive: o["shelf_archive"], cpuModel: defaultCPUModel,
-		walledAt: map[int]time.Time{}, wallWait: wallSettle,
+		walledAt: map[int]time.Time{}, wallWait: wallSettle, starting: map[int]int{},
+	}
+	var unknown []string
+	for k := range o {
+		if !slices.Contains(options, k) {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, fmt.Errorf("proxmox zone %s: no option %s (docs/proxmox.md lists them)", p.Zone, strings.Join(unknown, ", "))
 	}
 	for _, ref := range p.Watch {
 		if n, err := strconv.Atoi(ref); err != nil || n < 100 {
@@ -183,17 +221,40 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 		}
 		d.vlan = n
 	}
-	lo, hi, ok := strings.Cut(o["vmids"], "-")
-	d.lo, _ = strconv.Atoi(strings.TrimSpace(lo))
-	d.hi, _ = strconv.Atoi(strings.TrimSpace(hi))
-	if !ok || d.lo < 100 || d.hi < d.lo || d.hi > 999999999 {
+	var ok bool
+	if d.lo, d.hi, ok = idRange(o["vmids"]); !ok {
 		return nil, fmt.Errorf("proxmox zone %s: vmids %q: a range such as 11000-11099", p.Zone, o["vmids"])
 	}
 	var err error
 	if d.lane, err = laneOf(o, d.lo, d.hi); err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: %w", p.Zone, err)
 	}
-	c, err := newClient(p.Endpoint, p.Credential, o)
+	if d.nets, err = netsOf(o, d); err != nil {
+		return nil, fmt.Errorf("proxmox zone %s: %w", p.Zone, err)
+	}
+	if _, err := tlsConfig(o); err != nil {
+		return nil, fmt.Errorf("proxmox zone %s: %w", p.Zone, err)
+	}
+	return d, nil
+}
+
+// idRange reads a range of guest ids, "11000-11099".
+func idRange(v string) (lo, hi int, ok bool) {
+	a, b, cut := strings.Cut(v, "-")
+	lo, _ = strconv.Atoi(strings.TrimSpace(a))
+	hi, _ = strconv.Atoi(strings.TrimSpace(b))
+	return lo, hi, cut && lo >= 100 && hi >= lo && hi <= 999999999
+}
+
+// Open opens a zone: it checks the options, reaches the API with the token,
+// and reads what the token may do (fence.pool is advertised only when it can
+// act on nothing outside its pools).
+func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
+	d, err := parse(p)
+	if err != nil {
+		return nil, err
+	}
+	c, err := newClient(p.Endpoint, p.Credential, p.Options)
 	if err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: %w", p.Zone, err)
 	}
@@ -209,6 +270,9 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 		driver.HookPreStart, driver.VolumeMoveBetweenGuests}
 	if d.lane.wall {
 		d.caps = append(d.caps, driver.NetFirewall)
+	}
+	if d.nets.on() {
+		d.caps = append(d.caps, driver.NetPrivate)
 	}
 	why, err := d.fence(ctx)
 	if err != nil {
@@ -252,7 +316,7 @@ func (d *Driver) fence(ctx context.Context) (string, error) {
 			case priv == "Permissions.Modify" || priv == "Sys.Modify" || priv == "User.Modify" || priv == "Realm.Allocate":
 				why = append(why, fmt.Sprintf("%s on %s", priv, path))
 			case strings.HasPrefix(priv, "VM."):
-				if path == "/pool/"+d.pool || path == "/pool/"+d.images {
+				if path == "/pool/"+d.pool || path == "/pool/"+d.images || d.nets.on() && path == "/pool/"+d.nets.pool {
 					continue
 				}
 				if v, ok := strings.CutPrefix(path, "/vms/"); ok {
@@ -274,10 +338,15 @@ func (d *Driver) fence(ctx context.Context) (string, error) {
 	if len(why) > 4 {
 		why = append(why[:4], fmt.Sprintf("and %d more", len(why)-4))
 	}
-	return "the token reaches beyond pools " + d.pool + " and " + d.images + ": " + strings.Join(why, ", "), nil
+	pools := d.pool + " and " + d.images
+	if d.nets.on() {
+		pools = d.pool + ", " + d.images + " and " + d.nets.pool
+	}
+	return "the token reaches beyond pools " + pools + ": " + strings.Join(why, ", "), nil
 }
 
-// poolMembers are the VMIDs in the fence's two pools.
+// poolMembers are the VMIDs in the fence's pools: the machines', the images',
+// and — where the zone cuts networks — their gateways'.
 func (d *Driver) poolMembers(ctx context.Context) (map[int]bool, error) {
 	rs, err := d.resources(ctx)
 	if err != nil {
@@ -285,7 +354,7 @@ func (d *Driver) poolMembers(ctx context.Context) (map[int]bool, error) {
 	}
 	out := map[int]bool{}
 	for _, r := range rs {
-		if r.Pool == d.pool || r.Pool == d.images {
+		if r.Pool == d.pool || r.Pool == d.images || d.nets.on() && r.Pool == d.nets.pool {
 			out[r.VMID] = true
 		}
 	}
@@ -345,6 +414,11 @@ func guestID(tags string) string {
 // carries from birth (a pool-fenced token cannot tag a guest in the call that
 // makes it: Proxmox checks tags on /vms/<id>, which is not in the pool yet).
 func (d *Driver) find(ctx context.Context, id string) (resource, error) {
+	return d.findIn(ctx, d.pool, id)
+}
+
+// findIn is find, in one of the product's pools.
+func (d *Driver) findIn(ctx context.Context, pool, id string) (resource, error) {
 	if id == "" {
 		return resource{}, driver.ErrNotFound // an untagged guest carries "" too
 	}
@@ -354,7 +428,7 @@ func (d *Driver) find(ctx context.Context, id string) (resource, error) {
 	}
 	var untagged []resource
 	for _, r := range rs {
-		if r.Pool != d.pool || r.Template != 0 {
+		if r.Pool != pool || r.Template != 0 {
 			continue
 		}
 		switch guestID(r.Tags) {
@@ -677,6 +751,17 @@ func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Gu
 	if err := cpuRefusal(s); err != nil {
 		return driver.Guest{}, err
 	}
+	// the network it is born on, if it names one: read before anything is made
+	network, err := d.networkNumber(ctx, s.Network)
+	if err != nil {
+		return driver.Guest{}, d.engine(err)
+	}
+	stands := func(vmid int) place {
+		if network < 0 {
+			return d.onLane(vmid)
+		}
+		return d.nets.place(network, vmid-d.lo, d.lane.resolvers)
+	}
 	r, err := d.find(ctx, s.ID)
 	switch {
 	case err == nil: // a retry: finish what the first call began
@@ -692,7 +777,7 @@ func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Gu
 			made = vmid
 			switch s.Kind {
 			case "container":
-				return d.createContainer(ctx, vmid, s)
+				return d.createContainer(ctx, vmid, s, stands(vmid))
 			case "vm":
 				return d.cloneVM(ctx, vmid, s)
 			}
@@ -709,7 +794,7 @@ func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Gu
 		return driver.Guest{}, d.engine(err)
 	}
 	if r.Type == "qemu" {
-		err = d.configureVM(ctx, r, s, tagStr)
+		err = d.configureVM(ctx, r, s, tagStr, stands(r.VMID))
 	} else if r.Tags != tagStr {
 		err = d.c.call(ctx, http.MethodPut, r.path()+"/config", url.Values{"tags": {tagStr}}, nil)
 	}
@@ -741,7 +826,11 @@ func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Gu
 
 // freeVMID is the lowest id of the range that no guest holds — those the
 // fence hides included: the cluster is asked about each candidate.
-func (d *Driver) freeVMID(ctx context.Context) (int, error) {
+func (d *Driver) freeVMID(ctx context.Context) (int, error) { return d.freeIn(ctx, d.lo, d.hi, nil) }
+
+// freeIn is the lowest free id of a range of the zone's; skip names ids that
+// are not to be taken, free or not.
+func (d *Driver) freeIn(ctx context.Context, lo, hi int, skip map[int]bool) (int, error) {
 	rs, err := d.resources(ctx)
 	if err != nil {
 		return 0, err
@@ -750,8 +839,8 @@ func (d *Driver) freeVMID(ctx context.Context) (int, error) {
 	for _, r := range rs {
 		seen[r.VMID] = true
 	}
-	for id := d.lo; id <= d.hi; id++ {
-		if seen[id] {
+	for id := lo; id <= hi; id++ {
+		if seen[id] || skip[id] {
 			continue
 		}
 		var got any
@@ -764,10 +853,10 @@ func (d *Driver) freeVMID(ctx context.Context) (int, error) {
 			return 0, err
 		}
 	}
-	return 0, fmt.Errorf("%w: every id of %d-%d is taken", driver.ErrRefused, d.lo, d.hi)
+	return 0, fmt.Errorf("%w: every id of %d-%d is taken", driver.ErrRefused, lo, hi)
 }
 
-func (d *Driver) createContainer(ctx context.Context, vmid int, s driver.GuestSpec) error {
+func (d *Driver) createContainer(ctx context.Context, vmid int, s driver.GuestSpec, pl place) error {
 	if s.Image == "" {
 		return fmt.Errorf("%w: a container starts from a template archive; none named", driver.ErrRefused)
 	}
@@ -787,7 +876,7 @@ func (d *Driver) createContainer(ctx context.Context, vmid int, s driver.GuestSp
 		"memory":       {strconv.Itoa(s.MemoryMB)},
 		"swap":         {"0"},
 		"rootfs":       {fmt.Sprintf("%s:%d", d.storage, disk)},
-		"net0":         {d.card(true, vmid, "")},
+		"net0":         {d.card(true, pl, "")},
 		"pool":         {d.pool},
 		"unprivileged": {"1"},
 		"features":     {"nesting=1"},
@@ -797,7 +886,7 @@ func (d *Driver) createContainer(ctx context.Context, vmid int, s driver.GuestSp
 	if len(s.SSHKeys) > 0 {
 		p.Set("ssh-public-keys", strings.Join(s.SSHKeys, "\n"))
 	}
-	if list := d.lane.resolverList(); list != "" {
+	if list := resolverList(pl.resolvers); list != "" {
 		p.Set("nameserver", list)
 	}
 	return d.c.run(ctx, http.MethodPost, "/nodes/"+url.PathEscape(d.node)+"/lxc", p)
@@ -932,10 +1021,10 @@ func (d *Driver) trim(ctx context.Context, r resource, cfg map[string]any) error
 // finishes a create that stopped half-way: its seed disc, size, processor,
 // network and tags, then its disk made to give space back and grown to the
 // size asked.
-func (d *Driver) configureVM(ctx context.Context, r resource, s driver.GuestSpec, tagStr string) error {
-	// its card first: the seed disc names the card's MAC where the zone
-	// gives the VM its address
-	p, sn, err := d.vmNet(ctx, r)
+func (d *Driver) configureVM(ctx context.Context, r resource, s driver.GuestSpec, tagStr string, pl place) error {
+	// its card first: the seed disc names the card's MAC where the VM is
+	// given its address
+	p, sn, err := d.vmNet(ctx, r, pl)
 	if err != nil {
 		return err
 	}
@@ -1032,6 +1121,7 @@ func (d *Driver) DeleteGuest(ctx context.Context, id string) error {
 	} else if len(held) > 0 {
 		return fmt.Errorf("%w: it holds %s: detach them first — they keep their data", driver.ErrRefused, strings.Join(held, ", "))
 	}
+	gw, member, _ := d.gatewayOf(ctx, r)
 	// /cluster/resources is pvestatd's view, seconds behind: decide on the live one
 	if on, err := d.running(ctx, r); err != nil {
 		return d.engine(err)
@@ -1042,6 +1132,11 @@ func (d *Driver) DeleteGuest(ctx context.Context, id string) error {
 	}
 	if err := d.c.run(ctx, http.MethodDelete, r.path(), url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}}); err != nil {
 		return d.engine(err)
+	}
+	if member {
+		// its network's gateway rests once its last guest is gone; one that
+		// cannot be put to rest now is at the next look of a guest of its
+		_, _ = d.rest(ctx, gw, r.VMID)
 	}
 	return d.deleteSeed(ctx, id)
 }
@@ -1086,15 +1181,36 @@ func (d *Driver) power(ctx context.Context, r resource, on bool) error {
 	if now == on {
 		return nil
 	}
+	gw, member, err := d.gatewayOf(ctx, r)
+	if err != nil {
+		return err
+	}
 	if on {
 		// a wall just written is not on the wire yet: the start waits for it
 		if err := d.settled(ctx, r); err != nil {
 			return err
 		}
+		if member {
+			// its way out first: a network's gateway runs before its first
+			// guest starts, and is not put to rest while this one is starting
+			done, err := d.wake(ctx, gw)
+			if err != nil {
+				return fmt.Errorf("its network's gateway (guest %d): %w", gw.VMID, err)
+			}
+			defer done()
+		}
 		return d.c.run(ctx, http.MethodPost, r.path()+"/status/start", nil)
 	}
-	return d.c.run(ctx, http.MethodPost, r.path()+"/status/shutdown",
-		url.Values{"timeout": {strconv.Itoa(d.shutdown)}, "forceStop": {"1"}})
+	if err := d.c.run(ctx, http.MethodPost, r.path()+"/status/shutdown",
+		url.Values{"timeout": {strconv.Itoa(d.shutdown)}, "forceStop": {"1"}}); err != nil {
+		return err
+	}
+	if member {
+		// and rests after its last guest stopped: a zone with nothing running
+		// can sleep. One that cannot be put to rest now is at the next look.
+		_, _ = d.rest(ctx, gw, 0)
+	}
+	return nil
 }
 
 // cpuLimit writes a guest's cap (0 lifts it), unless it already reads so.

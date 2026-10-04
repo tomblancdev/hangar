@@ -147,6 +147,7 @@ const (
 	KindBusy        = "busy"
 	KindConflict    = "conflict"
 	KindAttached    = "attached"
+	KindMembers     = "members"
 	KindShared      = "shared"
 	KindEngine      = "engine"
 	KindDown        = "plugin-down"
@@ -298,6 +299,13 @@ func (c *Core) create(ctx context.Context, who *Caller, typeName string, in Crea
 			return op, r, op != nil, errOf(p)
 		}
 	}
+	// a reference with a default that the spec leaves out names the owner's
+	// own of that name, made first if they have none
+	withDefaults, given, p := c.defaults(ctx, who, t, in.Zone, in.Spec)
+	if p != nil {
+		return nil, nil, false, c.refused(ctx, p)
+	}
+	in.Spec = withDefaults
 	// "@<schedule>" is the newest usable one that schedule made: written
 	// as its id before anything reads the spec
 	spec, resolved, p := c.resolve(ctx, who.Subject, who.Groups, in.Zone, t.Refs, in.Spec)
@@ -306,6 +314,8 @@ func (c *Core) create(ctx context.Context, who *Caller, typeName string, in Crea
 	}
 	if resolved != nil {
 		in.Spec = spec
+	}
+	if resolved = append(given, resolved...); resolved != nil {
 		rec.Set(func(e *audit.Event) { e.Fields = map[string]string{"resolved": strings.Join(resolved, ",")} })
 	}
 	if v := t.Validate(in.Spec); len(v) > 0 {
@@ -628,6 +638,12 @@ func (c *Core) Delete(ctx context.Context, who *Caller, id, clientToken string) 
 	err := c.store.Tx(ctx, func(tx *registry.Tx) error {
 		var err error
 		if attached, err = c.attachments(tx, r, t); err != nil || attached != nil {
+			if err == nil {
+				err = errAttached
+			}
+			return err
+		}
+		if attached, err = c.members(tx, r); err != nil || attached != nil {
 			if err == nil {
 				err = errAttached
 			}
@@ -1477,12 +1493,13 @@ func holding(state string) bool {
 	return false
 }
 
-// stillReady: every resource a planned spec is newly attached to is still
-// ready, read inside the admission's transaction (a delete of it may have
-// begun since its reference was checked). It returns the first that is not.
+// stillReady: every resource a planned spec is newly attached to, or newly a
+// member of, is still ready, read inside the admission's transaction (a
+// delete of it may have begun since its reference was checked). It returns
+// the first that is not.
 func stillReady(tx *registry.Tx, t *plugins.Type, now, planned [][2]string) (string, error) {
 	for _, rel := range planned {
-		if ref := t.Ref(rel[0]); ref == nil || !ref.Attached || slices.Contains(now, rel) {
+		if ref := t.Ref(rel[0]); ref == nil || !(ref.Attached || ref.Member) || slices.Contains(now, rel) {
 			continue
 		}
 		to, err := tx.Resource(rel[1])
@@ -1539,6 +1556,46 @@ func (c *Core) attachments(tx *registry.Tx, r *registry.Resource, t *plugins.Typ
 			map[bool]string{true: "it keeps", false: "they keep"}[len(on) == 1]), nil
 	}
 	return nil, nil
+}
+
+// members refuses a delete while other resources stand on this one — a
+// reference of theirs marked "x-hangar-member" (machines on a network): they
+// would be left on something that is gone. The member itself goes freely.
+func (c *Core) members(tx *registry.Tx, r *registry.Resource) (*Problem, error) {
+	if !holding(r.State) {
+		return nil, nil
+	}
+	froms, err := tx.Referrers(r.ID)
+	if err != nil {
+		return nil, err
+	}
+	var on []string
+	for _, f := range froms {
+		ft := c.host.Type(f.Type)
+		if ft == nil || !holding(f.State) {
+			continue
+		}
+		if ref := ft.Ref(f.Kind); ref == nil || !ref.Member {
+			continue
+		}
+		name := f.ID
+		if m, err := tx.Resource(f.ID); err == nil && m.Name != "" {
+			name = m.Name
+		}
+		if !slices.Contains(on, name) {
+			on = append(on, name)
+		}
+	}
+	if len(on) == 0 {
+		return nil, nil
+	}
+	slices.Sort(on) // the same sentence at every ask, whatever their ids
+	what := r.ID
+	if r.Name != "" {
+		what += " (" + r.Name + ")"
+	}
+	return problem(409, KindMembers, "%s still holds %s: delete %s first", what, strings.Join(on, ", "),
+		map[bool]string{true: "it", false: "them"}[len(on) == 1]), nil
 }
 
 // loadRefs reads the resources a spec or params name, as the registry holds

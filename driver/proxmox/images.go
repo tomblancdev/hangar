@@ -291,7 +291,7 @@ func (d *Driver) makeBuilder(ctx context.Context, s driver.BakeSpec) (driver.Ima
 				"ostype": {"l26"}, "cores": {strconv.Itoa(cores)}, "memory": {strconv.Itoa(mem)},
 				"scsihw": {"virtio-scsi-single"}, "scsi0": {d.storage + ":0,import-from=" + s.Base + ",discard=on"},
 				"boot": {"order=scsi0"}, "serial0": {"socket"}, "vga": {"serial0"}, "agent": {"enabled=1"},
-				"net0": {d.card(false, vmid, "")}, "onboot": {"0"},
+				"net0": {d.card(false, d.onLane(vmid), "")}, "onboot": {"0"},
 			})
 		}
 		// a template: copied whole, into the images pool
@@ -315,7 +315,7 @@ func (d *Driver) makeBuilder(ctx context.Context, s driver.BakeSpec) (driver.Ima
 	// its card, then its first boot's disc: where the zone gives addresses
 	// the disc names the card's MAC — and a builder is given its own, as a
 	// machine is
-	p, sn, err := d.vmNet(ctx, r)
+	p, sn, err := d.vmNet(ctx, r, d.onLane(r.VMID)) // a builder stands on the zone's lane
 	if err != nil {
 		return driver.Image{}, err
 	}

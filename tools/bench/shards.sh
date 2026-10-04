@@ -132,7 +132,9 @@ proxmox TestBenchAMachineBornBehindItsWall 149
 hangar TestBenchTheRoom 149
 proxmox TestBenchAVMsLife 147
 proxmox TestBenchAVMsVolume 136
+proxmox TestBenchTwoNetworksAndAJump 281
 hangar TestBenchAnImageThroughTheAPI 115
+hangar TestBenchANetworkThroughTheAPI 87
 proxmox TestBenchAVMsProcessor 81
 proxmox TestBenchAVMBornBehindItsWall 75
 proxmox TestBenchAContainersLife 40
@@ -193,12 +195,20 @@ ready() {
 	on "$user@$addr" sudo sh -s node <"$here/pve.sh" || return 1
 	answers "root@$addr" || return 1
 	on "root@$addr" sh -s <"$here/setup.sh" || return 1
-	for t in hangar-token volumes-token images-token wide-token; do
+	gateway "root@$addr" || return 1
+	for t in hangar-token volumes-token images-token wide-token networks-token machines-nets-token; do
 		(umask 077 && on "root@$addr" cat "/root/$t" >"$sd/${t%-token}.token") || return 1
 		[ -s "$sd/${t%-token}.token" ] || return 1
 	done
 	on "root@$addr" cat /etc/pve/pve-root-ca.pem >"$sd/pve-root-ca.pem" || return 1
 	[ -s "$sd/pve-root-ca.pem" ]
+}
+
+# the gateway's archive, built on the bench from its own Debian archive by
+# the product's recipe — once: a bench that has it keeps it
+gateway() {
+	v=$(sh "$repo/tools/gateway/build.sh" --version)
+	on "$1" "f=/var/lib/vz/template/cache/hangar-gateway-$v.tar.zst; [ -f \$f ] || sh -s -- \"\$(ls /var/lib/vz/template/cache/debian-13-standard_*_\$(dpkg --print-architecture).tar.* | sort -V | tail -1)\" \$f" <"$repo/tools/gateway/build.sh"
 }
 
 # one bench: made ready, then its share of the tests
@@ -217,6 +227,7 @@ shard() {
 	export HANGAR_BENCH_URL="https://$addr:8006" HANGAR_BENCH_CA_FILE="$sd/pve-root-ca.pem"
 	export HANGAR_BENCH_TOKEN_FILE="$sd/hangar.token" HANGAR_BENCH_VOLUMES_TOKEN_FILE="$sd/volumes.token"
 	export HANGAR_BENCH_IMAGES_TOKEN_FILE="$sd/images.token" HANGAR_BENCH_WIDE_TOKEN_FILE="$sd/wide.token"
+	export HANGAR_BENCH_NETWORKS_TOKEN_FILE="$sd/networks.token" HANGAR_BENCH_MACHINES_NETS_TOKEN_FILE="$sd/machines-nets.token"
 	export HANGAR_BENCH_SSH_KEY="$dir/key" HANGAR_BENCH_SSH_PORT=22 HANGAR_BENCH_SSH_HOST="$addr"
 	status=0
 	began=$(date +%s)

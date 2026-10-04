@@ -461,10 +461,16 @@ func (d *Driver) shelf(ctx context.Context, hs []holder, owner, typ string) (hol
 // next when another maker took it first (the machines and the volumes
 // plugins each run their own driver: two processes pick from one range).
 func (d *Driver) withFreeVMID(ctx context.Context, make func(vmid int) error) error {
+	return d.withFreeIn(ctx, d.lo, d.hi, nil, make)
+}
+
+// withFreeIn is withFreeVMID on a range of the zone's; skip names ids that
+// are not to be taken, free or not.
+func (d *Driver) withFreeIn(ctx context.Context, lo, hi int, skip map[int]bool, make func(vmid int) error) error {
 	var err error
 	for range 5 {
 		var vmid int
-		if vmid, err = d.freeVMID(ctx); err != nil {
+		if vmid, err = d.freeIn(ctx, lo, hi, skip); err != nil {
 			return err
 		}
 		if err = make(vmid); err == nil || !strings.Contains(err.Error(), "already exists") {

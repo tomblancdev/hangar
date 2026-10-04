@@ -31,6 +31,10 @@
 // off there is someone opening a guest behind the brain's back, and Wall
 // puts it back.
 //
+// A zone that carries net.private cuts networks (networks.go): a guest born
+// on one is given its address in that network's range, and the network's
+// gateway runs while one of its guests does.
+//
 // Zone options:
 //
 //	capabilities              comma-separated flags; default: every documented
@@ -105,6 +109,8 @@ type state struct {
 	BusyUntil map[string]time.Time `json:"busy_until,omitempty"`
 	// ActivityFails: the guests' history cannot be read.
 	ActivityFails bool `json:"activity_fails,omitempty"`
+	// Networks, by the core's id.
+	Networks map[string]*fakeNetwork `json:"networks,omitempty"`
 }
 
 // now is the engine's clock. Called with e.mu held, the file read.
@@ -303,11 +309,20 @@ func (e *Engine) CreateGuest(_ context.Context, s driver.GuestSpec) (driver.Gues
 		g.Address = fmt.Sprintf("203.0.113.%d", (e.state.Seq-1)%254+1)
 		g.Wall = driver.WallExact
 	}
+	if s.Network != "" {
+		n, ok := e.state.Networks[s.Network]
+		if !ok || !e.has(driver.NetPrivate) {
+			return driver.Guest{}, fmt.Errorf("%w: the engine has no network %s", driver.ErrRefused, s.Network)
+		}
+		// in its network's range, past the ten addresses that are the cloud's
+		g.Address = fmt.Sprintf("192.0.2.%d", n.Number*32+10+(e.state.Seq-1)%20)
+	}
 	e.state.Guests[s.ID] = g
 	if e.state.Specs == nil {
 		e.state.Specs = map[string]driver.GuestSpec{}
 	}
 	e.state.Specs[s.ID] = s
+	e.follow(s.ID) // its network's gateway runs before it does
 	return e.clone(g), e.save()
 }
 
@@ -347,8 +362,12 @@ func (e *Engine) DeleteGuest(_ context.Context, id string) error {
 	if held := e.volumesOn(id); len(held) > 0 {
 		return fmt.Errorf("%w: it holds %s: detach them first — they keep their data", driver.ErrRefused, strings.Join(held, ", "))
 	}
+	on := e.state.Specs[id].Network
 	delete(e.state.Guests, id)
 	delete(e.state.Specs, id)
+	if n, ok := e.state.Networks[on]; ok {
+		n.Running = e.memberRuns(on, "") // its gateway rests after its last guest
+	}
 	return e.save()
 }
 
@@ -370,6 +389,7 @@ func (e *Engine) SetPower(_ context.Context, id string, on bool) (driver.Guest, 
 		g.StartedAt = nil
 	}
 	g.Running = on
+	e.follow(id) // its network's gateway runs while one of its guests does
 	return e.clone(g), e.save()
 }
 

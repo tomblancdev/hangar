@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -121,11 +122,23 @@ type Type struct {
 // A spec's reference the schema also marks "x-hangar-attached": true is an
 // attachment: the resource lives inside the one it names on the engine (a
 // volume plugged into a machine), and neither is deleted while it is.
+//
+// One marked "x-hangar-member": true makes the resource a member of what it
+// names (a machine on a network): what it names is not deleted while it has
+// members — the member itself goes freely. Unlike an attachment it may name
+// what someone shares.
+//
+// One marked "x-hangar-default": "<name>" — a single reference — names
+// something by itself when a create leaves it out, where its type is made:
+// the owner's resource of that type called <name>, made first if they have
+// none (an ordinary create, in their name, within their tier).
 type Ref struct {
 	Field    string `json:"field"`
 	Type     string `json:"type"`
 	Many     bool   `json:"many"`
 	Attached bool   `json:"attached,omitempty"`
+	Member   bool   `json:"member,omitempty"`
+	Default  string `json:"default,omitempty"`
 }
 
 // SharedWith reads the groups a spec opens its resource to ("*" =
@@ -264,12 +277,17 @@ func shareOf(raw []byte) (string, error) {
 	return out, nil
 }
 
+// defaultName: what a reference's default may be called — a resource's name.
+var defaultName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
 // refsOf reads the fields a schema marks as references.
 func refsOf(raw []byte) ([]Ref, error) {
 	var doc struct {
 		Properties map[string]struct {
 			Ref      string `json:"x-hangar-ref"`
 			Attached bool   `json:"x-hangar-attached"`
+			Member   bool   `json:"x-hangar-member"`
+			Default  string `json:"x-hangar-default"`
 			Items    *struct {
 				Ref string `json:"x-hangar-ref"`
 			} `json:"items"`
@@ -285,10 +303,18 @@ func refsOf(raw []byte) ([]Ref, error) {
 			return nil, fmt.Errorf("field %s: x-hangar-ref on the field or on its items, not both", field)
 		case p.Attached && p.Ref == "" && (p.Items == nil || p.Items.Ref == ""):
 			return nil, fmt.Errorf("field %s: x-hangar-attached marks a reference, and it names none", field)
+		case p.Member && p.Ref == "" && (p.Items == nil || p.Items.Ref == ""):
+			return nil, fmt.Errorf("field %s: x-hangar-member marks a reference, and it names none", field)
+		case p.Member && p.Attached:
+			return nil, fmt.Errorf("field %s: x-hangar-attached (it lives inside what it names) or x-hangar-member (it stands on it), not both", field)
+		case p.Default != "" && p.Ref == "":
+			return nil, fmt.Errorf("field %s: x-hangar-default marks a reference to one resource, and it names none", field)
+		case p.Default != "" && !defaultName.MatchString(p.Default):
+			return nil, fmt.Errorf("field %s: x-hangar-default %q: a name — a-z, 0-9 and -", field, p.Default)
 		case p.Ref != "":
-			out = append(out, Ref{Field: field, Type: p.Ref, Attached: p.Attached})
+			out = append(out, Ref{Field: field, Type: p.Ref, Attached: p.Attached, Member: p.Member, Default: p.Default})
 		case p.Items != nil && p.Items.Ref != "":
-			out = append(out, Ref{Field: field, Type: p.Items.Ref, Many: true, Attached: p.Attached})
+			out = append(out, Ref{Field: field, Type: p.Items.Ref, Many: true, Attached: p.Attached, Member: p.Member})
 		}
 	}
 	slices.SortFunc(out, func(a, b Ref) int { return strings.Compare(a.Field, b.Field) })

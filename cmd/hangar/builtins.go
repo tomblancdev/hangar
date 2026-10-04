@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/tomblancdev/hangar/plugins/images"
 	"github.com/tomblancdev/hangar/plugins/machines"
+	"github.com/tomblancdev/hangar/plugins/networks"
 	"github.com/tomblancdev/hangar/plugins/toy"
 	"github.com/tomblancdev/hangar/plugins/volumes"
 	"github.com/tomblancdev/hangar/sdk/pluginpb"
@@ -14,6 +15,7 @@ import (
 var builtins = map[string]func() pluginpb.PluginServiceServer{
 	images.Name:   func() pluginpb.PluginServiceServer { return images.New() },
 	machines.Name: func() pluginpb.PluginServiceServer { return machines.New() },
+	networks.Name: func() pluginpb.PluginServiceServer { return networks.New() },
 	toy.Name:      func() pluginpb.PluginServiceServer { return toy.New() },
 	volumes.Name:  func() pluginpb.PluginServiceServer { return volumes.New() },
 }

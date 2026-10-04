@@ -179,11 +179,14 @@ func (l lane) host(a netip.Addr) bool {
 }
 
 // address is the address a guest is given: derived from its own VMID.
-func (l lane) address(vmid int) netip.Addr {
-	b := l.first.As4()
-	n := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-	n += uint32(vmid - l.lo)
-	return netip.AddrFrom4([4]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)})
+func (l lane) address(vmid int) netip.Addr { return addrPlus(l.first, vmid-l.lo) }
+
+// addrPlus is the address n after a, as arithmetic has it.
+func addrPlus(a netip.Addr, n int) netip.Addr {
+	b := a.As4()
+	v := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+	v += uint32(n)
+	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
 }
 
 // prefix is a guest's address as its card says it: with the subnet's length.
@@ -215,10 +218,30 @@ func macOf(line string) string {
 	return ""
 }
 
-// card is a guest's network card as the zone says it. mac: the one it has
+// place is where a guest's one card stands: the zone's lane, or a network of
+// the cloud's own (networks.go) — the bridge and tag it is plugged on, the
+// address it is given there, its way out.
+type place struct {
+	bridge    string
+	tag       int          // 0: none
+	addr      netip.Prefix // not valid: it asks a DHCP
+	gateway   netip.Addr   // not valid: no way out is written
+	resolvers []netip.Addr
+}
+
+// onLane is a guest's place on the zone's own lane.
+func (d *Driver) onLane(vmid int) place {
+	pl := place{bridge: d.bridge, tag: d.vlan}
+	if d.lane.gives() {
+		pl.addr, pl.gateway, pl.resolvers = d.lane.prefix(vmid), d.lane.gateway, d.lane.resolvers
+	}
+	return pl
+}
+
+// card is a guest's network card where it stands. mac: the one it has
 // already ("" lets Proxmox draw one, by its own prefix) — a card written
 // again keeps it, or the VM's first boot would not know its own disc.
-func (d *Driver) card(container bool, vmid int, mac string) string {
+func (d *Driver) card(container bool, pl place, mac string) string {
 	var b strings.Builder
 	switch {
 	case container:
@@ -231,20 +254,20 @@ func (d *Driver) card(container bool, vmid int, mac string) string {
 	default:
 		b.WriteString("virtio")
 	}
-	b.WriteString(",bridge=" + d.bridge)
-	if d.vlan > 0 {
-		fmt.Fprintf(&b, ",tag=%d", d.vlan)
+	b.WriteString(",bridge=" + pl.bridge)
+	if pl.tag > 0 {
+		fmt.Fprintf(&b, ",tag=%d", pl.tag)
 	}
 	if d.lane.wall {
 		b.WriteString(",firewall=1")
 	}
 	if container {
-		if !d.lane.gives() {
+		if !pl.addr.IsValid() {
 			b.WriteString(",ip=dhcp")
 		} else {
-			b.WriteString(",ip=" + d.lane.prefix(vmid).String())
-			if d.lane.gateway.IsValid() {
-				b.WriteString(",gw=" + d.lane.gateway.String())
+			b.WriteString(",ip=" + pl.addr.String())
+			if pl.gateway.IsValid() {
+				b.WriteString(",gw=" + pl.gateway.String())
 			}
 		}
 	}
@@ -252,9 +275,11 @@ func (d *Driver) card(container bool, vmid int, mac string) string {
 }
 
 // resolverList is the zone's resolvers as Proxmox takes a container's.
-func (l lane) resolverList() string {
-	out := make([]string, len(l.resolvers))
-	for i, r := range l.resolvers {
+func (l lane) resolverList() string { return resolverList(l.resolvers) }
+
+func resolverList(rs []netip.Addr) string {
+	out := make([]string, len(rs))
+	for i, r := range rs {
 		out[i] = r.String()
 	}
 	return strings.Join(out, " ")
@@ -262,16 +287,16 @@ func (l lane) resolverList() string {
 
 // vmNet is a VM's network, written again from what it is now: its card (the
 // MAC it has kept; none yet, Proxmox draws one and it is read back), the
-// address its zone gives it as `ipconfig0`, and what its seed disc says of
-// both (nil: it asks a DHCP).
-func (d *Driver) vmNet(ctx context.Context, r resource) (url.Values, *seedNet, error) {
+// address it is given where it stands as `ipconfig0`, and what its seed disc
+// says of both (nil: it asks a DHCP).
+func (d *Driver) vmNet(ctx context.Context, r resource, pl place) (url.Values, *seedNet, error) {
 	var cfg map[string]any
 	if err := d.c.call(ctx, http.MethodGet, r.path()+"/config", nil, &cfg); err != nil {
 		return nil, nil, err
 	}
 	mac := macOf(str(cfg["net0"]))
 	if mac == "" {
-		if err := d.c.run(ctx, http.MethodPost, r.path()+"/config", url.Values{"net0": {d.card(false, r.VMID, "")}}); err != nil {
+		if err := d.c.run(ctx, http.MethodPost, r.path()+"/config", url.Values{"net0": {d.card(false, pl, "")}}); err != nil {
 			return nil, nil, err
 		}
 		if err := d.c.call(ctx, http.MethodGet, r.path()+"/config", nil, &cfg); err != nil {
@@ -281,14 +306,14 @@ func (d *Driver) vmNet(ctx context.Context, r resource) (url.Values, *seedNet, e
 			return nil, nil, fmt.Errorf("%w: its card says no MAC: %q", driver.ErrRefused, str(cfg["net0"]))
 		}
 	}
-	p := url.Values{"net0": {d.card(false, r.VMID, mac)}}
-	if !d.lane.gives() {
+	p := url.Values{"net0": {d.card(false, pl, mac)}}
+	if !pl.addr.IsValid() {
 		if str(cfg["ipconfig0"]) != "" { // a clone begins with its template's
 			p.Set("delete", "ipconfig0")
 		}
 		return p, nil, nil
 	}
-	sn := &seedNet{mac: mac, address: d.lane.prefix(r.VMID), gateway: d.lane.gateway, resolvers: d.lane.resolvers}
+	sn := &seedNet{mac: mac, address: pl.addr, gateway: pl.gateway, resolvers: pl.resolvers}
 	line := "ip=" + sn.address.String()
 	if sn.gateway.IsValid() {
 		line += ",gw=" + sn.gateway.String()
@@ -343,8 +368,7 @@ func (l lane) rules() []wallRule {
 	for _, g := range l.groups {
 		out = append(out, wallRule{Type: "group", Action: g, Enable: 1})
 	}
-	return append(out, wallRule{Type: "out", Action: "DROP", Proto: "udp", Sport: "67", Enable: 1,
-		Comment: "hangar: no guest answers as a DHCP server"})
+	return append(out, noDHCPServer)
 }
 
 // wallOf says what a guest's wall pins it to: the address it was given, or —
@@ -371,10 +395,19 @@ func (d *Driver) Wall(ctx context.Context, id string) ([]string, error) {
 	return fixed, d.engine(err)
 }
 
-// wallUp writes a guest's wall, each piece only where it differs: its
-// options, the address it may send as, its rules — and the card's own flag
-// LAST, so that a running guest walled for the first time is never behind a
-// wall half written. Idempotent: a create's retry, and every look after.
+// walling is a wall as it is to be written: what the first card may send as,
+// the lines it wears, and the cards that stand behind it.
+type walling struct {
+	pin    string
+	leased bool // it asks for a lease: DHCP passes
+	rules  []wallRule
+	cards  []string // net0 — and a gateway's net1
+}
+
+// wallUp writes a guest's wall — a machine's, a builder's: one card, where
+// it stands. On the lane: the operator's groups. On a network of the cloud's
+// own: whatever its own network sends, and nothing else — nobody but its
+// network is on that wire, and its gateway lets nothing in.
 func (d *Driver) wallUp(ctx context.Context, r resource) ([]string, error) {
 	if !d.lane.wall {
 		return nil, nil
@@ -387,17 +420,29 @@ func (d *Driver) wallUp(ctx context.Context, r resource) ([]string, error) {
 	if card == "" {
 		return nil, nil // no card: nothing of it is on any wire
 	}
-	fw := r.path() + "/firewall"
 	pin, _, leased := d.lane.wallOf(r.Type, cfg)
+	w := walling{pin: pin, leased: leased, rules: d.lane.rules(), cards: []string{"net0"}}
+	if n, on := d.nets.of(card); on {
+		w.rules = d.nets.memberRules(n)
+	}
+	return d.wallWrite(ctx, r, cfg, w)
+}
+
+// wallWrite writes a wall, each piece only where it differs: its options,
+// the address it may send as, its rules — and the cards' own flag LAST, so
+// that a running guest walled for the first time is never behind a wall half
+// written. Idempotent: a create's retry, and every look after.
+func (d *Driver) wallWrite(ctx context.Context, r resource, cfg map[string]any, w walling) ([]string, error) {
+	fw := r.path() + "/firewall"
 	var fixed []string
 
 	// an option is always written, so that Proxmox's default never decides:
 	// one left unsaid lets DHCP through (read on a bench; its page says not)
 	want := map[string]string{
 		"enable": "1", "policy_in": "DROP", "policy_out": "ACCEPT", "macfilter": "1",
-		// the set below is this card's alone; ipfilter would pin every card
-		// from its config, a card that forwards among them
-		"ipfilter": "0", "dhcp": flag(leased), "log_level_in": d.lane.log,
+		// the set below is the first card's alone; ipfilter would pin every
+		// card from its config, a card that forwards among them
+		"ipfilter": "0", "dhcp": flag(w.leased), "log_level_in": d.lane.log,
 	}
 	var have map[string]any
 	if err := d.c.call(ctx, http.MethodGet, fw+"/options", nil, &have); err != nil {
@@ -438,7 +483,7 @@ func (d *Driver) wallUp(ctx context.Context, r resource) ([]string, error) {
 	}
 	pinned := false
 	for _, m := range members {
-		if strings.TrimSuffix(m.CIDR, "/32") == pin {
+		if strings.TrimSuffix(m.CIDR, "/32") == w.pin {
 			pinned = true
 			continue
 		}
@@ -447,7 +492,7 @@ func (d *Driver) wallUp(ctx context.Context, r resource) ([]string, error) {
 		}
 	}
 	if !pinned {
-		if err := d.c.call(ctx, http.MethodPost, fw+"/ipset/"+ipfilterSet, url.Values{"cidr": {pin}}, nil); err != nil {
+		if err := d.c.call(ctx, http.MethodPost, fw+"/ipset/"+ipfilterSet, url.Values{"cidr": {w.pin}}, nil); err != nil {
 			return nil, err
 		}
 	}
@@ -463,8 +508,7 @@ func (d *Driver) wallUp(ctx context.Context, r resource) ([]string, error) {
 	for i, m := range listed {
 		rules[i] = ruleOf(m)
 	}
-	wanted := d.lane.rules()
-	if !slices.EqualFunc(rules, wanted, wallRule.same) {
+	if !slices.EqualFunc(rules, w.rules, wallRule.same) {
 		// taken out from the last, so that no position moves under the next;
 		// then made from the last too: the API puts each new line first
 		for i := len(rules) - 1; i >= 0; i-- {
@@ -472,11 +516,12 @@ func (d *Driver) wallUp(ctx context.Context, r resource) ([]string, error) {
 				return nil, err
 			}
 		}
-		for i := len(wanted) - 1; i >= 0; i-- {
-			w := wanted[i]
+		for i := len(w.rules) - 1; i >= 0; i-- {
+			l := w.rules[i]
 			// a line made without enable is a dead one
-			p := url.Values{"type": {w.Type}, "action": {w.Action}, "enable": {"1"}}
-			for k, v := range map[string]string{"proto": w.Proto, "sport": w.Sport, "comment": w.Comment} {
+			p := url.Values{"type": {l.Type}, "action": {l.Action}, "enable": {"1"}}
+			for k, v := range map[string]string{"proto": l.Proto, "sport": l.Sport, "dport": l.Dport, "source": l.Source,
+				"dest": l.Dest, "iface": l.Iface, "macro": l.Macro, "comment": l.Comment} {
 				if v != "" {
 					p.Set(k, v)
 				}
@@ -488,13 +533,19 @@ func (d *Driver) wallUp(ctx context.Context, r resource) ([]string, error) {
 		fixed = append(fixed, "rules")
 	}
 
-	if cardOpt(card, "firewall") != "1" {
+	for _, key := range w.cards {
+		card := str(cfg[key])
+		if card == "" || cardOpt(card, "firewall") == "1" {
+			continue
+		}
 		// only the flag moves: a running guest's card is plugged again
 		// behind its wall, and its open connections go on (read on a bench)
-		if err := d.setConfig(ctx, r, url.Values{"net0": {withCardOpt(card, "firewall", "1")}}); err != nil {
+		if err := d.setConfig(ctx, r, url.Values{key: {withCardOpt(card, "firewall", "1")}}); err != nil {
 			return nil, err
 		}
-		fixed = append(fixed, "card")
+		if !slices.Contains(fixed, "card") {
+			fixed = append(fixed, "card")
+		}
 	}
 	if len(fixed) > 0 {
 		d.wmu.Lock()

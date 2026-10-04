@@ -259,4 +259,23 @@ func TestReferencesAreReadFromTheSchema(t *testing.T) {
 	if _, err := refsOf([]byte(`{"properties": {"name": {"type": "string", "x-hangar-attached": true}}}`)); err == nil {
 		t.Fatal("x-hangar-attached on a field that names nothing was accepted")
 	}
+	// a member stands on what it names; a default names something by itself
+	refs, err = refsOf([]byte(`{"properties": {
+		"network": {"type": "string", "x-hangar-ref": "network", "x-hangar-member": true, "x-hangar-default": "default"},
+		"groups":  {"type": "array", "x-hangar-member": true, "items": {"type": "string", "x-hangar-ref": "group"}}}}`))
+	if err != nil || len(refs) != 2 || refs[0] != (Ref{Field: "groups", Type: "group", Many: true, Member: true}) ||
+		refs[1] != (Ref{Field: "network", Type: "network", Member: true, Default: "default"}) {
+		t.Fatalf("read %+v %v", refs, err)
+	}
+	for name, schema := range map[string]string{
+		"a member that names nothing":       `{"properties": {"name": {"type": "string", "x-hangar-member": true}}}`,
+		"inside and on at once":             `{"properties": {"m": {"type": "string", "x-hangar-ref": "machine", "x-hangar-attached": true, "x-hangar-member": true}}}`,
+		"a default that names nothing":      `{"properties": {"name": {"type": "string", "x-hangar-default": "default"}}}`,
+		"a default for a list":              `{"properties": {"keys": {"type": "array", "x-hangar-default": "default", "items": {"type": "string", "x-hangar-ref": "keypair"}}}}`,
+		"a default nothing could be called": `{"properties": {"n": {"type": "string", "x-hangar-ref": "network", "x-hangar-default": "My Network"}}}`,
+	} {
+		if _, err := refsOf([]byte(schema)); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
 }

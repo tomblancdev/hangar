@@ -44,6 +44,14 @@
 // only as itself. Nobody writes a rule: the wall is the zone's, and every
 // look puts back what a hand took off it.
 //
+// Where its zone makes networks (net.private) a machine names the one it is
+// on — `network`: one of its owner's, or one shared with them — at its
+// birth, and for its life: one card, there and nowhere else, its address its
+// network's to give. One that names none is put on its owner's network
+// called default (the core's doing: the field's "x-hangar-default"). Its
+// network's gateway runs while it does: started before it, and put to rest
+// after the network's last machine stops — every look puts that back too.
+//
 // It requires fence.pool: a zone whose credential reaches beyond the
 // product's own guests is not one it will act on.
 //
@@ -156,7 +164,10 @@ type Spec struct {
 	CPUWeight int `json:"cpu_weight,omitempty"`
 	// Resume: a spot machine a hold stopped starts again when the room
 	// returns; false = it stays stopped until its owner starts it.
-	Resume   bool     `json:"resume"`
+	Resume bool `json:"resume"`
+	// Network: the network it is on, by id; "" = its zone's own lane. Set at
+	// its birth.
+	Network  string   `json:"network,omitempty"`
 	KeyPairs []string `json:"key_pairs,omitempty"`
 	UserData string   `json:"user_data,omitempty"`
 	// IdleAfter: it is stopped once quiet this long ("30m", "1h30m"); "" =
@@ -228,7 +239,7 @@ const machineSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "x-hangar-summary": ["{kind}", "{cores} cores", "{cpu=host?host CPU}", "{virtualization?runs VMs}", "CPU weight {cpu_weight}", "{memory_gb} GB[ ({floor_gb} guaranteed)]", "{class=spot?spot}", "{image|image_id}", "{address|addresses}", "{wall=exact?walled}", "{wall=range?walled, to its zone's range}"],
+  "x-hangar-summary": ["{kind}", "{cores} cores", "{cpu=host?host CPU}", "{virtualization?runs VMs}", "CPU weight {cpu_weight}", "{memory_gb} GB[ ({floor_gb} guaranteed)]", "{class=spot?spot}", "{image|image_id}", "{address|addresses}", "on {network}", "{wall=exact?walled}", "{wall=range?walled, to its zone's range}"],
   "x-hangar-status": { "field": "running", "on": "running", "off": "stopped" },
   "properties": {
     "kind":      { "type": "string", "enum": ["vm", "container"], "default": "vm",
@@ -257,6 +268,8 @@ const machineSchema = `{
                    "description": "While the zone's room is needed, its CPU is capped to this many cores' worth (a machine that keeps running)." },
     "resume":    { "type": "boolean", "default": true,
                    "description": "A spot machine stopped to give its room back starts again when the room returns; false = it stays stopped." },
+    "network":   { "type": "string", "x-hangar-ref": "network", "x-hangar-member": true, "x-hangar-default": "default",
+                   "description": "The network it is on, for its life: one of yours, or one shared with you — by name or id. Where the zone makes networks and none is named: your network called default, made then if you have none." },
     "key_pairs": { "type": "array", "maxItems": 10, "uniqueItems": true,
                    "items": { "type": "string", "x-hangar-ref": "keypair" },
                    "description": "Your key pairs, by name or id: their public keys let you in." },
@@ -758,6 +771,9 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 		}
 		s.CPUWeight = weight(s.CPUWeight)
 		refuse(cpuRefusals(s, req.GetZone(), caps)...)
+		if s.Network != "" && !slices.Contains(caps, driver.NetPrivate) {
+			refuse(&pluginpb.Refusal{Field: "/network", Reason: fmt.Sprintf("zone %s makes no networks: its machines stand on its own lane", req.GetZone())})
+		}
 		if s.UserData != "" && !g.Traits(s.Kind).UserData {
 			refuse(&pluginpb.Refusal{Field: "/user_data", Reason: fmt.Sprintf("a %s in zone %s boots no user data", kindWord(s.Kind), req.GetZone())})
 		}
@@ -925,6 +941,7 @@ func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) 
 	fixed("/cpu", in.CPU != was.CPU, or(was.CPU, "the zone's own model"), "a machine's processor")
 	fixed("/virtualization", in.Virtualization != was.Virtualization, strconv.FormatBool(was.Virtualization), "whether a machine runs VMs of its own")
 	fixed("/resume", in.Resume != was.Resume, strconv.FormatBool(was.Resume), "whether a spot machine resumes")
+	fixed("/network", in.Network != was.Network, or(was.Network, "its zone's own lane"), "the network a machine is on")
 	fixed("/key_pairs", !sameSet(in.KeyPairs, was.KeyPairs), or(strings.Join(was.KeyPairs, ", "), "none"), "a machine's key pairs")
 	fixed("/user_data", in.UserData != was.UserData, "other user data", "what a machine's first boot is handed")
 	if in.DiskGB != nil {
@@ -1059,6 +1076,7 @@ func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*plug
 		Cores: s.Cores, MemoryMB: w.memoryMB, DiskGB: s.DiskGB,
 		Image: ref, SSHKeys: keys, UserData: []byte(s.UserData), Tags: tagsOf(s), Holds: w.holds, CPULimit: w.cpuLimit,
 		CPU: s.CPU, Virtualization: s.Virtualization, CPUWeight: s.CPUWeight,
+		Network: s.Network,
 		Stopped: !w.running,
 	})
 	if err != nil {
@@ -1267,6 +1285,19 @@ func converge(ctx context.Context, g driver.Guests, id string, s Spec, hold, lab
 			return guest, fixed, short, err
 		}
 		fixed = append(fixed, "power")
+	}
+	// its network's gateway, last: running while a machine of the network
+	// runs, at rest once none does — the starts and stops above keep it so,
+	// and this puts back what something else moved (a node that stopped its
+	// machines alone, a hand)
+	if ways, ok := g.(driver.WaysOut); ok && s.Network != "" {
+		did, werr := ways.WayOut(ctx, id)
+		if werr != nil {
+			return guest, fixed, short, fmt.Errorf("its network's gateway: %w", werr)
+		}
+		if did != "" {
+			fixed = append(fixed, "its network's gateway ("+did+")")
+		}
 	}
 	return guest, fixed, short, nil
 }

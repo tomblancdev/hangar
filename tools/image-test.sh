@@ -11,6 +11,9 @@
 # must refuse it, naming the provider: a test that passed both images would
 # be reading nothing.
 #
+# And the image carries the recipe a network's gateway archive is built from
+# (/gateway-build.sh): read back out of it, the repository's own file.
+#
 # Usage: sh tools/image-test.sh            # docker, or podman
 #        CONTAINER=podman sh tools/image-test.sh
 set -eu
@@ -77,4 +80,15 @@ else
 	printf '%s\n' "$out" | sed 's/^/        /'
 	status=1
 fi
+# the recipe a network's gateway archive is built from: the repository's own
+# file, at the image's version — what an operator who holds the image runs
+c=$("$engine" create "$tag")
+if "$engine" cp "$c:/gateway-build.sh" "$tmp/gateway-build.sh" 2>/dev/null && cmp -s "$tmp/gateway-build.sh" tools/gateway/build.sh &&
+	[ -n "$(sh "$tmp/gateway-build.sh" --version)" ]; then
+	echo "ok    the image carries the gateway's recipe, and it is the repository's"
+else
+	echo "FAIL  the image does not carry the gateway's recipe (/gateway-build.sh)"
+	status=1
+fi
+"$engine" rm "$c" >/dev/null 2>&1 || true
 exit $status

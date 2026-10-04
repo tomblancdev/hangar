@@ -1,5 +1,76 @@
 # Changelog
 
+## Unreleased
+
+- **Les réseaux — a network of one's own.** A new plugin, **`networks`**, and
+  its type **`network`** (`net-…`): a private network only its machines are
+  on, each given its address there, out through **a gateway the cloud
+  makes**, in by its owner's jump alone
+  ([ARCHITECTURE.md](ARCHITECTURE.md) §7, [docs/proxmox.md](docs/proxmox.md#networks)).
+  Two owners are apart because no wire joins them, not because a rule says
+  so; the zone's shared lane then carries the cloud's own gateways, and no
+  machine of a person's. **A machine names its network at its birth**
+  (`network`, by name or id: one of its owner's, or one shared with them) and
+  holds one card, there, for its life. **One that names none is put on its
+  owner's network called `default`**, made by the brain at their first
+  machine — an ordinary create, in their name, within their tier
+  (`networks.count`), audited as theirs: a household never learns the word.
+  **The way in is a jump**: `ssh -J jump@<the gateway> user@<the machine>`,
+  with a key pair the network names (`key_pairs`; `set_key_pairs` changes
+  them) — it opens that network and nothing else, and gives no shell, no
+  command and no file on the gateway. A network may be **shared**
+  (`shared_with`, `share`: its people put machines on it, only its owner
+  changes it; `networks.visibility`), and **is not deleted while a machine
+  stands on it** (409 `members`, naming them). Its page says its range,
+  where its keys jump through, and whether its gateway is up.
+  **On Proxmox VE** a zone that says `net_bridge` (with `net_tag`,
+  `net_block`, `net_size`, `net_vmids`, `net_pool`, `net_address`,
+  `net_archive`) cuts networks on a bridge of its own — no port, VLAN-aware —
+  one tag each. **A network is its gateway guest**, and every number of it is
+  *derived from that guest's own id, never counted*: its tag, its range, its
+  gateway's two addresses — and a machine's address from the machine's own
+  id. Nothing is allocated, nothing kept, nothing made on the cluster at a
+  request's time. **A gateway keeps nothing and is never patched**: born from
+  the operator's archive (a recipe the product ships,
+  `tools/gateway/build.sh`, and `/gateway-build.sh` in the image: nftables
+  and sshd, three static files and a user), with the keys its network names; one born with others, or from
+  another archive, or gone, **is made again at the same id**. **It runs only
+  while a machine of its network runs** — started before the first, stopped
+  after the last, put back at every look — so a node with nothing running
+  sleeps. Two keys, kept apart: the networks plugin's token makes gateways
+  and reads the machines; the machines plugin's gains the power of a gateway
+  and nothing of its config. The new flag is **`net.private`**.
+  **In the core**, two marks a schema may put on a reference:
+  `x-hangar-member` (what it names is not deleted while it has members; the
+  member goes freely, and may name what is shared) and `x-hangar-default`
+  (left out by a create, it names the owner's own of that name, made first).
+  **Proved on a real Proxmox VE**, through the plugins' own fenced tokens
+  (`TestBenchTwoNetworksAndAJump`, `TestBenchANetworkThroughTheAPI`): two
+  networks never saw each other and one saw itself; a machine fetched the
+  web through its gateway while the lane saw the gateway's address only;
+  nothing came in, even from a node given a route to the network; the
+  owner's key jumped to its machines — a container, a VM told its address on
+  its first-boot disc — and to nothing else — the lane's node,
+  the other gateway, a machine of the other network, the gateway itself and
+  the web each refused —, got no shell, no command, no file, no root; a key
+  the network does not name was denied; a gateway was made again on a key
+  change in 23 s, rested when its last machine stopped, and was started
+  again by the brain's look after a hand stopped it. **What it costs:** a
+  small container per network (128 MB while it runs, booked in the zone's
+  guaranteed pool), a network's birth 18 s, a person's first machine accepted
+  18 s later than the next ones. *Not in this version: rules inside a
+  network, two networks joined, a network with no way out, one across two
+  nodes.*
+- **`hangar check` reads a zone's options** — and so does a start: each
+  zone's options are held against its driver's own reading of them, the
+  engine not reached. A file whose zone could never open — an address past
+  its range, a security group that is no name — came back « sound », the
+  driver refusing it only when the zone was opened; it is refused now, in
+  the driver's words, with no network at all. **An option the Proxmox driver
+  does not know is refused**: a word mistyped was a lever left off, and
+  nobody told. *(A config that carried an unknown zone option no longer
+  starts: `hangar check` names it.)*
+
 ## v0.4.0 — 2026-10-04
 
 - **La carte et le mur — a machine is given its address, and is born behind

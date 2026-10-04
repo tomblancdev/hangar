@@ -43,13 +43,14 @@ const (
 	GPUPassthrough          Capability = "gpu.passthrough"
 	FencePool               Capability = "fence.pool"
 	NetFirewall             Capability = "net.firewall"
+	NetPrivate              Capability = "net.private"
 )
 
 // Known lists every flag, in the order the documentation gives them.
 var Known = []Capability{
 	KindContainer, KindVM, ResizeLiveMemoryDown, ResizeLiveCPUCap, CPUHost, CPUNested, CPUWeight,
 	VolumeMoveBetweenGuests, GuestSuspendToDisk, GuestTags, GuestActivity, HookPreStart,
-	GPUShared, GPUPassthrough, FencePool, NetFirewall,
+	GPUShared, GPUPassthrough, FencePool, NetFirewall, NetPrivate,
 }
 
 // IsKnown reports whether c is one of the documented flags.
@@ -123,6 +124,30 @@ func Open(ctx context.Context, name string, p Params) (Driver, error) {
 		}
 	}
 	return d, nil
+}
+
+// A driver may say whether a zone's options are sound without reaching its
+// engine: what `hangar check` asks before a config lands, with no network.
+var checkers = map[string]func(Params) error{}
+
+// RegisterCheck makes a driver's own check of a zone's options available by
+// the driver's name.
+func RegisterCheck(name string, check func(Params) error) {
+	mu.Lock()
+	defer mu.Unlock()
+	checkers[name] = check
+}
+
+// Check asks the named driver whether a zone's options are sound, the engine
+// not reached. A driver that registered no check says nothing (nil).
+func Check(name string, p Params) error {
+	mu.RLock()
+	check := checkers[name]
+	mu.RUnlock()
+	if check == nil {
+		return nil
+	}
+	return check(p)
 }
 
 // Names lists the registered drivers.
@@ -223,6 +248,20 @@ type Walls interface {
 	Wall(ctx context.Context, id string) ([]string, error)
 }
 
+// WaysOut is the facet of a driver whose guests reach out through a guest of
+// its own making — a network's gateway (net.private) — that runs only while a
+// guest of its network does, so that a zone with nothing running can sleep.
+// CreateGuest, SetPower and DeleteGuest keep it so as they go: the gateway
+// started before its network's first guest starts, stopped after its last one
+// stops. WayOut is the look that puts it back.
+type WaysOut interface {
+	// WayOut brings the gateway of a guest's network to what its guests need
+	// — running while one of them runs, stopped once none does — and says
+	// what it did: "started", "stopped", or "" (it was so already, or the
+	// guest is on no network).
+	WayOut(ctx context.Context, id string) (string, error)
+}
+
 // What a guest's wall pins it to (Guest.Wall).
 const (
 	// WallExact: it sends only as the address it was given.
@@ -308,6 +347,9 @@ type GuestSpec struct {
 	// CPUWeight: its share of the cores when they are contended, 1 to 100
 	// (cpu.weight); 0 = a full share. It loses nothing while cores are free.
 	CPUWeight int
+	// Network: the network it is on, by the core's id (net.private) — one
+	// card, there and nowhere else, for its life; "" = the zone's own lane.
+	Network string
 	// Stopped: create it without starting it.
 	Stopped bool
 }
@@ -446,6 +488,68 @@ func SerialOf(id string) string {
 		s = s[:20]
 	}
 	return s
+}
+
+// ---- The networks facet -----------------------------------------------------
+
+// Networks is the facet of a driver that makes networks of the cloud's own
+// (net.private): a private network only its guests are on, each given its
+// address there at its birth, with one way out — a gateway the driver makes —
+// that forwards what its guests send, lets nothing in, and lets the keys the
+// network names jump through to its guests and nowhere else. A guest names
+// its network at its birth (GuestSpec.Network). Idempotent on the core's id,
+// like a guest.
+type Networks interface {
+	// CreateNetwork makes a network — its gateway, born stopped: it starts
+	// with the network's first guest. A second call finds the first's.
+	CreateNetwork(ctx context.Context, spec NetworkSpec) (Network, error)
+	// Network reads a network by the id the core minted for it.
+	Network(ctx context.Context, id string) (Network, error)
+	// TendNetwork brings a network to its spec and returns what it had to put
+	// back, in the engine's own words (none: it stood). A gateway keeps
+	// nothing and is never patched: one born with other keys, or from another
+	// archive than its zone's, is made again — at the same place, its guests'
+	// way out cut for as long as that takes. was: the engine's own name for
+	// its gateway as it was last read ("" = never): one that is gone is made
+	// again there, the place its guests stand on.
+	TendNetwork(ctx context.Context, spec NetworkSpec, was string) (Network, []string, error)
+	// DeleteNetwork removes it; one already gone is not an error. A network a
+	// guest is still on is ErrRefused, naming them.
+	DeleteNetwork(ctx context.Context, id string) error
+	// NetworkRoomMB is the memory a network's gateway holds while it runs: what
+	// a network books in its zone (0: the engine's networks cost none).
+	NetworkRoomMB() int
+}
+
+// NetworkSpec is what a network is made with.
+type NetworkSpec struct {
+	ID string // the core's resource id, written on the gateway
+	// Label is one line a person reads where the engine shows the gateway.
+	Label string
+	// JumpKeys are the public keys, in OpenSSH's one-line form, that may jump
+	// through its gateway to its guests.
+	JumpKeys []string
+}
+
+// Network is a network as the engine reports it.
+type Network struct {
+	ID        string `json:"id"`
+	EngineRef string `json:"engine_ref"` // the engine's own name for its gateway
+	Node      string `json:"node,omitempty"`
+	Label     string `json:"label,omitempty"` // see NetworkSpec.Label
+	// Range: the addresses its guests are given theirs in ("203.0.113.0/27");
+	// Gateway: their way out, the first of them.
+	Range   string `json:"range"`
+	Gateway string `json:"gateway"`
+	// Jump: where its keys jump through — "jump@" and its gateway's address
+	// on the zone's lane, as ssh's -J takes it.
+	Jump string `json:"jump,omitempty"`
+	// Wall: its gateway stands behind the engine's firewall (WallExact).
+	Wall string `json:"wall,omitempty"`
+	// Running: its gateway runs — as long as one of its guests does.
+	Running bool `json:"running"`
+	// Keys: how many keys its gateway was born with.
+	Keys int `json:"keys"`
 }
 
 // ---- The images facet -------------------------------------------------------

@@ -48,7 +48,12 @@ hypervisor (it drives yours) and not an EC2 clone.
 > holds the idle stop off, for a time or until told. **And a VM's processor**:
 the zone's own model, or — `cpu: host` — its host's own, `virtualization:
 true` for VMs inside it, each a tier's to open; `cpu_weight` for a machine
-that yields its cores when others want them. **And the console**: the
+that yields its cores when others want them. **And a network of
+> one's own**: where the zone gives addresses and keeps a wall, a machine is
+> born at the address its zone gave it, behind the engine's firewall; where
+> it cuts networks, on its owner's private network — nobody else on it, out
+> through a gateway the cloud makes, in by its owner's `ssh -J` alone
+> ([docs/proxmox.md](docs/proxmox.md#networks)). **And the console**: the
 > same catalogue in a browser — every type a list, a form drawn from its
 > schema and its actions as buttons —, signed in at your identity provider,
 > the sign-in kept by the console's server and a cookie in the browser; inside

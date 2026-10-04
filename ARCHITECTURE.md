@@ -23,11 +23,12 @@ where this page and they disagree, they win.
 | The machines plugin (machines, key pairs); the Proxmox VE driver; references between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md)) |
 | The volumes plugin (volumes, parked on a shelf where the engine keeps no disk without a guest); attachments between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
 | The images plugin (baked from a recipe, saved from a stopped machine, shared, retired); resources shared with others | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
+| The networks plugin (a private network of one's own: its machines on it and nobody else, out through a gateway the cloud makes, in by its owner's jump alone); a machine's default network; members of a resource | **built** (§7, §5, §4, §8) — proved on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md#networks)) |
 | Schedules: a create on the brain's own clock, in the name of the one it names — a recipe baked again every week; `@<schedule>` names the newest usable one; the older ones let go of (§3, §4, §7) | **built** — proved on a throwaway Proxmox VE |
 | The command line generated from the schemas: sign-in by the device flow, every type's commands, `apply` of a spec file; a change's plan (§2, §4) | **built** — proved on a throwaway Proxmox VE and a throwaway identity provider ([docs/cli.md](docs/cli.md)) |
 | The console generated from the schemas: signed in at the provider (the sign-in kept by the console's server, a cookie in the browser), every type a list, a form and its actions — inside the brain, or a process of its own in front of it (§2, §8) | **built** — proved in a real browser, on a throwaway Proxmox VE and a throwaway identity provider ([docs/console.md](docs/console.md)) |
 | A machine's terminal in the console; a rebuild in `apply` (a field set at birth, made again) | designed (§2, §7) |
-| Names, ports, snapshots, object storage, databases; the Incus and AWS drivers | designed (§7) |
+| Rules inside a network (security groups), two networks joined, a network across two nodes; names, ports, snapshots, object storage, databases; the Incus and AWS drivers | designed (§7) |
 
 ---
 
@@ -308,6 +309,26 @@ lost resource binds nothing (else a machine the engine lost could never be
 let go of). The drivers keep the same rule underneath: a guest holding a
 volume refuses its delete. **(built)**
 
+**Members.** A reference whose schema also carries `"x-hangar-member": true`
+makes the resource a member of what it names: it **stands on** it (a machine
+on a network) where an attachment lives inside. **What has members is not
+deleted** — 409 `members`, « net-… (lab) still holds dev, bench-1: delete
+them first » — because they would be left on something that is gone; the
+member itself goes freely, and it may name what someone shares with it (an
+attachment may not). **(built)**
+
+**A default.** A single reference whose schema carries `"x-hangar-default":
+"<name>"` names something by itself when a create leaves it out — where its
+type is made in that zone: **the owner's own resource of that type called
+`<name>`, made first if they have none** (AWS's default VPC). That create is
+an ordinary one — in the owner's name, within their tier, audited as theirs
+(`default`), tagged `hangar:default` — and the request waits for it, a
+minute and a quarter at most. A tier that allows none refuses the request in
+those words; a zone where no plugin makes that type leaves the field out,
+and the resource is made as it always was. **The default is a new
+resource's**: a change's plan leaves an existing one where it stands, named
+or not, as `@<schedule>` does. **(built)**
+
 **Shares.** A type whose schema marks one top-level property
 `"x-hangar-share": true` (an array of strings: group names, `"*"` =
 everyone) is one an owner may open to others. The core keeps whom each
@@ -381,6 +402,7 @@ advertise the documented flags.
 | `gpu.shared` / `gpu.passthrough` | device nodes / PCI mapping | yes / yes | instance types | — |
 | `fence.pool` (a credential limited to the product's guests) | yes (a pool + a role) | yes (a project) | yes (IAM + tags) | yes |
 | `net.firewall` (every guest born behind the engine's own firewall: nothing in but what the zone's operator lets, sending only as itself) | where the zone says `firewall: on` (a guest's firewall file, its card's flag) | yes (a network ACL, the card's filters) | the cloud's own (a security group; the network checks what an instance sends) | yes |
+| `net.private` (networks of the cloud's own: only its members on one, each given its address there, out through a gateway that lets nothing in) | where the zone says `net_bridge` (a tag of a bridge with no port; the gateway a small container the driver makes) | yes (a network of its own, its own addresses) | yes (a VPC's private subnet, a NAT gateway) | yes |
 
 **The fake driver is built** and ships first: it lets the whole core and
 every plugin be proved with no hypervisor. Its zone's endpoint is empty (in
@@ -410,6 +432,17 @@ the history cannot say (no reading yet, a hole, a history no longer written)
 is never quiet, **and a guest is never quiet for longer than it has run** —
 an engine may keep a history by a number it gives to the next guest. What it *receives* is not counted: a network's broadcasts
 reach every guest, whatever it does.
+**The networks facet** (`driver.Networks`, `net.private`: create, read, tend,
+delete — idempotent on the core's id) makes a private network: a range its
+engine gives it, a gateway that forwards what its guests send, lets nothing
+in, and lets the keys the network names jump through to its guests and
+nowhere else. A guest names its network at its birth (`GuestSpec.Network`)
+and holds one card, there. **A gateway keeps nothing and is never patched**:
+one born with other keys, or from another archive than its zone's, is made
+again where it was — and so is one that is gone. **It runs only while a
+guest of its network runs** (`driver.WaysOut`): started before the first,
+stopped after the last, put back by every look — or a zone with nothing
+running could never sleep.
 **The watcher facet** (`driver.Watcher`) reads what a zone's reservations
 wait on: a watched guest's power, a node's state, whether the zone is awake.
 **The volumes facet** (`driver.Volumes`: create, find, place, resize, set
@@ -448,6 +481,12 @@ already has — [docs/proxmox.md](docs/proxmox.md#idleness-and-hours)),
 own VMID, never counted — and born behind Proxmox's firewall, alone, before
 its first start; the wall put back at every look —
 [docs/proxmox.md](docs/proxmox.md#addresses-and-the-wall)),
+`net.private` where the zone cuts networks (**the networks facet**: a
+network is one tag of a bridge with no port, and *is* its gateway guest —
+its number, tag, range and addresses all derived from that guest's own id,
+never counted; a machine's card on its network alone, its wall letting in
+what its own network sends —
+[docs/proxmox.md](docs/proxmox.md#networks)),
 `volume.move_between_guests` (the volumes facet: a
 guest's description says which disk is which volume, since a disk is renamed
 after each guest it moves to; a volume leaving a running VM rests on its
@@ -465,9 +504,10 @@ the guest agent ([docs/proxmox.md](docs/proxmox.md#images)).
 ## 6. Zones, pools, classes, reservations, preemption **(built)**
 
 **A zone** is where machines run: one engine connection, its nodes, one
-network (a bridge or vnet, an address range, a gateway, resolvers — the
-product's IPAM hands out addresses, *designed*), and its capacity rules, in
-the zone's `room`:
+lane (a bridge or vnet, an address range, a gateway, resolvers: where the
+zone says so each guest is given its address there, and where it cuts
+networks its machines stand on those instead — §7, the networks plugin), and
+its capacity rules, in the zone's `room`:
 
 ```yaml
 zones:
@@ -600,7 +640,7 @@ uses it, and a tier's room is only fair if running has a cost.
 
 ## 7. Every plugin — capabilities and limits (the first three **built**)
 
-### The first three
+### The first four
 
 **The machines plugin is built**, as the row below says but for four
 things. The key pair type is **`keypair`** (a type's name has the shape of an
@@ -673,10 +713,38 @@ of no volume (stop it first); a running VM does, live. Every action is
 planned (the refusals come back before anything is admitted, with the
 numbers), and its spec written at its admission.
 
+**The networks plugin is built.** A network (`net-…`) is a private network
+of its owner's: **only its machines are on it** — two owners are apart
+because no wire joins them, not because a rule says so —, each given its
+address there by the engine (a person chooses no addresses). A machine names
+its network at its birth (`network`, a member, §4) and is on it for its
+life: **one network per machine**, one card. **One that names none is put on
+its owner's network called `default`**, made then if they have none (§4, a
+default) — a household never learns the word network. Inside, its machines
+reach each other freely. **Out**, they go through its gateway, to what the
+zone's operator lets out. **In, nothing comes unasked**: its owner reaches a
+machine *through* the gateway with a key pair the network names
+(`key_pairs`) — `ssh -J jump@<the gateway> user@<the machine>` — a jump that
+opens that network and nothing else, **never a shell on the gateway**; a
+network that names no key pair lets nobody jump. Its page says where
+(`jump`), its range, and whether its gateway is up — **it runs only while
+one of its machines does**. A gateway is never patched: `set_key_pairs`
+makes it again with the new keys (its machines' way out is cut for the half
+minute that takes), and so does an archive the operator moved, at the
+brain's next look. **Shared** (`share`, §4): the people it is shared with
+put machines on it; only its owner changes or deletes it. **Not deleted
+while a machine stands on it.** Its gateway's memory is booked in the zone's
+guaranteed pool for as long as the network exists: a machine of it that may
+start can always have its way out — and a tier bounds how many
+(`networks.count`). *(Designed: rules inside a network — security groups —,
+two networks joined, a network that names no way out, a network across two
+nodes.)*
+
 | plugin | resources | actions | limit dimensions (per tier) | driver needs |
 |---|---|---|---|---|
-| **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **`cpu`** (host), **`virtualization`**, **`cpu_weight`**, **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · set_idle_after · set_cpu_weight · keep_awake (for a time, or until let_sleep) · let_sleep · console (serial / terminal) · delete | count · vCPU · memory GB · **vCPU-hours a month** (a meter) · kinds allowed · classes allowed · **a VM's host processor** (`machines.cpu`) · **VMs inside a VM** (`machines.virtualization`) · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `cpu.*` for a processor and a weight, `guest.activity` for `idle_after`, `hook.pre_start` or core admission; where the zone keeps one (`net.firewall`) a machine is born behind its wall, at the address its zone gave it — both on its page, neither asked |
+| **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **`cpu`** (host), **`virtualization`**, **`cpu_weight`**, **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · set_idle_after · set_cpu_weight · keep_awake (for a time, or until let_sleep) · let_sleep · console (serial / terminal) · delete | count · vCPU · memory GB · **vCPU-hours a month** (a meter) · kinds allowed · classes allowed · **a VM's host processor** (`machines.cpu`) · **VMs inside a VM** (`machines.virtualization`) · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `cpu.*` for a processor and a weight, `guest.activity` for `idle_after`, `hook.pre_start` or core admission; where the zone keeps one (`net.firewall`) a machine is born behind its wall, at the address its zone gave it — both on its page, neither asked; where it cuts networks (`net.private`) a machine stands on the one it names (`network`), or on its owner's default |
 | **volumes** | **`vol-…`**: size, content (block / filesystem), backup yes/no, the machine it is attached to and its path there, tags | create · attach · detach · **move** (to another machine of the same owner) · resize (grow) · set_backup · delete | count · total GB · **backed-up GB** | `volume.move_between_guests`, `fence.pool`; where the engine keeps no disk without a guest, an unattached volume parks on a stopped **« shelf » guest** of its owner |
+| **networks** | **`net-…`**: the key pairs that may jump into it (`key_pairs`), whom it is shared with (`shared_with`); observed: its range, its gateway, where its keys jump through (`jump`), whether its gateway is up | create · set_key_pairs · share · delete | `networks.count` · choice `networks.visibility` (private, shared, public) | `net.private`, `fence.pool` — Proxmox VE: a tag of the cloud's own bridge, a gateway container per network |
 | **images** | **`img-…`**: name, family, kind, size, whom it is shared with (`shared_with`: groups, `*` = everyone), retired, the recipe it came from (`from`) or the machine it was saved from; observed: `pending` → `available` \| `failed` (its words), `waiting` while the zone's room is held, its engine form per kind | **bake** (create from a `recipe`) · **save** (create from a stopped `machine`) · share · retire · rebake · delete | `images.count` · `images.size_gb` (one's own) · choices `images.source` (recipe, machine) and `images.visibility` (private, shared, public) | the images facet (`driver.Images`): a bake moved forward call by call, a save, a delete refused under linked clones — Proxmox VE: VM templates in the images pool, a builder VM per bake |
 
 **Recipes** (for `bake`), in the plugin's settings: a base on the engine per
@@ -728,7 +796,7 @@ the audit says so.
 | **1. The door** | OIDC sign-in (the operator's provider and its MFA); API tokens scoped (read / write) and expiring, never able to make tokens; the brain behind the operator's gateway (it speaks plain HTTP; TLS is the gateway's). **In a browser:** the provider's tokens stay with the console's server, in memory; the page holds a cookie no script reads (`HttpOnly`, `SameSite=Strict`, `Secure` behind TLS), what changes something carries a second token in a header and is refused from another site's page, and the page loads nothing from elsewhere and runs no inline code. **On a public door:** the console as a process of its own, holding no plugin's key, the brain behind it | **built** — each guard broken on purpose and caught by a test |
 | **2. The core and its plugins** | limits per tier; every call audited; **each plugin its own process, started with an empty environment, with its own credential and nothing else**; mutual TLS on its socket; a program pinned by its SHA-256; the API never returns an engine credential | **built** — the empty environment and the one-credential rule are proved by tests that run a probe plugin and read what it received |
 | **3. The engine fence** | each driver's credential fenced to the product's own guests (`fence.pool`): on Proxmox a pool and a role — it cannot touch any other guest, and sees only the power of those a zone's reservations name | **built** for Proxmox: the driver reads the token's own permissions and advertises `fence.pool` only when nothing outside its pools is reachable but `VM.Audit` on a watched guest (root's token, the control, is refused with 416 reasons); the machines plugin requires it, so an unfenced zone is not one it acts on. The hook on the node needs no hypervisor credential at all: it is the node's own root, and holds only a `room` token toward the brain |
-| **4. The network** | a zone's network is the operator's: the product assumes a lane where machines reach only what the operator allows; **where the zone keeps a wall (`net.firewall`) each machine is alone on it** — born behind the engine's firewall, nothing in but what the operator's own groups let, sending only as the address it was given | **built** for Proxmox, as the zone's own switch ([docs/proxmox.md](docs/proxmox.md#addresses-and-the-wall)): proved on a bench — a neighbour pinging from before a machine's birth never answered, a machine sending as the gateway dropped on its own card. Networks of one's own (a machine on a private network, its way out a gateway the cloud makes) are designed |
+| **4. The network** | a zone's network is the operator's: the product assumes a lane where machines reach only what the operator allows; **where the zone keeps a wall (`net.firewall`) each machine is alone on it** — born behind the engine's firewall, nothing in but what the operator's own groups let, sending only as the address it was given | **built** for Proxmox, as the zone's own switch ([docs/proxmox.md](docs/proxmox.md#addresses-and-the-wall)): proved on a bench — a neighbour pinging from before a machine's birth never answered, a machine sending as the gateway dropped on its own card. **And networks of one's own (`net.private`)**: a machine stands on its owner's private network and nowhere else — two networks never saw each other on the bench, one saw itself; a machine went out to the web through its gateway and the lane saw the gateway's address only; nothing came in through it, even from a node given a route; its owner's key jumped through to the network and to nothing else (the lane, the other network, the gateway itself, the web: each refused), got no shell, and no other key passed ([docs/proxmox.md](docs/proxmox.md#networks)) |
 | **5. The machine** | untrusted users get **VMs** (their own kernel); containers are for trusted operators | designed (a tier's `kind` choice limit already enforces it) |
 
 **What it cannot promise:** a hypervisor flaw lets a VM reach its host — so
@@ -776,6 +844,14 @@ of the engines'.
 | Keep awake both ways: for a time that ends by itself, or until told | a long job needs a number; a day of work needs a switch — and a stop ends either |
 | A resource keeps the tier its last request was admitted under | at the month's end nobody is asking, and the core knows a person's groups only when they ask |
 | A plugin counts consumption in its observed state, written with the amount | a plugin holds no state: what the core could not write is counted again from the same point, never twice |
+| A network is a private wire with one way out, a gateway the cloud makes — one card per machine, not a second card on a shared lane | two owners are apart by construction, not by rules that must all be right; the shared lane carries only the cloud's own software, never a person's machine (AWS's private subnet and NAT gateway) |
+| Every number of a network is derived from its gateway's own guest id; a machine's address from its own | the engine already hands out one number with no race: no allocator, no state, nothing two requests can be given twice — and an address in a log gives the machine back by arithmetic |
+| A gateway keeps nothing and is made again, never patched (its keys changed, its archive moved, it is gone) | nothing to repair, to drift or to upgrade in place; what a gateway is, is its archive and what its engine wrote at its birth |
+| A gateway runs only while a machine of its network runs; its power is the machines plugin's to hold, its config the networks plugin's | a zone with nothing running can sleep; the start that needs the gateway is the one that starts it, in one process — and neither plugin's key does the other's work |
+| The way into a machine is a jump through its network's gateway, with a key pair the network names; never a shell there | nothing to install in a machine, and nothing of a person's on the shared lane; a gateway that runs no one's commands has nothing to take |
+| A machine that names no network is put on its owner's default, made by the brain | nobody has to learn the word network to be alone by default (AWS's default VPC); refusing instead would be two steps for everyone |
+| What has members is not deleted (a reference's `x-hangar-member`); a member goes freely | a network deleted under its machines would leave them on a wire the next network is given |
+| `hangar check` — and a start — hold each zone's options against its driver's own reading, the engine not reached; an option a driver does not know is refused | a file that could never open a zone came back « sound »; and a word mistyped is a lever left off with nobody told |
 
 **Set aside:** an EC2 API clone (nothing maintained speaks it for the engines
 this targets — OpenStack's EC2 layer, CloudStack's `ec2stack`, Eucalyptus and

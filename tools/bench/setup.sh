@@ -26,10 +26,22 @@
 #      how the tests enter a guest. No token of the product's can do any of
 #      it (Sys.Modify on /).
 #
+#   7. networks of the cloud's own: a bridge with no port, VLAN-aware
+#      (hgnets), a pool for the gateways (hangar-nets), a user and token for
+#      the networks plugin — gateways made there, the machines' pool read,
+#      nothing more of it — and one for the machines plugin as a zone that
+#      cuts networks gives it: all a machines token has, and the power of a
+#      gateway, nothing of its config. (The bench's first machines token
+#      stays as it was: a zone that cuts no networks counts a right on
+#      another pool as a reach beyond its fence.) The gateway's archive is
+#      built by bench.sh and shards.sh, from tools/gateway/build.sh.
+#
 # The token's secret is written to /root/hangar-token (0600) as
 # `user@realm!name=secret`, for bench.sh to copy out; it is never printed —
 # the volumes plugin's to /root/volumes-token, the images plugin's to
-# /root/images-token, the same way.
+# /root/images-token, the networks plugin's to /root/networks-token, the
+# machines plugin's for a zone with networks to /root/machines-nets-token,
+# the same way.
 # So is a second one, /root/wide-token: root's, unfenced — the tests'
 # control that the driver tells a fenced token from one that is not.
 # Idempotent: a step already done is skipped — bench.sh runs it at every
@@ -227,4 +239,72 @@ enable: 1
 IN ACCEPT -source 198.51.100.1 -p tcp -dport 22 -log nolog # the node, on ssh
 FW
 fi
+# ---- 7. networks ------------------------------------------------------------
+if [ ! -f /etc/network/interfaces.d/hangar-nets ]; then
+	say "the cloud's own bridge: hgnets, no port, VLAN-aware"
+	cat >/etc/network/interfaces.d/hangar-nets <<'NET'
+auto hgnets
+iface hgnets inet manual
+	bridge-ports none
+	bridge-stp off
+	bridge-fd 0
+	bridge-vlan-aware yes
+	bridge-vids 2-4094
+NET
+	# ifupdown2's first reload after its install exits in error, its second is sound
+	ifreload -a 2>/dev/null || ifreload -a
+fi
+ip link show hgnets >/dev/null 2>&1 || { say "the bridge hgnets did not come up"; exit 1; }
+pveum pool add hangar-nets --comment "the gateways of hangar's networks" 2>/dev/null || true
+# the networks plugin: a gateway made, walled, labelled, started again after
+# it was made again, deleted — in the gateways' pool
+nprivs="VM.Allocate,VM.Audit,VM.Config.CPU,VM.Config.Disk,VM.Config.Memory,VM.Config.Network"
+nprivs="$nprivs,VM.Config.Options,VM.PowerMgmt,Datastore.AllocateSpace,Datastore.Audit,Pool.Audit"
+pveum role add HangarNetworks --privs "$nprivs" 2>/dev/null || pveum role modify HangarNetworks --privs "$nprivs"
+# …and, of the machines, which stand on which network: read, nothing else
+pveum role add HangarMembers --privs VM.Audit,Pool.Audit 2>/dev/null || pveum role modify HangarMembers --privs VM.Audit,Pool.Audit
+# the machines plugin, of a gateway: its power, nothing of its config
+pveum role add HangarGateways --privs VM.Audit,VM.PowerMgmt,Pool.Audit 2>/dev/null ||
+	pveum role modify HangarGateways --privs VM.Audit,VM.PowerMgmt,Pool.Audit
+pveum user add hangar-networks@pve --comment "hangar's networks plugin" 2>/dev/null || true
+if [ ! -s /root/networks-token ]; then
+	pveum user token remove hangar-networks@pve bench 2>/dev/null || true
+	secret=$(pveum user token add hangar-networks@pve bench --privsep 1 --output-format json |
+		sed -n 's/.*"value":"\([^"]*\)".*/\1/p')
+	[ -n "$secret" ] || { say "the networks token was not made"; exit 1; }
+	(umask 077 && printf 'hangar-networks@pve!bench=%s\n' "$secret" >/root/networks-token)
+fi
+for who in "--users hangar-networks@pve" "--tokens hangar-networks@pve!bench"; do
+	# shellcheck disable=SC2086 # two words on purpose
+	{
+		pveum acl modify /pool/hangar-nets --roles HangarNetworks $who
+		pveum acl modify /pool/hangar --roles HangarMembers $who
+		pveum acl modify /storage/local-zfs --roles PVEDatastoreUser $who
+		pveum acl modify /storage/local --roles HangarTemplates $who # the gateway's archive
+		pveum acl modify /sdn/zones/hbench/hbnet --roles PVESDNUser $who # a gateway's card on the lane
+		pveum acl modify /sdn/zones/localnetwork/hgnets --roles PVESDNUser $who # and on its network: every tag of the bridge
+	}
+done
+pveum user add hangar-machines-nets@pve --comment "hangar's machines plugin, in a zone that cuts networks" 2>/dev/null || true
+if [ ! -s /root/machines-nets-token ]; then
+	pveum user token remove hangar-machines-nets@pve bench 2>/dev/null || true
+	secret=$(pveum user token add hangar-machines-nets@pve bench --privsep 1 --output-format json |
+		sed -n 's/.*"value":"\([^"]*\)".*/\1/p')
+	[ -n "$secret" ] || { say "the machines token of a zone with networks was not made"; exit 1; }
+	(umask 077 && printf 'hangar-machines-nets@pve!bench=%s\n' "$secret" >/root/machines-nets-token)
+fi
+for who in "--users hangar-machines-nets@pve" "--tokens hangar-machines-nets@pve!bench"; do
+	# shellcheck disable=SC2086 # two words on purpose
+	{
+		pveum acl modify /pool/hangar --roles HangarMachines $who
+		pveum acl modify /pool/hangar-images --roles HangarImages $who
+		pveum acl modify /storage/local-zfs --roles PVEDatastoreUser $who
+		pveum acl modify /storage/local --roles HangarTemplates $who
+		pveum acl modify /storage/hangar-seeds --roles HangarSeeds $who
+		pveum acl modify /sdn/zones/hbench/hbnet --roles PVESDNUser $who
+		pveum acl modify /vms/100 --roles HangarWatch $who
+		pveum acl modify /pool/hangar-nets --roles HangarGateways $who # a gateway started before its network's first machine
+		pveum acl modify /sdn/zones/localnetwork/hgnets --roles PVESDNUser $who # a machine's card on its network
+	}
+done
 say "done on $node"

@@ -28,6 +28,7 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"github.com/tomblancdev/hangar/driver"
 	"github.com/tomblancdev/hangar/internal/audit"
 	"github.com/tomblancdev/hangar/internal/cli"
 	"github.com/tomblancdev/hangar/internal/config"
@@ -141,6 +142,9 @@ func openStore(cfg *config.Config) (*registry.Store, error) {
 // startPlugins starts the plugins and holds the tiers against what they
 // declared.
 func startPlugins(ctx context.Context, cfg *config.Config, log *slog.Logger, logs io.Writer) (*plugins.Host, error) {
+	if err := checkZones(cfg); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
 	host, err := plugins.Start(ctx, cfg, plugins.Options{DataDir: cfg.DataDir, Logs: logs}, log)
 	if err != nil {
 		return nil, err
@@ -158,6 +162,21 @@ func startPlugins(ctx context.Context, cfg *config.Config, log *slog.Logger, log
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	return host, nil
+}
+
+// checkZones holds each zone's options against its driver's own reading of
+// them, the engine not reached: an option a driver refuses is refused here —
+// before a config lands (check), and before a brain starts on a zone that
+// could never open. An engine that does not answer is another matter: that
+// zone is reported unusable, and the brain runs.
+func checkZones(cfg *config.Config) error {
+	var errs []error
+	for _, z := range cfg.Zones {
+		if err := driver.Check(z.Driver, driver.Params{Zone: z.Name, Endpoint: z.Endpoint, Options: z.Options, Watch: z.Watch()}); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func serve(args []string) error {
@@ -268,7 +287,7 @@ func check(args []string, out io.Writer) error {
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "\nsound: every plugin started, every limit names a declared dimension, every schedule makes a declared type")
+	fmt.Fprintln(out, "\nsound: every zone's options are its driver's, every plugin started, every limit names a declared dimension, every schedule makes a declared type")
 	return nil
 }
 

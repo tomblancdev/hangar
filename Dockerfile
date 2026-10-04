@@ -23,6 +23,9 @@ LABEL org.opencontainers.image.source="https://github.com/tomblancdev/hangar" \
       org.opencontainers.image.description="Le Hangar — a small cloud's control plane: ask for a machine, get one within your limits" \
       org.opencontainers.image.licenses="MIT"
 COPY --from=build /out/hangar /out/hangar-hook /
+# the recipe a network's gateway archive is built from, at this version: run
+# as root on a node (docs/proxmox.md, « Networks ») — nothing here runs it
+COPY tools/gateway/build.sh /gateway-build.sh
 VOLUME ["/data"]
 USER 65532:65532
 EXPOSE 8080

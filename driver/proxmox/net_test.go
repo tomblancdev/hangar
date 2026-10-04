@@ -85,11 +85,11 @@ func TestAGuestsCard(t *testing.T) {
 	for name, c := range map[string]struct {
 		got, want string
 	}{
-		"a container, given its address": {walled.card(true, 11003, ""), "name=eth0,bridge=vmbr0,firewall=1,ip=198.51.100.23/24,gw=198.51.100.1"},
-		"a VM at its birth":              {walled.card(false, 11003, ""), "virtio,bridge=vmbr0,firewall=1"},
-		"a VM, its MAC kept":             {walled.card(false, 11003, "00:00:5E:00:53:FA"), "virtio=00:00:5E:00:53:FA,bridge=vmbr0,firewall=1"},
-		"a container that asks a DHCP":   {tagged.card(true, 11003, ""), "name=eth0,bridge=vmbr0,tag=30,ip=dhcp"},
-		"a VM that asks a DHCP":          {tagged.card(false, 11003, ""), "virtio,bridge=vmbr0,tag=30"},
+		"a container, given its address": {walled.card(true, walled.onLane(11003), ""), "name=eth0,bridge=vmbr0,firewall=1,ip=198.51.100.23/24,gw=198.51.100.1"},
+		"a VM at its birth":              {walled.card(false, walled.onLane(11003), ""), "virtio,bridge=vmbr0,firewall=1"},
+		"a VM, its MAC kept":             {walled.card(false, walled.onLane(11003), "00:00:5E:00:53:FA"), "virtio=00:00:5E:00:53:FA,bridge=vmbr0,firewall=1"},
+		"a container that asks a DHCP":   {tagged.card(true, tagged.onLane(11003), ""), "name=eth0,bridge=vmbr0,tag=30,ip=dhcp"},
+		"a VM that asks a DHCP":          {tagged.card(false, tagged.onLane(11003), ""), "virtio,bridge=vmbr0,tag=30"},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s: %q, want %q", name, c.got, c.want)
@@ -158,9 +158,14 @@ type pve struct {
 }
 
 func (g *pve) mount(a *api) {
-	a.any = func(w http.ResponseWriter, r *http.Request, p string) bool {
+	a.any = func(w http.ResponseWriter, r *http.Request, p string) bool { return g.serve(a, w, r, p) }
+}
+
+// serve answers what is asked of this guest; false: it is not its own.
+func (g *pve) serve(a *api, w http.ResponseWriter, r *http.Request, p string) bool {
+	{
 		rest, ok := strings.CutPrefix(p, g.base)
-		if !ok {
+		if !ok || rest != "" && !strings.HasPrefix(rest, "/") {
 			return false
 		}
 		g.mu.Lock()
@@ -268,6 +273,12 @@ func (g *pve) lines() []string {
 	var out []string
 	for _, r := range g.rules {
 		line := strings.ToUpper(fmt.Sprint(r["type"])) + " " + fmt.Sprint(r["action"])
+		if r["iface"] != nil {
+			line += fmt.Sprintf(" -i %v", r["iface"])
+		}
+		if r["source"] != nil {
+			line += fmt.Sprintf(" -source %v", r["source"])
+		}
 		if r["proto"] != nil {
 			line += fmt.Sprintf(" -p %v -sport %v", r["proto"], r["sport"])
 		}
@@ -531,7 +542,7 @@ func TestAVMsNetworkKeepsItsMAC(t *testing.T) {
 		g, r := guestOf("qemu", 11004, c.cfg)
 		g.mount(a)
 		d := open(t, a, c.zone)
-		p, sn, err := d.vmNet(ctx, r)
+		p, sn, err := d.vmNet(ctx, r, d.onLane(r.VMID))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}

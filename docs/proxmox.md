@@ -23,7 +23,9 @@ release refuses the line.
 | a bridge or an SDN vnet for the guests, and a VMID range nobody else uses | the zone's `bridge`, `vlan` and `vmids` options |
 | to **give the guests their addresses**: a stretch of their subnet that no DHCP gives out, as long as the VMID range | the zone's `subnet`, `first_address`, `gateway`, `resolvers` — see [Addresses and the wall](#addresses-and-the-wall) |
 | for **the wall**: the cluster's firewall **turned on** (Datacenter → Firewall → Options), and the security groups every guest is to wear | a guest's own firewall is enforced only while the cluster's is on; a group is the operator's to make (`Sys.Modify` on `/`, which no token of the product's holds). The zone's `firewall`, `firewall_groups`, `firewall_log` |
+| for **networks**: a **bridge of the cloud's own** on the zone's node — no physical port, VLAN-aware —; a **pool for the gateways** (`hangar-nets`); a range of VMIDs, a range of tags on that bridge, a block of addresses and a stretch of the lane's, all nobody else uses; and **the gateway's archive**, built once from the product's recipe ([`tools/gateway/build.sh`](../tools/gateway/build.sh)) | the zone's `net_*` options — see [Networks](#networks). Nothing is made on the cluster at a request's time: no vnet, no reload of anyone's network |
 | a user and its **privilege-separated API token** | the plugin's one credential, `user@realm!name=secret` |
+| for the networks plugin: **its own** user and token (below) | its credential: the gateways, and nothing of the machines but to read them |
 | for the volumes plugin: **its own** user and token, narrower (below), and the zone's `shelf_archive` — a container archive | its credential; a container's volume parked on no machine rests on a stopped container made from that archive — see [Volumes](#volumes) |
 | for the images plugin: **its own** user and token (below), and the base disk images its recipes start from on an `import` storage (Debian's `genericcloud` qcow2, say) | its credential; a bake imports the base into its builder — see [Images](#images) |
 | **the hook** (`hangar-hook`, a build of this repo) on a storage with content `snippets`, set as root on each VM template of the images pool and on each guest a zone keeps room for | the node's hand: it makes room when a priority guest starts, and admits every start of a machine — see [The hook](#the-hook) |
@@ -61,6 +63,27 @@ refused delete read, nothing of their power or config:
 | `/storage/<where the base disk images are>` | `Datastore.Audit` | `import-from` a disk image of content `import` asks `Datastore.AllocateSpace` **or** `Datastore.Audit` on its storage (`PVE::Storage::check_volume_access`) — read, not written |
 | `/storage/<seed storage>` | `Datastore.Allocate`, `Datastore.AllocateTemplate`, `Datastore.Audit` | the builder's first boot arrives on a seed disc, as a VM's does |
 | `/sdn/zones/<zone>/<vnet>` (with SDN) | `SDN.Use` | a builder's first boot fetches its packages |
+
+**The networks plugin's token** — its own: the gateways, in their pool;
+of the machines, which stand on which network — read, nothing else:
+
+| path | privileges | why |
+|---|---|---|
+| `/pool/<gateways pool>` | `VM.Allocate`, `VM.Audit`, `VM.Config.CPU`, `VM.Config.Disk`, `VM.Config.Memory`, `VM.Config.Network`, `VM.Config.Options`, `VM.PowerMgmt`, `Datastore.AllocateSpace`, `Datastore.Audit`, `Pool.Audit` | a gateway made (a container: its two cards, its host name — `Config.Network` —, its notes and its tag — `Config.Options`), walled (`Config.Network`), stopped and deleted, made again, and started again after that (`PowerMgmt`) |
+| `/pool/<machines pool>` | `VM.Audit`, `Pool.Audit` | which machines stand on a network: a delete is refused while one does, and no new network is given a number a machine still stands on |
+| `/storage/<disks>` | `Datastore.AllocateSpace`, `Datastore.Audit` | a gateway's root disk |
+| `/storage/<where the archives are>` | `Datastore.Audit` | the gateway's archive, read |
+| `/sdn/zones/<zone>/<vnet>` (the lane, with SDN) and `/sdn/zones/localnetwork/<the cloud's bridge>` | `SDN.Use` | a gateway's two cards. On the bridge itself the grant reaches every tag of it (read live: with a grant on one tag alone, another tag — and the bridge with no tag — were refused in those words) |
+
+**In a zone that cuts networks the machines plugin's token gains two
+things**, and no more: on `/pool/<gateways pool>`, **`VM.Audit`,
+`VM.PowerMgmt`, `Pool.Audit`** — the power of a gateway, nothing of its
+config (read live: a change to a gateway's memory refused) — because the
+start that needs a gateway is the one that starts it; and `SDN.Use` on
+`/sdn/zones/localnetwork/<the cloud's bridge>`, for a machine's card. The
+fence counts the gateways' pool as the product's own **only in a zone that
+says `net_pool`**: the same token, in a zone that cuts no networks, reads as
+reaching beyond its fence.
 
 **The wall and the addresses ask for nothing more.** A guest's firewall —
 its options, its address set, its rules — is written with
@@ -322,6 +345,126 @@ owner's own — a door between two of one's machines — are not written here.
 | the card's flag moved on a running VM and a running container: an ssh session and a ping went on across both | a live wall |
 | Debian 13's cloud image took its address from `network-config`, matched by MAC, and answered ssh 29 s after its start | a VM's address |
 
+## Networks
+
+A zone that says **`net_bridge`** cuts private networks for its machines
+(`net.private`): what the networks plugin makes, and what a machine's
+`network` names. It needs the zone's `subnet`, `gateway` and `firewall: on`.
+
+**A network is one tag of the cloud's own bridge** — a bridge with no
+physical port, VLAN-aware: a private switch on the zone's node. Two tags
+never meet, so two networks are apart because no wire joins them. **And a
+network *is* its gateway guest**: making the network makes that guest, and
+Proxmox gives it an id no other guest has. Everything else is **derived from
+that one number, never counted**:
+
+| what | derived from | with the options below |
+|---|---|---|
+| a network's number `n` | its gateway's id − the first of `net_vmids` | gateway `11201` → `n = 1` |
+| its tag on the bridge | `net_tag` + `n` | `101` |
+| its range | the `n`-th `/net_size` of `net_block` | `203.0.113.128/25` |
+| its gateway's address there | the first of its range | `203.0.113.129` |
+| its gateway's address on the lane | `net_address` + `n` | `192.0.2.201` |
+| a machine's address in it | its range's tenth, plus (its own id − the first of `vmids`) | machine `11012` → `203.0.113.150` |
+
+No allocator, nothing to keep, no race: the one thing ever allocated is a
+guest id, by Proxmox. A network's first ten addresses are the cloud's own
+(its gateway the first); so a network must hold ten plus as many addresses
+as `vmids` holds ids — a `/24` for up to 244 machines, and the driver
+refuses a zone whose numbers do not fit, in words. **One node per network**:
+the bridge has no port. **A number is never given twice**: no new network
+takes one that a machine's card still stands on, even while its gateway is
+gone.
+
+**A machine on a network** holds one card: the cloud's bridge, its
+network's tag, `firewall=1`. Its address, route and resolvers (the zone's
+own) are written at its birth as on the lane — a container's by Proxmox, a
+VM's on its seed disc. **Its wall** pins it to that exact address and lets
+in *what its own network sends*, nothing else — the operator's groups are
+the lane's, and a machine is not on it.
+
+**A gateway** is a small unprivileged container (128 MB, 1 core, a 2 GB
+disk; at rest it holds 13 MB) born from the zone's `net_archive`, with two
+cards — the lane, the network — whose addresses are Proxmox's to write. It
+does three things, its archive's own doing:
+
+- **out**: it forwards what its network sends and masquerades it — the lane
+  sees the gateway's address, never a machine's;
+- **nothing in**: no new connection from the lane reaches its network, nor
+  the gateway itself but ssh;
+- **the jump**: one user, `jump`, let in by the keys the gateway was born
+  with (the network's `key_pairs`), given **no shell, no command, no file
+  transfer, no terminal** — forwarding only, outward only — and the gateway
+  itself opens connections toward its own network alone, which is what makes
+  a jump reach that network and nothing else (sshd's `PermitOpen` takes no
+  range):
+
+  ```sh
+  ssh -J jump@192.0.2.201 debian@203.0.113.150     # the network's `jump`, the machine's `address`
+  ```
+
+On Proxmox it stands behind a wall like every guest: its lane card pinned
+to its one address; in from the lane, **what the operator's groups let**
+(`firewall_groups`: who may knock on the jump — a gateway is the one guest
+of a network that wears them); in from its network, what its network sends.
+
+**It keeps nothing, and is never patched.** What it was born from is in its
+notes (`hangar gateway <id> <archive> <keys>`); at every look, one born from
+another archive than the zone's, or with other keys than its network names,
+**is made again at the same id** — stopped, deleted, created, walled,
+started again if a machine of its network runs: its machines' way out is
+cut for that long, **23 to 24 s** on the bench. One that is gone is made again
+where it was.
+
+**It runs only while a machine of its network runs** — a node with nothing
+running can sleep: started before its network's first machine starts (a
+start then takes about four seconds), stopped after its last one stops,
+put back at every look (a hand, a node that stopped its machines alone).
+That is the machines plugin's token's doing, in one process, so one lock
+holds the decision: no gateway is put to rest while a machine of its network
+is starting.
+
+**What it costs.** A network's birth pays the wall's wait once (18 s on the
+bench), so that none of its gateway's starts has to; a person's **first
+machine** is accepted once their default network is made (18 s later, on
+the bench) and ran 40 s after it was asked.
+
+### The gateway's archive
+
+[`tools/gateway/build.sh`](../tools/gateway/build.sh) makes it from
+Proxmox's own Debian 13 container archive, as root on a node (15 s): nothing
+is fetched and nothing is run inside — it is unpacked, a handful of files
+are written (the `jump` user, `sshd_config`, `nftables.conf`, forwarding on,
+what a gateway has no use for off), and it is packed again.
+
+```sh
+sh tools/gateway/build.sh /var/lib/vz/template/cache/debian-13-standard_13.6-1_amd64.tar.zst \
+   /var/lib/vz/template/cache/hangar-gateway-$(sh tools/gateway/build.sh --version).tar.zst
+```
+
+The product's image carries the recipe of its own version at
+`/gateway-build.sh` (as it carries the node's hook), for an operator who
+holds the image and not the repository.
+
+Name it after the recipe's version: a zone whose `net_archive` names
+another file makes every gateway again from it, each at the brain's next
+look. What a gateway refused is counted on it (`nft list ruleset`: in,
+through, a jump elsewhere), and who jumped is in its ssh log, by key
+(`LogLevel VERBOSE`) — in a guest that keeps nothing: read it from the node.
+
+**Read on the bench**, through the plugins' own fenced tokens
+(`TestBenchTwoNetworksAndAJump`, `TestBenchANetworkThroughTheAPI`): two
+networks never saw each other, and one saw itself; a machine fetched a page
+of the web through its gateway, and the lane saw the gateway's address
+only; the lane's own node, given a route to the network, reached nothing —
+the gateway's wall logged what it refused; the owner's key jumped to each
+machine of its network, which saw the gateway's address — a container, and
+a VM, told its address on its first-boot disc and answering the jump 33 s
+after its create began; another key was denied; the owner's key got no shell, no command, no file and no root on
+the gateway, and opened through it neither the lane's node, nor the other
+gateway, nor a machine of the other network, nor the gateway itself, nor the
+web.
+
 ## Idleness and hours
 
 Both are read from the node itself, with the `VM.Audit` the token already
@@ -569,6 +712,13 @@ both before its wake was even called.
 
 ## Zone options
 
+**A zone's options are judged before its engine is asked anything**:
+`hangar check`, and a brain's start, refuse a file whose zone could never
+open — an address past its range, gateways among the guests', a group that
+is no name — in the driver's own words, with no network at all. **An option
+the driver does not know is refused too**: a word mistyped would be a lever
+left off, and nobody told.
+
 ```yaml
 zones:
   - name: lab
@@ -596,6 +746,16 @@ zones:
                                    #   one kind of node may say its vendor's model)
       shutdown_timeout: "60"       # seconds a guest is asked before it is made to stop
       shelf_archive: local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst   # container shelves (volumes)
+      net_bridge: hgnets           # optional: networks of the cloud's own (it needs subnet, gateway and
+                                   #   firewall: on) — a bridge with no port, VLAN-aware, and with it:
+      net_tag: "100"               #   the first network's tag there; the n-th's is that + n
+      net_block: 203.0.113.0/24    #   the range networks are cut from
+      net_size: "25"               #   a network's own length (default 24): ten addresses of the cloud's own,
+                                   #   then one per id of vmids
+      net_vmids: 11200-11201       #   their gateways' ids: a network's number is its gateway's less the first
+      net_pool: hangar-nets        #   the gateways' own pool
+      net_address: 192.0.2.200     #   the first gateway's address on the lane; the n-th's is that + n
+      net_archive: local:vztmpl/hangar-gateway-1.tar.zst   # what a gateway is born from (tools/gateway/build.sh)
       ca_file: /etc/hangar/pve-root-ca.pem   # or fingerprint: <sha256 of the API's certificate>
     room:
       memory_gb: 62
@@ -618,6 +778,11 @@ plugins:
     zones: [lab]
     credentials:
       lab: {file: /run/secrets/pve-volumes-token}  # its own, narrower token
+  - name: networks
+    builtin: networks
+    zones: [lab]
+    credentials:
+      lab: {file: /run/secrets/pve-networks-token} # its own: the gateways, and the machines read
   - name: images
     builtin: images
     zones: [lab]
@@ -660,6 +825,13 @@ wherever its tests run — and makes one security group, `hangar-floor` (the
 node, on ssh: how a test enters a walled guest). They open the bench as a
 zone that gives addresses and keeps a wall; the other tests open it as one
 that does neither.
+
+The networks' tests need a bridge of the cloud's own, a pool for the
+gateways and two tokens more — the networks plugin's, and the machines
+plugin's as a zone that cuts networks gives it (the bench's first machines
+token stays as it was: in a zone with no networks, a right on another pool
+is a reach beyond the fence) — and the gateway's archive, which `bench.sh`
+and `shards.sh` build on the bench from the recipe.
 
 `-p 1`: one package at a time — both packages' tests drive the bench's one
 priority guest (VM 100), and go test runs packages side by side unless told
