@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 — 2026-10-04
 
 - **La carte et le mur — a machine is given its address, and is born behind
   a wall.** Two things a Proxmox zone may now say, each off unless said
