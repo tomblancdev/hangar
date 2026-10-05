@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/tomblancdev/hangar/internal/identity"
+	"github.com/tomblancdev/hangar/internal/testoidc"
 )
 
 const terminalConfig = `
@@ -476,6 +477,18 @@ func TestAStreamEndsWithItsCredential(t *testing.T) {
 		t.Fatal("a token handed to a stream is in the brain's log")
 	}
 	_ = thirdID
+
+	// a person taken out of every group: the next token the provider gives
+	// them says so, and the stream held on it is closed
+	tm, _ = s.open(third, machine, "terminal", "")
+	tm.until("$ ")
+	out, _ := json.Marshal(map[string]string{"token": s.iss.Token(t, testoidc.Claims{Subject: "alice", Name: "alice", Audience: "hangar"})})
+	if err := tm.conn.Write(ctx, websocket.MessageText, out); err != nil {
+		t.Fatal(err)
+	}
+	if ce := tm.ended(); ce.Code != StreamEnded || ce.Reason != "its opener is in no tier here any more" {
+		t.Fatalf("a terminal whose person left every group: %d %q", ce.Code, ce.Reason)
+	}
 
 	// the brain's own stop: every stream ended, with the reason, its closing written
 	tm, _ = s.open(third, machine, "terminal", "")
