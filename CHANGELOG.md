@@ -1,5 +1,87 @@
 # Changelog
 
+## v0.6.0 — 2026-10-05
+
+- **Le terminal — a machine entered from the page.** A machine's own screen
+  and keyboard, in the console: no key, no client, nothing installed in the
+  machine or on anyone's computer
+  ([docs/console.md](docs/console.md#a-machines-terminal),
+  [docs/proxmox.md](docs/proxmox.md#a-machines-terminal),
+  [ARCHITECTURE.md](ARCHITECTURE.md) §4 « Streams »). **A VM that names no
+  key pair is born with its terminal open**: its owner opens it and lands in
+  a shell as the machine's user, nothing asked — the gateway and its second
+  factor already said who they are. One that names a key asks a login,
+  unless its form says `terminal: open`; it is set at a machine's birth
+  (`terminal`, `open` or `login`). **Its owner alone**: an operator sees a
+  machine, stops it, deletes it, and is refused its terminal — as is anyone
+  it is shared with, and a token that only reads. **One place at a time**:
+  opened again on another tab or a phone, it moves there and the first is
+  told. **Held on a credential, and ended with it**: what its opening asked
+  is asked again every half minute — a token revoked, a person out of every
+  group, a sign-in the provider no longer renews, each closes it, with the
+  reason. **Audited at both ends, never in between**: one line when it
+  opens, one when it closes — how long, how many bytes each way, why — and
+  not a word of what passed.
+  **In the page** the `terminal` key sits among a machine's keys on its
+  owner's page and unfolds a screen under them; *Full screen* is the same
+  screen alone, at an address of its own, and *Leave full screen* comes back
+  with it still shown; a notice over the screen says why it ended, in the
+  brain's words; a phone gets the keys its keyboard lacks (Esc, Tab, Ctrl,
+  the arrows). The screen is **xterm.js, vendored** (`tools/terminal/`,
+  checked byte for byte by CI as the editor is) — and **the page's policy
+  is as it was**: the three `<style>` the library writes become sheets the
+  document adopts; the policy names one thing more, the console's own
+  socket.
+  **In the contract**, the first call that is not a request and its answer:
+  **a stream** — `Open`, bytes both ways for as long as both ends hold it. A
+  type declares its streams beside its actions; the API serves one as a
+  WebSocket, `GET /v1/resources/{id}/streams/{stream}`, with the same bearer
+  token as everything else; a refusal is an ordinary problem document before
+  anything is switched, an end the socket's last words (4000 with the
+  reason, 4001 taken elsewhere); a client whose token is short-lived hands
+  the next one over the socket (`{"token":"…"}`). The rules — its owner
+  alone, one at a time, held on its credential, audited at both ends — hold
+  for any plugin's stream; the toy plugin's `echo` is the one to copy. The console passes a stream on as
+  it passes every call, with the person's own token; it takes a socket only
+  from its own pages, says a refusal inside it, and ends what is open on a
+  sign-in when that sign-in ends.
+  **On Proxmox VE** a terminal is a VM's serial port, through the node's own
+  terminal proxy — and **one privilege more in the machines pool's role,
+  the operator's to give: `VM.Console`**. Whoever takes the brain can then
+  type in every running machine whose terminal was born open; a zone whose
+  role lacks it offers no terminal, and nothing else changes (the new flag
+  is **`guest.console`**, advertised only where the token holds the
+  privilege on its pool). A machine born open is handed **one step at its
+  first boot, beside its owner's user data and never in it**: its port then
+  waits for a terminal at the other end, asks it its size — a serial port
+  carries none —, and signs the machine's user in. No shell sits open on a
+  port nobody holds, and the one a person gets fits their window, with its
+  colours. The step is that machine's alone: an image saved from it does not
+  open the machines born from it. A container has no terminal.
+  **Proved on a real Proxmox VE**, through the plugin's own fenced token
+  (`TestBenchAVMsConsole`, `TestBenchATerminalInThePage`): a VM made with no
+  key from the page and entered 8 to 16 s after its terminal was opened (five
+  runs) — as its user, with sudo, at the window's size; a shell on its port
+  20 to 28 s after its create, its owner's own user data run beside the
+  step; `exit` signed in again at the size the terminal had by then; a VM born with a key asked a
+  login; another person found neither the machine nor its terminal, an
+  operator the machine and no way in; opened again on a phone it moved
+  there and the desk was told, then took it back; a machine stopped under
+  its terminal ended it with the reason, which Proxmox itself does not say,
+  and one rebooted from its page came back on the same screen, signed in
+  again, in a new shell; nothing left running on the node; the audit held the opening and the closing, and
+  nothing typed was in the brain's log.
+  **To upgrade:** nothing changes until the operator adds `VM.Console` to
+  the machines pool's role and restarts the brain. Machines made before keep
+  the port they were born with (a login asked); `apply` leaves a machine
+  whose file names no `terminal` where it is. A plugin built against the
+  earlier SDK is unchanged: a stream is a call it does not answer.
+  **Named, not hidden:** root on the engine's node can open any guest's
+  console — that is the operator's own machine; an open terminal is not what
+  `idle_after` counts; a window resized after the sign-in is taken at the
+  next one (`exit`); with no canvas to draw on, a 24-bit colour reads as the
+  default colour; the step is for images that run cloud-init under systemd.
+
 ## v0.5.0 — 2026-10-04
 
 - **Les réseaux — a network of one's own.** A new plugin, **`networks`**, and
