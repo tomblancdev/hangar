@@ -1,9 +1,13 @@
 package console
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
 	"io"
+	"net"
 	"net/http"
+	"sync"
 )
 
 // InProcess reaches a brain that is this very process: its handler, called as
@@ -29,6 +33,9 @@ func (t inProcess) RoundTrip(req *http.Request) (*http.Response, error) {
 	req.RequestURI = req.URL.RequestURI()
 	if req.RemoteAddr == "" {
 		req.RemoteAddr = "console"
+	}
+	if req.Header.Get("Upgrade") != "" {
+		return t.upgrade(req)
 	}
 	rec := &answer{header: http.Header{}, code: http.StatusOK}
 	t.h.ServeHTTP(rec, req)
@@ -58,4 +65,51 @@ func (a *answer) WriteHeader(code int) {
 func (a *answer) Write(p []byte) (int, error) {
 	a.wrote = true
 	return a.body.Write(p)
+}
+
+// upgrade is a call that asks to switch protocols (a stream's WebSocket):
+// over the network the handler would take the connection over; here it is
+// handed one end of a pipe, and the caller the other, as the answer's body.
+// A handler that answers without switching is an ordinary answer.
+func (t inProcess) upgrade(req *http.Request) (*http.Response, error) {
+	near, far := net.Pipe()
+	rec := &switching{answer: answer{header: http.Header{}, code: http.StatusOK}, conn: far, taken: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t.h.ServeHTTP(rec, req)
+	}()
+	select {
+	case <-rec.taken:
+		return &http.Response{
+			StatusCode: http.StatusSwitchingProtocols, Status: "101 Switching Protocols",
+			Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+			Header: rec.header, Body: near, ContentLength: -1, Request: req,
+		}, nil
+	case <-done:
+		near.Close()
+		far.Close()
+		return &http.Response{
+			StatusCode: rec.code, Status: http.StatusText(rec.code),
+			Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+			Header: rec.header, Body: io.NopCloser(&rec.body), ContentLength: int64(rec.body.Len()), Request: req,
+		}, nil
+	}
+}
+
+// switching is an answer whose handler may take the connection over.
+type switching struct {
+	answer
+	conn  net.Conn
+	once  sync.Once
+	taken chan struct{}
+}
+
+func (s *switching) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	took := false
+	s.once.Do(func() { took = true; close(s.taken) })
+	if !took {
+		return nil, nil, errors.New("the connection was taken over already")
+	}
+	return s.conn, bufio.NewReadWriter(bufio.NewReader(s.conn), bufio.NewWriter(s.conn)), nil
 }

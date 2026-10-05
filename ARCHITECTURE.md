@@ -136,7 +136,11 @@ token**: the console decides nothing, and the audit names the person.
 **It knows the brain through its API alone** — so it runs inside `hangar
 serve`, or as a process of its own in front of a brain (`hangar console
 --brain URL`) that holds none of the plugins' keys: the one to put on a
-public door. *(Designed: a machine's terminal.)*
+public door. **A machine's terminal is in the page** (§4 « Streams »;
+[docs/console.md](docs/console.md#a-machines-terminal)): a key among its
+owner's, a screen under them, the whole window when wanted — on a WebSocket
+the console passes on to the brain as it passes every call, with the person's
+own token.
 
 ## 3. The core — what never changes when a service is added **(built)**
 
@@ -206,6 +210,7 @@ the one to copy). A plugin declares, and only declares:
 | **resource types**, each with an ID prefix and a JSON Schema (2020-12) | validates every request against the schema before the plugin sees it (offline — a `$ref` elsewhere is refused, never fetched); serves it to the doors |
 | **limit dimensions**: *quantities* (summed: `machines.memory_gb`) and *choices* (a value from a set: `machines.kind`) | counts and checks them per owner and tier; a plan naming an undeclared one is refused |
 | **actions** per type, each with a params schema, whether it **changes usage** (planned and admitted), and the **capabilities** it needs | exposes them in the API; offers each only in the zones whose driver has what it needs |
+| **streams** per type — something of a resource held open, bytes both ways (a machine's terminal) —, each with the **capabilities** it needs | opens one for the resource's **owner alone**, one at a time, audited at both ends; offers each only in the zones whose driver has what it needs |
 | **what it requires of a driver** (capability flags, §5) | refuses to use it on a zone whose driver lacks them, and says so |
 | **its credential** — a description of the one secret it needs per zone | hands it that secret alone, per zone, in `Configure`; no plugin can read another's |
 | **events** | writes them to the audit |
@@ -214,7 +219,8 @@ and **acts** when asked: `Configure` (open a driver per zone, report its
 capabilities) · `Plan` (what a create or an action would hold — no side
 effects) · `PlanChange` (the steps that bring a resource to another spec, or
 the fields set at its birth — no side effects; optional) · `Create`,
-`Delete`, `Act` · `Reconcile` (desired against actual).
+`Delete`, `Act` · `Reconcile` (desired against actual) · `Open` (a stream,
+held: optional).
 
 **Meters.** A plugin that declares a meter says three things: in its plan,
 **which meters the request would leave the resource drawing on**; with every
@@ -347,6 +353,46 @@ that sets the share list carries the same mark (the core reads it on the
 type's schema only): a door then offers the person's groups instead of a
 free text. **(built)**
 
+**Streams.** One call of the contract is not a request and its answer:
+`Open` carries bytes both ways for as long as both ends hold it — a
+machine's terminal. A type declares its streams beside its actions (a name,
+the capabilities it needs); the API serves one as a WebSocket,
+`GET /v1/resources/{id}/streams/{stream}`, asked with the same bearer token
+as everything else. Four rules are the core's and the API's, whatever the
+plugin:
+
+- **Its owner alone.** A stream reaches *inside* a resource. An operator
+  sees a machine, stops it, deletes it — and is refused its stream (403
+  `owner`), as is someone it is shared with; a token that only reads is
+  refused. An operator's reach stops at a machine's door, in the API. (Root
+  on the engine's own node can always open a guest's console: said, not
+  hidden — §8.)
+- **One at a time** per resource and stream. A second opening ends the
+  first, which is told (« opened elsewhere »): a tab left open on another
+  screen never holds a machine's terminal against its owner.
+- **Held on a credential, and ended with it.** What the opening asked is
+  asked again every half minute while it is open — the same token, still
+  good, still its opener's, its person still in a tier: a revoked API token,
+  a person taken out of every group, a provider's token that ended, each
+  closes what it had opened, with the reason. A client whose token is
+  short-lived hands the next one before that (`{"token":"…"}`), which must
+  be the same person's; the console does, for a sign-in it keeps renewed —
+  and a sign-in the provider no longer renews ends, its streams with it.
+- **Audited at both ends, never in between.** One line when it opens — who,
+  which resource, which stream —, one when it closes: how long, how many
+  bytes each way, why it ended. Not a byte of what passed is the core's to
+  keep, and none is written. The brain's own stop ends every stream first,
+  each closing written.
+
+The plugin carries it to its engine, refuses what cannot be opened with a
+status as everywhere (`FAILED_PRECONDITION`: a machine that is stopped) and
+ends it when what it reaches is gone, with the reason in words (« the
+machine was stopped ») — and keeps it through what only looks like an end: a
+machine rebooted under its terminal is opened again on the same stream, and
+its owner watches it come back. A refusal is an ordinary problem document, before
+anything is switched; an end is the socket's last words. The toy plugin's
+`echo` is the stream to copy. **(built)**
+
 **A plugin sees the room a resource holds** (`Resource.room`): a resource
 whose room changes on its own — a bake borrows its builder's memory until
 its image is made, then takes none — returns its spec and new room from
@@ -398,6 +444,7 @@ advertise the documented flags.
 | `guest.suspend_to_disk` | VMs without a passed-through device | yes | hibernate | yes |
 | `guest.tags` | yes | yes (config keys) | yes | yes |
 | `guest.activity` (the engine's own history of a guest's CPU and network) | yes (a sample a minute, kept a day) | yes (metrics) | yes (CloudWatch) | yes |
+| `guest.console` (a guest's own console — its screen and keyboard — carried to whoever the credential lets open it, with nothing running in the guest and none of its network used) | where the token holds `VM.Console` on its pool (a VM's serial port, through the node's own terminal proxy) | yes (the instance's console) | yes (the EC2 serial console) | yes (a toy of a shell) |
 | `hook.pre_start` | yes (hookscript; **a failing one aborts the start**) | no (the core admits instead) | no | yes |
 | `gpu.shared` / `gpu.passthrough` | device nodes / PCI mapping | yes / yes | instance types | — |
 | `fence.pool` (a credential limited to the product's guests) | yes (a pool + a role) | yes (a project) | yes (IAM + tags) | yes |
@@ -432,6 +479,21 @@ the history cannot say (no reading yet, a hole, a history no longer written)
 is never quiet, **and a guest is never quiet for longer than it has run** —
 an engine may keep a history by a number it gives to the next guest. What it *receives* is not counted: a network's broadcasts
 reach every guest, whatever it does.
+**The consoles facet** (`driver.Consoles`, `guest.console`) opens a running
+guest's console and holds it: what the guest's console says, what is typed,
+a window's size. It is the way into a guest that lets no key in. Two things
+are the driver's to keep, because engines do not: **a console ends with its
+guest** — stopped, or running anew as another process: an engine does not
+always say either, so the driver looks —, and whoever holds the driver keeps
+**one console per guest** (a serial port has one other end: the one who
+holds it lets go before another is asked for). A guest born **signed in** (`GuestSpec.SignedIn`, where
+`Traits` say its kind has a console and boots user data) is handed one step
+of the cloud's own at its first boot, **beside its owner's user data and
+never in it** (`driver.FirstBoot`: a multipart, the owner's part as they
+wrote it): its serial ports' getty then waits for a terminal at the other
+end, asks it its size — a serial port carries none —, and signs the guest's
+own user in, nothing asked. No shell sits open on a port nobody holds, and
+the one a person gets fits their window.
 **The networks facet** (`driver.Networks`, `net.private`: create, read, tend,
 delete — idempotent on the core's id) makes a private network: a range its
 engine gives it, a gateway that forwards what its guests send, lets nothing
@@ -476,6 +538,11 @@ zone's `cpu_model`, `x86-64-v2-AES` unless said, or `host` — with Proxmox's
 hook, `hangar-hook`, §6), `guest.activity` (the node's own statistics of each
 guest, one sample a minute kept for a day, read with the `VM.Audit` the token
 already has — [docs/proxmox.md](docs/proxmox.md#idleness-and-hours)),
+`guest.console` where the token holds `VM.Console` on its pool (**the
+consoles facet**: a VM's serial port — the one every template here is made
+with — through Proxmox's own terminal proxy, the call its web interface
+makes; a container has none —
+[docs/proxmox.md](docs/proxmox.md#a-machines-terminal)),
 `net.firewall` where the zone turned its wall on (**the walls facet**,
 `driver.Walls`: a guest given its address at its birth — derived from its
 own VMID, never counted — and born behind Proxmox's firewall, alone, before
@@ -742,7 +809,7 @@ nodes.)*
 
 | plugin | resources | actions | limit dimensions (per tier) | driver needs |
 |---|---|---|---|---|
-| **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **`cpu`** (host), **`virtualization`**, **`cpu_weight`**, **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · set_idle_after · set_cpu_weight · keep_awake (for a time, or until let_sleep) · let_sleep · console (serial / terminal) · delete | count · vCPU · memory GB · **vCPU-hours a month** (a meter) · kinds allowed · classes allowed · **a VM's host processor** (`machines.cpu`) · **VMs inside a VM** (`machines.virtualization`) · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `cpu.*` for a processor and a weight, `guest.activity` for `idle_after`, `hook.pre_start` or core admission; where the zone keeps one (`net.firewall`) a machine is born behind its wall, at the address its zone gave it — both on its page, neither asked; where it cuts networks (`net.private`) a machine stands on the one it names (`network`), or on its owner's default |
+| **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **`cpu`** (host), **`virtualization`**, **`cpu_weight`**, **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **`terminal`** (how its terminal greets, for its life: `open` — its user signed in, nothing asked — or `login`; a VM that names no key pair is born open), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · set_idle_after · set_cpu_weight · keep_awake (for a time, or until let_sleep) · let_sleep · delete; **a stream, `terminal`** (its own screen and keyboard: its owner's alone) | count · vCPU · memory GB · **vCPU-hours a month** (a meter) · kinds allowed · classes allowed · **a VM's host processor** (`machines.cpu`) · **VMs inside a VM** (`machines.virtualization`) · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `cpu.*` for a processor and a weight, `guest.activity` for `idle_after`, `hook.pre_start` or core admission; where the zone keeps one (`net.firewall`) a machine is born behind its wall, at the address its zone gave it — both on its page, neither asked; where it cuts networks (`net.private`) a machine stands on the one it names (`network`), or on its owner's default |
 | **volumes** | **`vol-…`**: size, content (block / filesystem), backup yes/no, the machine it is attached to and its path there, tags | create · attach · detach · **move** (to another machine of the same owner) · resize (grow) · set_backup · delete | count · total GB · **backed-up GB** | `volume.move_between_guests`, `fence.pool`; where the engine keeps no disk without a guest, an unattached volume parks on a stopped **« shelf » guest** of its owner |
 | **networks** | **`net-…`**: the key pairs that may jump into it (`key_pairs`), whom it is shared with (`shared_with`); observed: its range, its gateway, where its keys jump through (`jump`), whether its gateway is up | create · set_key_pairs · share · delete | `networks.count` · choice `networks.visibility` (private, shared, public) | `net.private`, `fence.pool` — Proxmox VE: a tag of the cloud's own bridge, a gateway container per network |
 | **images** | **`img-…`**: name, family, kind, size, whom it is shared with (`shared_with`: groups, `*` = everyone), retired, the recipe it came from (`from`) or the machine it was saved from; observed: `pending` → `available` \| `failed` (its words), `waiting` while the zone's room is held, its engine form per kind | **bake** (create from a `recipe`) · **save** (create from a stopped `machine`) · share · retire · rebake · delete | `images.count` · `images.size_gb` (one's own) · choices `images.source` (recipe, machine) and `images.visibility` (private, shared, public) | the images facet (`driver.Images`): a bake moved forward call by call, a save, a delete refused under linked clones — Proxmox VE: VM templates in the images pool, a builder VM per bake |
@@ -795,9 +862,9 @@ the audit says so.
 |---|---|---|
 | **1. The door** | OIDC sign-in (the operator's provider and its MFA); API tokens scoped (read / write) and expiring, never able to make tokens; the brain behind the operator's gateway (it speaks plain HTTP; TLS is the gateway's). **In a browser:** the provider's tokens stay with the console's server, in memory; the page holds a cookie no script reads (`HttpOnly`, `SameSite=Strict`, `Secure` behind TLS), what changes something carries a second token in a header and is refused from another site's page, and the page loads nothing from elsewhere and runs no inline code. **On a public door:** the console as a process of its own, holding no plugin's key, the brain behind it | **built** — each guard broken on purpose and caught by a test |
 | **2. The core and its plugins** | limits per tier; every call audited; **each plugin its own process, started with an empty environment, with its own credential and nothing else**; mutual TLS on its socket; a program pinned by its SHA-256; the API never returns an engine credential | **built** — the empty environment and the one-credential rule are proved by tests that run a probe plugin and read what it received |
-| **3. The engine fence** | each driver's credential fenced to the product's own guests (`fence.pool`): on Proxmox a pool and a role — it cannot touch any other guest, and sees only the power of those a zone's reservations name | **built** for Proxmox: the driver reads the token's own permissions and advertises `fence.pool` only when nothing outside its pools is reachable but `VM.Audit` on a watched guest (root's token, the control, is refused with 416 reasons); the machines plugin requires it, so an unfenced zone is not one it acts on. The hook on the node needs no hypervisor credential at all: it is the node's own root, and holds only a `room` token toward the brain |
+| **3. The engine fence** | each driver's credential fenced to the product's own guests (`fence.pool`): on Proxmox a pool and a role — it cannot touch any other guest, and sees only the power of those a zone's reservations name | **built** for Proxmox: the driver reads the token's own permissions and advertises `fence.pool` only when nothing outside its pools is reachable but `VM.Audit` on a watched guest (root's token, the control, is refused with 416 reasons); the machines plugin requires it, so an unfenced zone is not one it acts on. The hook on the node needs no hypervisor credential at all: it is the node's own root, and holds only a `room` token toward the brain. **A terminal is one privilege more in that role, and the operator's to give** (`VM.Console`, on the pool alone): whoever takes the brain can then type in every running machine whose terminal was born open — as that key already stops, resizes and deletes them, and wrote their first boot. A zone whose role lacks it offers no terminal, and nothing else changes |
 | **4. The network** | a zone's network is the operator's: the product assumes a lane where machines reach only what the operator allows; **where the zone keeps a wall (`net.firewall`) each machine is alone on it** — born behind the engine's firewall, nothing in but what the operator's own groups let, sending only as the address it was given | **built** for Proxmox, as the zone's own switch ([docs/proxmox.md](docs/proxmox.md#addresses-and-the-wall)): proved on a bench — a neighbour pinging from before a machine's birth never answered, a machine sending as the gateway dropped on its own card. **And networks of one's own (`net.private`)**: a machine stands on its owner's private network and nowhere else — two networks never saw each other on the bench, one saw itself; a machine went out to the web through its gateway and the lane saw the gateway's address only; nothing came in through it, even from a node given a route; its owner's key jumped through to the network and to nothing else (the lane, the other network, the gateway itself, the web: each refused), got no shell, and no other key passed ([docs/proxmox.md](docs/proxmox.md#networks)) |
-| **5. The machine** | untrusted users get **VMs** (their own kernel); containers are for trusted operators | designed (a tier's `kind` choice limit already enforces it) |
+| **5. The machine** | untrusted users get **VMs** (their own kernel); containers are for trusted operators. **Into a machine: its owner, and nobody through the cloud but them** — its terminal is refused to an operator and to anyone it is shared with, in the API; what passes is never kept. Root on the engine's node can open any guest's console: that is the operator's own machine, and it is said | a tier's `kind` choice limit enforces the first; **built** for the terminal — proved on a bench in a real browser: another person and an operator refused, the audit holding the opening and the closing and nothing typed |
 
 **What it cannot promise:** a hypervisor flaw lets a VM reach its host — so
 **untrusted users belong on hosts that run nothing else of value**; the
@@ -813,6 +880,10 @@ of the engines'.
 | A control-plane product with its own database; what people create is its data, never a line in somebody's git | users must never write the operator's infrastructure repository |
 | Drivers with capability flags | the engine is a choice; a plugin is written once |
 | Plugins in their own processes, each with its own credential; the doors generated from their schemas | a new service costs no core change; a flawed one harms no other |
+| The way into a machine that names no key is **its own console** — its serial port, opened by the machines plugin with its own key and carried to the page —, the person signed in as the machine's user. Set aside: a password shown once (one more thing to keep; lost is a machine made again); a private key held by the brain (a key pair is imported, never generated); an agent in the machine that calls home (a machine never reaches the infra); ssh spoken by the page with a key kept in a browser | « without any conf »: the gateway and its second factor already said who they are, and nothing is installed anywhere. Its cost is one privilege on the plugin's key, said in §8 |
+| A stream is its **owner's alone**, by the core's rule, with no flag a plugin could set otherwise | what reaches inside a resource is not an operator's: the audit then never has to be read to know who could have typed |
+| A machine's port signs nobody in until **a terminal is there to say its size** | a shell started at boot believes 80 by 24 whatever window opens on it later (read on a bench: a machine left alone forty seconds, then opened, took its terminal's 132 by 41; one let in on Enter, by a client that answers nothing, kept the port's 80 by 24) — and no shell sits open on a port nobody holds |
+| The terminal's library (xterm.js) is **vendored and the page's policy left as it is**: the three `<style>` it writes become sheets the document adopts | the alternative was `style-src 'unsafe-inline'` for the whole console (read in a browser: under that policy nine writes blocked and the screen unstyled; with the adopted sheets one is left — a 24-bit colour's, where the screen is not drawn on a canvas —, and that text takes the default colour) |
 | `POST /v1/resources` with the type in the body (not `/v1/{type}`) | one collection, listed and filtered the same way it is created in; the type is data the catalogue serves |
 | One binary that runs its built-in plugins as separate processes | one image, one build — and the walls between plugins unchanged |
 | API tokens made on the brain's host by `hangar token create` | a first operator can start without an identity provider, and a lost provider is not a lost brain |

@@ -6,6 +6,11 @@
 // another plugin's credential, and it never decides who may ask: identity,
 // tiers, limits, the registry and the audit belong to the core.
 //
+// One call is not a request and its answer: Open carries bytes both ways for
+// as long as both ends hold it (a machine's terminal). Who may open one is
+// the core's to say, like everything else: a stream reaches INSIDE a
+// resource, so it is its owner's alone.
+//
 // Values that are JSON documents travel as bytes holding JSON (UTF-8): specs,
 // params, observed state, schemas. A JSON number stays a number that way,
 // which a google.protobuf.Struct would turn into a double.
@@ -56,6 +61,7 @@ const (
 	PluginService_Act_FullMethodName        = "/hangar.plugin.v1.PluginService/Act"
 	PluginService_Reconcile_FullMethodName  = "/hangar.plugin.v1.PluginService/Reconcile"
 	PluginService_Survey_FullMethodName     = "/hangar.plugin.v1.PluginService/Survey"
+	PluginService_Open_FullMethodName       = "/hangar.plugin.v1.PluginService/Open"
 )
 
 // PluginServiceClient is the client API for PluginService service.
@@ -85,6 +91,15 @@ type PluginServiceClient interface {
 	// hold the core may not have placed, and whether the zone is awake. A
 	// plugin whose resources take no room leaves it unimplemented.
 	Survey(ctx context.Context, in *SurveyRequest, opts ...grpc.CallOption) (*SurveyResponse, error)
+	// One of a resource's streams, held open: the first message in says which
+	// (StreamOpen), the first out that it is open (StreamOpened); then bytes
+	// both ways until either end lets go. A refusal is a gRPC status, as
+	// everywhere (rule 4): FAILED_PRECONDITION for a machine that is stopped.
+	// The plugin ends the stream when what it reaches is gone (StreamClosed
+	// says why, in words a person reads). Nothing of what passes is the
+	// core's to keep: it counts the bytes, and writes none. A plugin whose
+	// types declare no stream leaves it unimplemented.
+	Open(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[OpenRequest, OpenResponse], error)
 }
 
 type pluginServiceClient struct {
@@ -185,6 +200,19 @@ func (c *pluginServiceClient) Survey(ctx context.Context, in *SurveyRequest, opt
 	return out, nil
 }
 
+func (c *pluginServiceClient) Open(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[OpenRequest, OpenResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &PluginService_ServiceDesc.Streams[0], PluginService_Open_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[OpenRequest, OpenResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type PluginService_OpenClient = grpc.BidiStreamingClient[OpenRequest, OpenResponse]
+
 // PluginServiceServer is the server API for PluginService service.
 // All implementations must embed UnimplementedPluginServiceServer
 // for forward compatibility.
@@ -212,6 +240,15 @@ type PluginServiceServer interface {
 	// hold the core may not have placed, and whether the zone is awake. A
 	// plugin whose resources take no room leaves it unimplemented.
 	Survey(context.Context, *SurveyRequest) (*SurveyResponse, error)
+	// One of a resource's streams, held open: the first message in says which
+	// (StreamOpen), the first out that it is open (StreamOpened); then bytes
+	// both ways until either end lets go. A refusal is a gRPC status, as
+	// everywhere (rule 4): FAILED_PRECONDITION for a machine that is stopped.
+	// The plugin ends the stream when what it reaches is gone (StreamClosed
+	// says why, in words a person reads). Nothing of what passes is the
+	// core's to keep: it counts the bytes, and writes none. A plugin whose
+	// types declare no stream leaves it unimplemented.
+	Open(grpc.BidiStreamingServer[OpenRequest, OpenResponse]) error
 	mustEmbedUnimplementedPluginServiceServer()
 }
 
@@ -248,6 +285,9 @@ func (UnimplementedPluginServiceServer) Reconcile(context.Context, *ReconcileReq
 }
 func (UnimplementedPluginServiceServer) Survey(context.Context, *SurveyRequest) (*SurveyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Survey not implemented")
+}
+func (UnimplementedPluginServiceServer) Open(grpc.BidiStreamingServer[OpenRequest, OpenResponse]) error {
+	return status.Error(codes.Unimplemented, "method Open not implemented")
 }
 func (UnimplementedPluginServiceServer) mustEmbedUnimplementedPluginServiceServer() {}
 func (UnimplementedPluginServiceServer) testEmbeddedByValue()                       {}
@@ -432,6 +472,13 @@ func _PluginService_Survey_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PluginService_Open_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(PluginServiceServer).Open(&grpc.GenericServerStream[OpenRequest, OpenResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type PluginService_OpenServer = grpc.BidiStreamingServer[OpenRequest, OpenResponse]
+
 // PluginService_ServiceDesc is the grpc.ServiceDesc for PluginService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -476,6 +523,13 @@ var PluginService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _PluginService_Survey_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Open",
+			Handler:       _PluginService_Open_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "hangar/plugin/v1/plugin.proto",
 }

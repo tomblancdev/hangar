@@ -58,6 +58,15 @@ jobs:
       - uses: actions/checkout@v4
       - run: sh tools/editor/build.sh --check
 
+  # …and the second — a machine's terminal — is what tools/terminal's lock
+  # builds, byte for byte.
+  terminal:
+    needs: [no-environment]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh tools/terminal/build.sh --check
+
   # What the image carries beside the binary — the certificate authorities it
   # verifies https with — asked of the binary inside it, and of the same
   # image built without them (the control).
@@ -69,7 +78,7 @@ jobs:
       - run: sh tools/image-test.sh
 
   image:
-    needs: [no-environment, go, protocol, editor, image-test]
+    needs: [no-environment, go, protocol, editor, terminal, image-test]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:

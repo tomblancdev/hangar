@@ -35,6 +35,7 @@ release refuses the line.
 | path | privileges | why |
 |---|---|---|
 | `/pool/<machines pool>` | `VM.Allocate`, `VM.Audit`, `VM.Clone`, `VM.Config.CDROM`, `VM.Config.CPU`, `VM.Config.Cloudinit`, `VM.Config.Disk`, `VM.Config.HWType`, `VM.Config.Memory`, `VM.Config.Network`, `VM.Config.Options`, `VM.PowerMgmt`, `VM.GuestAgent.Audit`, `Datastore.AllocateSpace`, `Datastore.Audit`, **`Pool.Audit`** | making and running its guests. `Pool.Audit` looks optional and is not: without it `/cluster/resources` **leaves out every guest's pool** (`API2/Cluster.pm`), and the driver could not tell its guests from anyone's |
+| `/pool/<machines pool>`, **for a terminal — the operator's choice** | `VM.Console` | a machine's terminal is its serial port, opened through the node's terminal proxy — see [A machine's terminal](#a-machines-terminal). Without it nothing else changes: the zone offers no terminal, and a machine that names no key pair is made as before |
 | `/pool/<images pool>` | `VM.Audit`, `VM.Clone`, `Pool.Audit` | reading and cloning the templates — never changing them |
 | `/storage/<disks>` | `Datastore.AllocateSpace`, `Datastore.Audit` | the guests' disks |
 | `/storage/<where the archives are>` | `Datastore.Audit` | `pct create` reads the archive (it asks for `Datastore.AllocateSpace` **or** `Datastore.Audit` there) |
@@ -464,6 +465,102 @@ after its create began; another key was denied; the owner's key got no shell, no
 the gateway, and opened through it neither the lane's node, nor the other
 gateway, nor a machine of the other network, nor the gateway itself, nor the
 web.
+
+## A machine's terminal
+
+A machine's terminal (`guest.console`; the machines plugin's stream
+`terminal`) is **a VM's serial port** — `serial0`, the one every template
+here is made with, the display on it — opened through Proxmox's own terminal
+proxy: the two calls its web interface makes, `POST …/qemu/<vmid>/termproxy`
+(a port and a ticket) and the WebSocket `GET …/vncwebsocket`. Nothing runs
+in the guest for it, and none of its network is used: it works on a machine
+whose wall lets nothing in.
+
+**It takes one privilege, and it is the operator's to give:** `VM.Console`
+in the machines pool's role. The driver reads the token's own permissions
+and advertises `guest.console` only where it holds that privilege **on its
+pool**; elsewhere the zone offers no terminal — the machine's form has no
+such field, its page no such key — and everything else is as before.
+
+**What giving it means.** Whoever holds that token — whoever takes the
+brain — can type in every running machine of the pool whose port signs its
+user in. The same token already stops, resizes and deletes those machines,
+and wrote their first boot; it is still the one new thing it can do *inside*
+one. The product opens a terminal for a machine's owner and nobody else (an
+operator is refused, in the API), and keeps nothing of what passes.
+
+Read on a live node (Proxmox VE 9.2) before the driver was written:
+
+- **The fence holds.** With `VM.Console` on the pool: a guest of the pool
+  opens; a guest outside it, a template of the images pool, a watched guest
+  — each `403 Permission check failed (/vms/<id>, VM.Console)`. Without it,
+  the pool's own guests answer the same 403.
+- **A ticket is its asker's alone.** The ticket one token was given, used by
+  another: refused — by root's own token too (`401 invalid PVEVNC ticket`).
+- **Nothing is left.** Each opening is a task of the token's user
+  (`vncproxy`), which ends with its socket; an opening nobody comes to ends
+  by itself after ten seconds.
+- **A serial port has one other end.** A second socket on the same guest
+  opens, says « starting serial terminal », and stays silent while the first
+  holds the port. The brain keeps one terminal per machine: a second opening
+  ends the first.
+- **Proxmox says nothing when a guest stops.** A socket open on a guest that
+  was stopped stayed open and silent for as long as it was watched (20 s).
+  The driver looks at the guest itself, every five seconds — its power, and
+  **which process it is** — and ends the terminal with the reason; a stopped
+  guest's is refused before the proxy is asked (which would answer `200`,
+  then « VM … not running » inside the socket).
+- **A reboot is another process.** Proxmox reboots a VM by ending its
+  process and starting another: the socket stays open on the one that is
+  gone. Seen running anew — or caught down on the way, by a reboot the
+  machines plugin itself was asked for — the terminal is opened again on the
+  same stream once the machine is back, and its owner watches it boot. (A
+  reboot typed *inside* the machine keeps its process, and its socket.)
+- **An error names no address.** The socket's address carries the ticket; a
+  socket that could not be opened is said without it.
+- **The proxy speaks a few words of its own** inside the socket: the ticket
+  first (`user:ticket`, and it says `OK`), then `0:<length>:<bytes>` for what
+  is typed, `1:<cols>:<rows>:` for a window, `2` as a ping; it takes no
+  fragmented frame, and none over 128 KiB. Its own first line is left out of
+  what the machine is shown to say.
+
+**How a machine lets its owner in.** A VM born with its terminal `open` is
+handed one step at its first boot, on its seed disc **beside its owner's
+user data** — a multipart, the owner's part as they wrote it, whatever it is
+(a cloud-config, a script, a multipart of their own). The step is a
+cloud-init *boothook*: read before the first login is offered, written once
+(`/usr/local/sbin/hangar-terminal` and a drop-in for
+`serial-getty@.service`, which also makes the port the script's own input
+and output, whatever the image's unit does) — **for that machine alone**: its instance id is
+written beside it, and the getty signs in only where that id is the
+machine's own. An image saved from a machine born open carries those files;
+a machine born from it that asked a login gets a login. The getty it puts
+in place:
+
+1. **waits for a terminal** at the other end and asks it its size, every two
+   seconds, with a question only it asks (« report your text area's size »,
+   `CSI 18 t` — a machine's own init asks the cursor's place, and an answer
+   to that is not taken for this one). A terminal that cannot say is let in
+   on Enter, at the port's own 80 by 24;
+2. sets the port to that size, and its type to `xterm-256color` when a
+   terminal answered;
+3. **signs the machine's user in**, nothing asked: the one cloud-init made
+   for the image (its default user), else the first ordinary account (an
+   owner who names their own), else root.
+
+So no shell sits open on a port nobody holds, and the one a person gets fits
+their window — and the way in does not wait for the owner's own first boot:
+it is written before that runs. Read on a bench, a Debian 13: a shell on the
+port 20 to 28 s after the machine's create (four runs); left alone 40 s, then opened, signed
+in 3 s later at the terminal's 132 by 41; `exit`, and signed in again 2 s
+later at the size the terminal had by then. **And a Debian 12** (systemd
+252, which asks a terminal nothing by itself): the same, signed in 2.5 s
+after the terminal came, at its 132 by 41. The step
+is for guests whose init is systemd and whose image runs cloud-init; another
+boots as its image says, and its terminal shows what the image shows. **A
+container has no terminal here**: it boots no user data, so nothing could
+make its port sign anyone in, and a login nobody holds a password for is no
+way in.
 
 ## Idleness and hours
 

@@ -6,6 +6,11 @@
 // another plugin's credential, and it never decides who may ask: identity,
 // tiers, limits, the registry and the audit belong to the core.
 //
+// One call is not a request and its answer: Open carries bytes both ways for
+// as long as both ends hold it (a machine's terminal). Who may open one is
+// the core's to say, like everything else: a stream reaches INSIDE a
+// resource, so it is its owner's alone.
+//
 // Values that are JSON documents travel as bytes holding JSON (UTF-8): specs,
 // params, observed state, schemas. A JSON number stays a number that way,
 // which a google.protobuf.Struct would turn into a double.
@@ -55,6 +60,15 @@ service PluginService {
   // hold the core may not have placed, and whether the zone is awake. A
   // plugin whose resources take no room leaves it unimplemented.
   rpc Survey(SurveyRequest) returns (SurveyResponse);
+  // One of a resource's streams, held open: the first message in says which
+  // (StreamOpen), the first out that it is open (StreamOpened); then bytes
+  // both ways until either end lets go. A refusal is a gRPC status, as
+  // everywhere (rule 4): FAILED_PRECONDITION for a machine that is stopped.
+  // The plugin ends the stream when what it reaches is gone (StreamClosed
+  // says why, in words a person reads). Nothing of what passes is the
+  // core's to keep: it counts the bytes, and writes none. A plugin whose
+  // types declare no stream leaves it unimplemented.
+  rpc Open(stream OpenRequest) returns (stream OpenResponse);
 }
 
 // ---- Describe ---------------------------------------------------------------
@@ -95,6 +109,21 @@ message ResourceType {
   repeated Action actions = 6;
   // Capability flags this type needs on a zone (on top of the plugin's).
   repeated string requires = 7;
+  // What can be held open on one of its resources, beside its actions.
+  repeated Stream streams = 8;
+}
+
+// Stream is something of a resource that is held open, bytes both ways: a
+// machine's console. The core opens one for the resource's OWNER alone — an
+// operator sees a machine, stops it, deletes it, and does not enter it — and
+// keeps one open per resource and stream: a second opening ends the first.
+message Stream {
+  // "console". Lowercase letters and "_", as an action's.
+  string name = 1;
+  string description = 2;
+  // Capability flags it needs on the zone; where they are missing the stream
+  // is not offered there.
+  repeated string requires = 3;
 }
 
 message Action {
@@ -410,6 +439,51 @@ message Consumed {
 // Usage is what a resource holds per QUANTITY dimension.
 message Usage {
   map<string, int64> amounts = 1;
+}
+
+// ---- Open: a stream ---------------------------------------------------------
+
+message OpenRequest {
+  oneof what {
+    // First, once.
+    StreamOpen open = 1;
+    // What the person sends (keys typed), as it comes.
+    bytes data = 2;
+    // The person's window changed.
+    StreamSize size = 3;
+  }
+}
+
+message StreamOpen {
+  // The resource as the registry holds it.
+  Resource resource = 1;
+  // The stream's name, one its type declared.
+  string stream = 2;
+  // The person's window as it opens; absent = unknown.
+  StreamSize size = 3;
+}
+
+// StreamSize is a terminal's grid, in characters.
+message StreamSize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+message OpenResponse {
+  oneof what {
+    // First, once: it is open.
+    StreamOpened opened = 1;
+    // What the resource says, as it comes.
+    bytes data = 2;
+    // Last: the plugin let go, and why — "the machine was stopped".
+    StreamClosed closed = 3;
+  }
+}
+
+message StreamOpened {}
+
+message StreamClosed {
+  string reason = 1;
 }
 
 message SurveyRequest {

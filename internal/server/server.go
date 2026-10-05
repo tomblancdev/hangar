@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -48,6 +49,9 @@ type Server struct {
 	spec    []byte
 	mux     *http.ServeMux
 	console *console.Console
+
+	relays  sync.WaitGroup // the streams being passed on (stream.go)
+	recheck time.Duration  // how often a stream's credential is asked again
 }
 
 // New builds the server. It fails only if the embedded contract or the
@@ -59,7 +63,7 @@ func New(cfg *config.Config, c *core.Core, auth *identity.Authenticator, store *
 		return nil, err
 	}
 	m.Counter("hangar_http_requests_total", "API calls, by route and status.", "route", "code")
-	s := &Server{cfg: cfg, core: c, auth: auth, store: store, host: host, audit: a, metrics: m, log: log, version: version, spec: spec}
+	s := &Server{cfg: cfg, core: c, auth: auth, store: store, host: host, audit: a, metrics: m, log: log, version: version, spec: spec, recheck: streamRecheck}
 	if err := s.routesAndConsole(); err != nil {
 		return nil, err
 	}
@@ -115,6 +119,7 @@ var routes = []route{
 	{pattern: "DELETE /v1/resources/{id}", api: func(s *Server) apiFunc { return s.deleteResource }},
 	{pattern: "POST /v1/resources/{id}/actions/{action}", api: func(s *Server) apiFunc { return s.act }},
 	{pattern: "POST /v1/resources/{id}/plan", api: func(s *Server) apiFunc { return s.planChange }},
+	{pattern: "GET /v1/resources/{id}/streams/{stream}", h: func(s *Server) http.HandlerFunc { return s.stream }},
 	{pattern: "GET /v1/operations", api: func(s *Server) apiFunc { return s.listOperations }},
 	{pattern: "GET /v1/operations/{id}", api: func(s *Server) apiFunc { return s.getOperation }},
 	{pattern: "GET /v1/tokens", api: func(s *Server) apiFunc { return s.listTokens }},
@@ -187,31 +192,8 @@ func (s *Server) v1(pattern string, h apiFunc) http.Handler {
 		}()
 		r.Body = http.MaxBytesReader(rw, r.Body, 1<<20)
 
-		id, err := s.auth.Authenticate(r)
-		if err != nil {
-			var ie *identity.Error
-			if errors.As(err, &ie) {
-				rec.Set(func(e *audit.Event) { e.Result, e.Reason, e.Detail = "refused", "auth", ie.Message })
-				s.metrics.Inc("hangar_requests_refused_total", "auth")
-				rw.Header().Set("WWW-Authenticate", `Bearer realm="hangar"`)
-				writeProblem(rw, &core.Problem{Status: 401, Kind: core.KindSignIn, Detail: ie.Message})
-				return
-			}
-			rec.Set(func(e *audit.Event) { e.Result, e.Reason, e.Detail = "error", "identity-provider", err.Error() })
-			writeProblem(rw, &core.Problem{Status: 503, Kind: core.KindDown, Detail: err.Error()})
-			return
-		}
-		rec.Set(func(e *audit.Event) { e.Actor, e.Name, e.Via = id.Subject, id.Name, id.ViaLabel() })
-		who, p := s.core.Caller(ctx, id)
-		if p != nil {
-			writeProblem(rw, p)
-			return
-		}
-		// someone in a tier: what they are called is remembered, so that what
-		// they own is shown by it
-		s.core.Seen(ctx, id)
-		if r.Method == http.MethodGet && !who.Can(identity.ScopeRead) {
-			writeProblem(rw, &core.Problem{Status: 403, Kind: core.KindScope, Detail: "this token cannot read"})
+		who := s.caller(rw, r, rec)
+		if who == nil {
 			return
 		}
 		if err := h(rw, r, who); err != nil {
@@ -224,6 +206,39 @@ func (s *Server) v1(pattern string, h apiFunc) http.Handler {
 			writeProblem(rw, p)
 		}
 	})
+}
+
+// caller is who asks: signed in, in a tier — or the refusal, written, and
+// nil. Every /v1 call begins with it.
+func (s *Server) caller(rw http.ResponseWriter, r *http.Request, rec *audit.Record) *core.Caller {
+	id, err := s.auth.Authenticate(r)
+	if err != nil {
+		var ie *identity.Error
+		if errors.As(err, &ie) {
+			rec.Set(func(e *audit.Event) { e.Result, e.Reason, e.Detail = "refused", "auth", ie.Message })
+			s.metrics.Inc("hangar_requests_refused_total", "auth")
+			rw.Header().Set("WWW-Authenticate", `Bearer realm="hangar"`)
+			writeProblem(rw, &core.Problem{Status: 401, Kind: core.KindSignIn, Detail: ie.Message})
+			return nil
+		}
+		rec.Set(func(e *audit.Event) { e.Result, e.Reason, e.Detail = "error", "identity-provider", err.Error() })
+		writeProblem(rw, &core.Problem{Status: 503, Kind: core.KindDown, Detail: err.Error()})
+		return nil
+	}
+	rec.Set(func(e *audit.Event) { e.Actor, e.Name, e.Via = id.Subject, id.Name, id.ViaLabel() })
+	who, p := s.core.Caller(r.Context(), id)
+	if p != nil {
+		writeProblem(rw, p)
+		return nil
+	}
+	// someone in a tier: what they are called is remembered, so that what
+	// they own is shown by it
+	s.core.Seen(r.Context(), id)
+	if r.Method == http.MethodGet && !who.Can(identity.ScopeRead) {
+		writeProblem(rw, &core.Problem{Status: 403, Kind: core.KindScope, Detail: "this token cannot read"})
+		return nil
+	}
+	return who
 }
 
 var titles = map[string]string{
@@ -240,6 +255,8 @@ var titles = map[string]string{
 	core.KindRoom:        "No room in the zone",
 	core.KindBusy:        "Busy",
 	core.KindConflict:    "Conflict",
+	core.KindOwner:       "Its owner's alone",
+	core.KindUpgrade:     "A WebSocket",
 	core.KindEngine:      "Refused by the engine",
 	core.KindDown:        "A plugin is down",
 	core.KindInternal:    "Internal error",

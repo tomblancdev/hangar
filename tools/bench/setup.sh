@@ -9,7 +9,8 @@
 #      Debian's cloud image, in pool hangar-images
 #   4. the fence: pool hangar, a role that acts only there, a read-and-clone
 #      role on the images, one user and its API token (privilege-separated)
-#      for the machines plugin — and a narrower one for the volumes plugin:
+#      for the machines plugin (its role carries VM.Console: a machine's
+#      terminal) — and a narrower one for the volumes plugin:
 #      disks and its own shelf guests in the same pool, no network, no seed
 #      store, no watched guest — and one for the images plugin: templates and
 #      the builders that bake them in pool hangar-images, a stopped machine
@@ -130,6 +131,11 @@ privs="$privs,VM.Config.Options,VM.PowerMgmt,VM.GuestAgent.Audit,Datastore.Alloc
 # Pool.Audit: without it /cluster/resources leaves out a guest's pool
 # (API2/Cluster.pm), and the fence could not tell its own guests apart
 privs="$privs,Pool.Audit"
+# VM.Console: a machine's terminal — its serial port, opened for its owner.
+# Whoever holds this token can then type in every running machine of the
+# pool whose port signs its user in: an operator who wants no terminal
+# leaves it out, and the product offers none
+privs="$privs,VM.Console"
 pveum role add HangarMachines --privs "$privs" 2>/dev/null || pveum role modify HangarMachines --privs "$privs"
 pveum role add HangarImages --privs VM.Audit,VM.Clone,Pool.Audit 2>/dev/null ||
 	pveum role modify HangarImages --privs VM.Audit,VM.Clone,Pool.Audit

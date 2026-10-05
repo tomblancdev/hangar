@@ -31,6 +31,9 @@
 // off there is someone opening a guest behind the brain's back, and Wall
 // puts it back.
 //
+// A zone that carries guest.console opens a VM's console (console.go): a
+// toy of a shell, signed in for a guest born so.
+//
 // A zone that carries net.private cuts networks (networks.go): a guest born
 // on one is given its address in that network's range, and the network's
 // gateway runs while one of its guests does.
@@ -111,6 +114,10 @@ type state struct {
 	ActivityFails bool `json:"activity_fails,omitempty"`
 	// Networks, by the core's id.
 	Networks map[string]*fakeNetwork `json:"networks,omitempty"`
+	// Boots: how many times each guest was started or rebooted — a guest
+	// that runs anew is another process, and a console open on the one
+	// before is open on nothing (console.go).
+	Boots map[string]int `json:"boots,omitempty"`
 }
 
 // now is the engine's clock. Called with e.mu held, the file read.
@@ -385,6 +392,7 @@ func (e *Engine) SetPower(_ context.Context, id string, on bool) (driver.Guest, 
 	case on && !g.Running:
 		at := e.now()
 		g.StartedAt = &at
+		e.booted(id)
 	case !on:
 		g.StartedAt = nil
 	}
@@ -406,13 +414,23 @@ func (e *Engine) Reboot(_ context.Context, id string) (driver.Guest, error) {
 	if !g.Running {
 		return driver.Guest{}, fmt.Errorf("%w: a stopped guest does not reboot", driver.ErrRefused)
 	}
-	return e.clone(g), nil
+	e.booted(id)
+	return e.clone(g), e.save()
+}
+
+// booted counts a guest's start. Called with e.mu held.
+func (e *Engine) booted(id string) {
+	if e.state.Boots == nil {
+		e.state.Boots = map[string]int{}
+	}
+	e.state.Boots[id]++
 }
 
 // Traits: every kind takes user data and changes live, memory down only
-// where the zone's flags say so.
-func (e *Engine) Traits(string) driver.Traits {
-	return driver.Traits{UserData: true, LiveCores: true, LiveMemoryUp: true, LiveMemoryDown: e.has(driver.ResizeLiveMemoryDown)}
+// where the zone's flags say so; a VM has a console (console.go).
+func (e *Engine) Traits(kind string) driver.Traits {
+	return driver.Traits{UserData: true, Console: kind == "vm" && e.has(driver.GuestConsole),
+		LiveCores: true, LiveMemoryUp: true, LiveMemoryDown: e.has(driver.ResizeLiveMemoryDown)}
 }
 
 func (e *Engine) ResizeGuest(_ context.Context, id string, cores, memoryMB int) (driver.Guest, error) {

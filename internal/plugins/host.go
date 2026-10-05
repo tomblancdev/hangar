@@ -99,6 +99,9 @@ type Type struct {
 	// Requires: the plugin's flags and the type's own.
 	Requires []string
 	Actions  []*Action
+	// Streams: what can be held open on one of its resources (a machine's
+	// terminal). The core opens one for the resource's owner alone.
+	Streams []*Stream
 	// Refs: the spec's fields that name other resources.
 	Refs []Ref
 	// Share: the spec's field that says whom its owner opened it to — an
@@ -177,6 +180,14 @@ type Action struct {
 	Refs         []Ref
 
 	params *jsonschema.Schema
+}
+
+// Stream is something of a type's resources that is held open, bytes both
+// ways.
+type Stream struct {
+	Name        string
+	Description string
+	Requires    []string
 }
 
 // Options tell the host how to start plugins.
@@ -607,6 +618,23 @@ func compileType(plugin string, d *pluginpb.DescribeResponse, rt *pluginpb.Resou
 		}
 		t.Actions = append(t.Actions, act)
 	}
+	held := map[string]bool{}
+	for _, st := range rt.GetStreams() {
+		switch {
+		case !validActionName(st.GetName()):
+			errs = append(errs, fmt.Errorf("stream %q: lowercase letters and _", st.GetName()))
+		case held[st.GetName()]:
+			errs = append(errs, fmt.Errorf("stream %q twice", st.GetName()))
+		}
+		held[st.GetName()] = true
+		for _, c := range st.GetRequires() {
+			if !driver.IsKnown(c) {
+				errs = append(errs, fmt.Errorf("stream %s requires %q, a capability no driver documents", st.GetName(), c))
+			}
+		}
+		t.Streams = append(t.Streams, &Stream{Name: st.GetName(), Description: st.GetDescription(),
+			Requires: slices.Sorted(slices.Values(st.GetRequires()))})
+	}
 	return t, errors.Join(errs...)
 }
 
@@ -700,6 +728,27 @@ func (h *Host) ActionAvailable(t *Type, a *Action, zone string) (bool, string) {
 		return false, fmt.Sprintf("%s needs %s, which zone %s's driver lacks", a.Name, strings.Join(miss, ", "), zone)
 	}
 	return true, ""
+}
+
+// StreamAvailable says whether a stream is offered in a zone, and why not.
+func (h *Host) StreamAvailable(t *Type, st *Stream, zone string) (bool, string) {
+	if ok, why := h.Available(t, zone); !ok {
+		return false, why
+	}
+	if miss := driver.Missing(st.Requires, h.plugins[t.Plugin].Zones[zone].Capabilities); len(miss) > 0 {
+		return false, fmt.Sprintf("%s needs %s, which zone %s's driver lacks", st.Name, strings.Join(miss, ", "), zone)
+	}
+	return true, ""
+}
+
+// Stream returns a type's stream by name.
+func (t *Type) Stream(name string) *Stream {
+	for _, st := range t.Streams {
+		if st.Name == name {
+			return st
+		}
+	}
+	return nil
 }
 
 // Action returns a type's action by name.

@@ -462,6 +462,54 @@ paths:
               schema: { $ref: "#/components/schemas/ChangePlan" }
         default: { $ref: "#/components/responses/Problem" }
 
+  /v1/resources/{id}/streams/{stream}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      - { name: stream, in: path, required: true, schema: { type: string } }
+      - { name: cols, in: query, schema: { type: integer, minimum: 1, maximum: 1000 }, description: "The window as it opens, in characters." }
+      - { name: rows, in: query, schema: { type: integer, minimum: 1, maximum: 1000 } }
+    get:
+      tags: [resources]
+      summary: One of the resource's streams, held open — a machine's terminal. A WebSocket.
+      description: |
+        The one call that is not a request and its answer: a WebSocket
+        (RFC 6455), asked with `Upgrade: websocket` and the same bearer token
+        as everything else. A type's streams are in the catalogue
+        (`GET /v1/types`, `streams`).
+
+        **Its owner alone.** A stream reaches inside a resource: an operator
+        sees a machine, stops it, deletes it, and is refused here (403
+        `owner`), as is someone it is shared with; a read-only token is
+        refused (403 `scope`). **One at a time** per resource and stream: a
+        second opening ends the first, which is told (close code 4001).
+
+        A refusal is an ordinary problem document, before anything is
+        switched — 409 `engine` for a machine that is stopped. Once open: a
+        binary message from the client is what is typed, a text message
+        `{"size":[cols,rows]}` a changed window; a binary message from the
+        brain is what the resource says. It ends with a close frame from the
+        brain: 4000 and why in words (« the machine was stopped »), 4001
+        when its owner opened it elsewhere.
+
+        **Held on its credential.** What this call asked is asked again
+        every half minute while the stream is open: a token revoked or
+        ended, a person no longer in any tier, closes it (4000, with the
+        reason). A client whose token is short-lived sends the next one
+        before that, as a text message `{"token":"<the new bearer>"}` — the
+        same person's, or the stream is closed.
+
+        Two audit lines: the opening, and the closing — how long, how many
+        bytes each way, why. Never what passed.
+      responses:
+        "101":
+          description: Open — the connection is a WebSocket from here.
+        "426":
+          description: "Asked without `Upgrade: websocket`."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+
   /v1/operations:
     get:
       tags: [operations]
@@ -620,6 +668,20 @@ components:
         actions:
           type: array
           items: { $ref: "#/components/schemas/Action" }
+        streams:
+          type: array
+          items: { $ref: "#/components/schemas/Stream" }
+          description: What can be held open on one of its resources, by its owner alone.
+    Stream:
+      type: object
+      required: [name, zones]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        zones:
+          type: array
+          items: { type: string }
+          description: Where it is offered (a zone whose engine lacks a capability it needs is not listed).
     Action:
       type: object
       required: [name, changes_usage, zones]

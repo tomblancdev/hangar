@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"sort"
 	"strings"
@@ -38,6 +39,7 @@ const (
 	GuestSuspendToDisk      Capability = "guest.suspend_to_disk"
 	GuestTags               Capability = "guest.tags"
 	GuestActivity           Capability = "guest.activity"
+	GuestConsole            Capability = "guest.console"
 	HookPreStart            Capability = "hook.pre_start"
 	GPUShared               Capability = "gpu.shared"
 	GPUPassthrough          Capability = "gpu.passthrough"
@@ -49,7 +51,7 @@ const (
 // Known lists every flag, in the order the documentation gives them.
 var Known = []Capability{
 	KindContainer, KindVM, ResizeLiveMemoryDown, ResizeLiveCPUCap, CPUHost, CPUNested, CPUWeight,
-	VolumeMoveBetweenGuests, GuestSuspendToDisk, GuestTags, GuestActivity, HookPreStart,
+	VolumeMoveBetweenGuests, GuestSuspendToDisk, GuestTags, GuestActivity, GuestConsole, HookPreStart,
 	GPUShared, GPUPassthrough, FencePool, NetFirewall, NetPrivate,
 }
 
@@ -236,6 +238,47 @@ type Activity interface {
 	QuietFor(ctx context.Context, id string, window time.Duration, q Quiet) (time.Duration, error)
 }
 
+// Consoles is the facet of a driver whose engine carries a guest's own
+// console — its screen and keyboard: a VM's serial port — to whoever the
+// driver's credential lets open it (guest.console). Nothing runs in the
+// guest for it and nothing of its network is used: it is the way into a
+// guest that lets no key in. A driver whose engine has none does not
+// implement it.
+type Consoles interface {
+	// Console opens a running guest's console. A guest that does not run, or
+	// whose kind has none here (Traits), is ErrRefused. An engine serves one
+	// console per guest at a time: who holds the driver keeps it to one.
+	Console(ctx context.Context, id string, size ConsoleSize) (Console, error)
+}
+
+// Console is a guest's console, held open. Read gives what the guest's
+// console says, as it comes; Write sends what is typed. Read ends with
+// ErrConsoleStopped once the guest no longer runs, and with
+// ErrConsoleRestarted once it runs anew — stopped and started, or rebooted
+// by its engine: the port's other end is then another process, and this
+// console is open on nothing (an engine does not always say either itself:
+// the driver looks). It ends with io.EOF when the engine let go, and Close
+// lets go of it from this side (a Read in flight then ends).
+type Console interface {
+	io.ReadWriteCloser
+	// Resize tells the engine the window changed. A guest's serial port
+	// carries no window size: the guest learns its grid by asking the
+	// terminal at the other end, when its login starts.
+	Resize(size ConsoleSize) error
+}
+
+// ConsoleSize is a terminal's grid, in characters; zero = unknown.
+type ConsoleSize struct {
+	Cols, Rows int
+}
+
+// ErrConsoleStopped: the guest a console was open on no longer runs.
+var ErrConsoleStopped = errors.New("the guest stopped")
+
+// ErrConsoleRestarted: the guest a console was open on runs anew; its
+// console is to be opened again.
+var ErrConsoleRestarted = errors.New("the guest was started again")
+
 // Walls is the facet of a driver whose engine filters a guest's own network
 // card (net.firewall): where the zone says so, every guest is born behind a
 // wall — nothing in but what the zone's operator lets every guest hear, and
@@ -304,6 +347,9 @@ func WeightOf(w int) int {
 type Traits struct {
 	// UserData: its first boot runs user data (cloud-init).
 	UserData bool `json:"user_data"`
+	// Console: its console can be opened (the Consoles facet) — and, where
+	// its first boot runs user data, born signed in (GuestSpec.SignedIn).
+	Console bool `json:"console"`
 	// What a RUNNING guest can change without being stopped.
 	LiveCores      bool `json:"live_cores"`
 	LiveMemoryUp   bool `json:"live_memory_up"`
@@ -331,6 +377,11 @@ type GuestSpec struct {
 	SSHKeys []string
 	// UserData is handed to its first boot, where Traits says it takes any.
 	UserData []byte
+	// SignedIn: its console asks nothing — whoever opens it lands in a shell
+	// as the guest's own user (guest.console, a kind whose Traits say both
+	// Console and UserData). The driver adds the step that makes it so to
+	// its first boot, beside UserData and without touching it (FirstBoot).
+	SignedIn bool
 	Tags     map[string]string
 	// Holds: the keys of the reservations holding its room back, written on
 	// it for a node that acts without the brain to read.

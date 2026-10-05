@@ -38,6 +38,10 @@ type session struct {
 	name    string
 	created time.Time
 	seen    time.Time // its last use — the sessions' lock keeps it, not its own
+	// life ends with the sign-in — signed out, dropped, left unused too long:
+	// what was held open on it (a stream) ends with it
+	life context.Context
+	end  context.CancelFunc
 
 	// mu keeps the token and its renewal: held while the provider is asked,
 	// so nothing that every request passes through may wait on it
@@ -82,12 +86,14 @@ func (ss *sessions) open(s *session) (string, error) {
 	value := random(32)
 	now := ss.now()
 	s.key, s.csrf, s.created, s.seen = hash(value), random(24), now, now
+	s.life, s.end = context.WithCancel(context.Background())
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	if len(ss.m) >= maxSessions {
 		ss.sweepLocked(now)
 	}
 	if len(ss.m) >= maxSessions {
+		s.end()
 		return "", errFull
 	}
 	ss.m[s.key] = s
@@ -98,7 +104,35 @@ func (ss *sessions) sweepLocked(now time.Time) {
 	for k, s := range ss.m {
 		if now.Sub(s.seen) > ss.idle {
 			delete(ss.m, k)
+			s.end()
 		}
+	}
+}
+
+// alive says whether a sign-in is still held, and ends one left unused too
+// long.
+func (ss *sessions) alive(s *session) bool {
+	now := ss.now()
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.m[s.key] != s {
+		return false
+	}
+	if now.Sub(s.seen) > ss.idle {
+		delete(ss.m, s.key)
+		s.end()
+		return false
+	}
+	return true
+}
+
+// touch marks a sign-in used now.
+func (ss *sessions) touch(s *session) {
+	now := ss.now()
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.m[s.key] == s {
+		s.seen = now
 	}
 }
 
@@ -124,6 +158,7 @@ func (ss *sessions) of(r *http.Request) *session {
 	}
 	if now.Sub(s.seen) > ss.idle {
 		delete(ss.m, s.key)
+		s.end()
 		return nil
 	}
 	s.seen = now
@@ -134,6 +169,9 @@ func (ss *sessions) drop(s *session) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	delete(ss.m, s.key)
+	if s.end != nil {
+		s.end()
+	}
 }
 
 func (ss *sessions) count() int {

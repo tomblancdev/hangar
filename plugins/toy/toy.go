@@ -2,7 +2,8 @@
 // "box" — a pretend guest on any driver with the guests facet — with a create,
 // a delete, its actions (one that changes what it holds, one that needs a
 // capability not every zone has, one whose params hold an object), quantity
-// and choice dimensions, events and a reconcile that repairs what it can.
+// and choice dimensions, events, a reconcile that repairs what it can, and a
+// stream — echo: what its owner sends comes back.
 //
 // It is the example to copy when writing a plugin, and the one the core's
 // tests run end to end on the fake engine. It is not a machines plugin: it
@@ -18,6 +19,8 @@ import (
 	"strconv"
 	"sync"
 
+	"google.golang.org/grpc"
+
 	"github.com/tomblancdev/hangar/driver"
 	_ "github.com/tomblancdev/hangar/driver/fake" // the engine it is proved on
 	"github.com/tomblancdev/hangar/sdk"
@@ -26,6 +29,9 @@ import (
 
 // Name is the plugin's own name: the operator enables it as "toy".
 const Name = "toy"
+
+// StreamEcho is a box's one stream.
+const StreamEcho = "echo"
 
 // Spec is a box's desired state.
 type Spec struct {
@@ -131,6 +137,9 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 				{Name: "resize", Description: "Set its cores and memory.", ParamsSchema: []byte(resizeSchema), ChangesUsage: true},
 				{Name: "label", Description: "Set its labels.", ParamsSchema: []byte(labelSchema)},
 				{Name: "suspend", Description: "Power it off keeping its memory on disk.", Requires: []string{driver.GuestSuspendToDisk}},
+			},
+			Streams: []*pluginpb.Stream{
+				{Name: StreamEcho, Description: "What you send comes back; « bye » ends it."},
 			},
 		}},
 		Dimensions: []*pluginpb.Dimension{
@@ -400,6 +409,49 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 }
 
 // box resolves a resource's zone to its guests facet and decodes its spec.
+// Open is a box's stream, echo: what its owner sends comes back, and « bye »
+// ends it from the box's side, with the reason. The whole of what a stream
+// asks of a plugin: read what it opens, refuse what it cannot (a status, as
+// everywhere), say it is open, then pass bytes until either end lets go.
+// Who may open it is not asked here: the core lets its owner in, and nobody
+// else.
+func (p *Plugin) Open(st grpc.BidiStreamingServer[pluginpb.OpenRequest, pluginpb.OpenResponse]) error {
+	first, err := st.Recv()
+	if err != nil {
+		return err
+	}
+	o := first.GetOpen()
+	if o == nil || o.GetResource().GetType() != "box" || o.GetStream() != StreamEcho {
+		return sdk.Refuse("a box has one stream: %s", StreamEcho)
+	}
+	g, _, err := p.box(o.GetResource())
+	if err != nil {
+		return err
+	}
+	if guest, err := g.Guest(st.Context(), o.GetResource().GetId()); err != nil {
+		return engineErr(err)
+	} else if !guest.Running {
+		return sdk.NotNow("%s is stopped: start it first", o.GetResource().GetId())
+	}
+	if err := st.Send(&pluginpb.OpenResponse{What: &pluginpb.OpenResponse_Opened{Opened: &pluginpb.StreamOpened{}}}); err != nil {
+		return err
+	}
+	for {
+		m, err := st.Recv()
+		if err != nil {
+			return nil // its owner let go
+		}
+		switch data := m.GetData(); {
+		case string(data) == "bye":
+			return st.Send(&pluginpb.OpenResponse{What: &pluginpb.OpenResponse_Closed{Closed: &pluginpb.StreamClosed{Reason: "the box said bye"}}})
+		case len(data) > 0:
+			if err := st.Send(&pluginpb.OpenResponse{What: &pluginpb.OpenResponse_Data{Data: data}}); err != nil {
+				return nil
+			}
+		}
+	}
+}
+
 func (p *Plugin) box(r *pluginpb.Resource) (driver.Guests, Spec, error) {
 	g, _, err := p.guests(r.GetZone())
 	if err != nil {

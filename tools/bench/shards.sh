@@ -132,6 +132,8 @@ proxmox TestBenchAMachineBornBehindItsWall 149
 hangar TestBenchTheRoom 149
 proxmox TestBenchAVMsLife 147
 proxmox TestBenchAVMsVolume 136
+proxmox TestBenchAVMsConsole 130
+hangar TestBenchATerminalInThePage 150
 proxmox TestBenchTwoNetworksAndAJump 281
 hangar TestBenchAnImageThroughTheAPI 115
 hangar TestBenchANetworkThroughTheAPI 87

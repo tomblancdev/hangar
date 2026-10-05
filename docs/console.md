@@ -22,11 +22,67 @@ What it shows:
   what it names and what names it (read from the schemas' references), its
   history, **its actions as buttons** — the ones its type offers in its zone
   — each with a form of its params where it has any, and its delete, asked
-  twice.
+  twice. And, on your own, **its streams as keys**: a machine's terminal
+  (below).
 - **Operations**, and **API tokens**: made, shown once, revoked.
 
-The terminal into a machine is not built (it needs a stream the plugin
-protocol does not carry yet), and `apply` stays the command line's.
+`apply` stays the command line's.
+
+## A machine's terminal
+
+A machine's own screen and keyboard, in the page: no key, no client, nothing
+installed in the machine or on your computer. It is a **stream** its type
+declares (ARCHITECTURE.md §4), and the console draws any type's stream the
+same way — it does not know what a machine is.
+
+- **Where.** The `terminal` key sits among the machine's keys **on its
+  owner's page, and on nobody else's** — an operator's page of that machine
+  has none, and the brain refuses the address. It unfolds a screen under the
+  keys; an action asked meanwhile does not take it away — **a reboot is
+  watched from it**: the machine goes down and comes back on the same
+  screen. **Full screen** leads to the same screen alone, at an address of
+  its own (`#/r/<id>/terminal`); **Leave full screen** comes back with it
+  still shown. `Close`, or leaving the page, lets go of it.
+- **Signed in, or asked.** A VM born with no key pair lands you in a shell
+  as its user, nothing asked: the gateway and its second factor already said
+  who you are. One born with a key asks a login unless its form says
+  `terminal: open`. It is set at the machine's birth (the machines plugin's
+  `terminal`).
+- **Its size.** A machine's serial port carries no window size: the machine
+  asks the terminal when it signs you in, and takes what it answers. A
+  window that changes afterwards redraws here at once, and the bar says so —
+  `exit` signs you in again at the new size.
+- **One place at a time.** Opened again — another tab, your phone — it moves
+  there, and the first is told (« TAKEN »), with a key to take it back. It
+  is one screen: what was running on it is still there.
+- **Why it ended** is said on a notice over the screen, in the brain's own
+  words: the machine was stopped (for a game on the zone's room, by its idle
+  rule, by you), it was opened elsewhere, your sign-in ended, the brain
+  refused it (« m-… is stopped: start it, then open its terminal »).
+- **On a phone**, a row of the keys its keyboard has none of: Esc, Tab, Ctrl
+  (pressed, then a letter), the four arrows.
+
+**Underneath.** The page opens a WebSocket on the console
+(`api/v1/resources/<id>/streams/<stream>`), on its cookie; the console opens
+the brain's with the person's own token and carries the messages between the
+two as they come. Two things are the console's own, because a browser
+reaches it on a cookie: the socket is taken **only from the console's own
+pages** (its `Origin` — a cookie rides a WebSocket's opening as it rides any
+request), and a refusal is **said inside the socket** before it closes (a
+page cannot read why an opening failed). What is open on a sign-in ends with
+it — and while a terminal is open the sign-in under it is **looked at**,
+every twenty seconds: its token renewed at the provider before it ends, the
+new one handed to the brain (which asks again, every half minute, what the
+opening asked); a sign-in the provider no longer renews — an account
+disabled, a session ended there — closes, and its terminal with it. Typing
+is using a sign-in; it is not a way to keep one the provider ended. The
+console keeps nothing of what passes, and the brain's audit holds the
+opening and the closing — how long, how many bytes — never a word.
+
+**Named, not hidden:** an open terminal is not what a machine's `idle_after`
+counts (its CPU and what it sends are) — `keep awake` holds a quiet machine;
+a shell left on the screen stays there for whoever opens the terminal next,
+which is only ever its owner; a terminal has no say in a screen reader yet.
 
 ## Signing in
 
@@ -175,7 +231,7 @@ the field, with the id that holds it. **Home** draws everything you hold as
 ## Its look
 
 `ui/console/` holds the app as it is served: hand-written ES modules, no
-build step — what is in the directory is what runs — and **one file the app
+build step — what is in the directory is what runs — and **two files the app
 did not write**, below.
 `theme.css` holds the tokens (colours, faces, corners, how much a notice
 tilts, a screen's lines); `app.css` builds on them. Three things, in this
@@ -196,7 +252,31 @@ order:
 The faces are Big Shoulders Stencil, IBM Plex Mono and Sedgwick Ave Display,
 embedded with their licences (SIL OFL).
 
-## The one file the app did not write
+## The two files the app did not write
+
+**The terminal's screen is xterm.js**, vendored:
+`ui/console/vendor/xterm.js` — the library, its fit to a box and its canvas
+renderer, one file of 471 KB (123 KB compressed) —, its stylesheet
+(`xterm.css`) and the licences of what is in them (MIT). Everything else
+about a terminal is the console's own, in `terminal.js`: the socket, the
+colours (the theme's tokens), the keys a phone lacks, the notices.
+
+- **Made and held as the editor is** (below): `tools/terminal/` pins every
+  package; `sh tools/terminal/build.sh` builds in a container, `--check`
+  compares byte for byte, and CI runs it.
+- **Fetched when a terminal is opened, never before.**
+- **The page's policy is as it was** — and names one thing more, the
+  console's own socket (`connect-src 'self' wss://<its address>`: not every
+  browser reads `'self'` as covering a WebSocket). xterm.js writes three
+  `<style>` by script — its colours, its cells' size, its scrollbar's —,
+  which the policy refuses; each becomes **a sheet the document adopts**
+  instead (`terminal.js`: for `<style>` alone, for the life of the page),
+  and where the browser can, the screen is drawn on a canvas. What is left
+  to refuse without the canvas is one thing: a 24-bit colour's own style,
+  and that text then takes the default colour.
+- **It asks the terminal one thing the library answers only when told to**:
+  its size, in characters (`windowOptions.getWinSizeChars`) — how a machine
+  learns the window it is opened in.
 
 The box JSON is typed in is **CodeMirror 6**, vendored:
 `ui/console/vendor/codemirror.js`, one file of 364 KB (118 KB compressed),
@@ -221,10 +301,10 @@ same from one browser to the next), the line a refusal lights.
   the policy refuses. It sits in **a root of its own** (a shadow root),
   where its styles are sheets the root adopts; the console's tokens reach
   it through that root, so it wears the same colours and faces.
-- **The app's own guard reads it like the rest** (`TestTheAppHoldsNoWayIn`:
-  no markup sink, no storage, nothing loaded from elsewhere), but for one
-  name: the one every SVG is written under, in an image it draws from its
-  own bytes.
+- **The app's own guard reads both like the rest**
+  (`TestTheAppHoldsNoWayIn`: no markup sink, no storage, nothing loaded from
+  elsewhere), but for two names: the ones every SVG and every HTML element
+  are made under — names of what they draw from their own bytes.
 
 ## Proving it
 
@@ -242,3 +322,17 @@ verdict, its look and its styles (none of them a style tag); and
 a keyboard does — broken, refused by the brain inside it, then made, changed
 by an action and read back — on a page that fetched no editor before it
 needed one.
+
+A terminal has three. `TestAStreamThroughTheConsole` and its two neighbours
+hold the door: what passes, passes as it came, inside the brain and on its
+own; a refusal is read in the socket; another site's page with the person's
+cookie is refused before anything opens; a sign-out closes what was open,
+and so does a provider that stops renewing the sign-in under it.
+`TestATerminalInThePage` is the page in a real browser, under its own
+policy, with the browser's complaints read (none): a machine with no key
+made and entered, the window's size told, the whole window and back, the
+phone taking it and the desk taking it back, an operator offered none and
+refused by its address, the machine stopped under it. And
+`TestBenchATerminalInThePage` (`cmd/hangar`) is the same on a real Proxmox
+VE — a real machine's first boot, its user, its colours — with the audit's
+two lines read and nothing typed found in the brain's log.

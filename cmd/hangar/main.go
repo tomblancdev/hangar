@@ -232,7 +232,12 @@ func serve(args []string) error {
 		<-done
 		return err
 	}
-	return <-done
+	err = <-done
+	// what is held open ends with the brain: each stream's closing written,
+	// and its last words sent, before the process leaves
+	c.EndStreams("the brain is restarting")
+	srv.Drain(5 * time.Second)
+	return err
 }
 
 func check(args []string, out io.Writer) error {

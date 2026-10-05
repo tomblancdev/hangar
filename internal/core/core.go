@@ -65,6 +65,8 @@ type Core struct {
 
 	room roomState // the zones' reservations: what is in force, and why
 
+	streams streams // what is held open, one per resource and stream (stream.go)
+
 	people people // the name each subject last signed in under (names.go)
 
 	// Now is the schedules' clock (tests move it); ScheduleEvery, how often
@@ -87,6 +89,7 @@ func New(life context.Context, cfg *config.Config, store *registry.Store, host *
 	m.Counter("hangar_operations_total", "Operations finished, by kind and result.", "kind", "result")
 	m.Counter("hangar_reconcile_total", "Reconcile verdicts, by type and verdict.", "type", "verdict")
 	m.Counter("hangar_metered_total", "What the resources consumed, by meter (a machine's hours), in the meter's unit.", "dimension")
+	m.Counter("hangar_streams_opened_total", "Streams opened (a machine's terminal), by type and stream.", "type", "stream")
 	m.Counter("hangar_schedule_runs_total", "Schedules' runs, by schedule and result (asked, skipped, refused, failed).", "schedule", "result")
 	return &Core{
 		cfg: cfg, store: store, host: host, audit: a, log: log, metrics: m,
@@ -149,6 +152,8 @@ const (
 	KindAttached    = "attached"
 	KindMembers     = "members"
 	KindShared      = "shared"
+	KindOwner       = "owner"
+	KindUpgrade     = "websocket"
 	KindEngine      = "engine"
 	KindDown        = "plugin-down"
 	KindInternal    = "internal"
@@ -950,6 +955,16 @@ type TypeView struct {
 	Schema      json.RawMessage `json:"schema"`
 	Zones       []string        `json:"zones"`
 	Actions     []ActionView    `json:"actions"`
+	// Streams: what can be held open on one of its resources, by its owner
+	// alone (GET /v1/resources/{id}/streams/{stream}, a WebSocket).
+	Streams []StreamView `json:"streams,omitempty"`
+}
+
+// StreamView is a stream as the doors draw it.
+type StreamView struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Zones       []string `json:"zones"`
 }
 
 // ActionView is an action as the doors draw it.
@@ -981,6 +996,15 @@ func (c *Core) Types(who *Caller) []TypeView {
 				}
 			}
 			v.Actions = append(v.Actions, av)
+		}
+		for _, st := range t.Streams {
+			sv := StreamView{Name: st.Name, Description: st.Description, Zones: []string{}}
+			for _, z := range v.Zones {
+				if ok, _ := c.host.StreamAvailable(t, st, z); ok {
+					sv.Zones = append(sv.Zones, z)
+				}
+			}
+			v.Streams = append(v.Streams, sv)
 		}
 		out = append(out, v)
 	}

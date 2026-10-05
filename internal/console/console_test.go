@@ -110,6 +110,7 @@ func onItsOwn(t *testing.T, cfg, publicURL string) *door {
 		Brain: &http.Client{Timeout: 90 * time.Second}, BrainURL: s.URL, URL: publicURL,
 		Static: ui.Console(), Mark: func() []byte { return ui.Still("") }, Version: "test",
 		Log: slog.New(slog.NewJSONHandler(logs, nil)), Now: now.Now, Idle: time.Hour,
+		StreamCheck: 100 * time.Millisecond, // a test does not wait twenty seconds
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -645,7 +646,10 @@ func TestThePage(t *testing.T) {
 		}
 		h := page.resp.Header
 		csp := h.Get("Content-Security-Policy")
-		for _, want := range []string{"default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'"} {
+		// a terminal asked nothing of it: no inline style, and the one socket
+		// it may open is the console's own
+		ws := "connect-src 'self' ws://" + mustHost(d.url) + ";"
+		for _, want := range []string{"default-src 'none'", "script-src 'self';", "style-src 'self';", ws, "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'"} {
 			if !strings.Contains(csp, want) {
 				t.Errorf("the page's policy lacks %s: %s", want, csp)
 			}

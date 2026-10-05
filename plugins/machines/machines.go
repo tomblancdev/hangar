@@ -8,7 +8,8 @@
 // Two types:
 //
 //   - machine (m-…): create · start · stop · reboot · resize · set_idle_after
-//     · set_cpu_weight · keep_awake · let_sleep · delete.
+//     · set_cpu_weight · keep_awake · let_sleep · delete; and one stream,
+//     terminal.
 //   - keypair (kp-…): a public key, imported. A pair is never generated
 //     here: the brain would then hold a private key. A machine names its key
 //     pairs by id ("x-hangar-ref"); the core checks they are the owner's own
@@ -52,6 +53,15 @@
 // network's gateway runs while it does: started before it, and put to rest
 // after the network's last machine stops — every look puts that back too.
 //
+// Where its zone opens consoles (guest.console) a VM has a terminal — its
+// own screen and keyboard, its serial port, carried to its owner and to
+// nobody else (the core's rule for every stream) — and its `terminal` says
+// how that port greets, for its life: open, its user signed in with nothing
+// asked (a step beside its user data at its first boot: driver.FirstBoot),
+// or login, a name and a password asked. A VM that names no key pair is
+// born open — it has no other way in; one that names a key asks, unless it
+// says otherwise. A machine that stops ends its terminal.
+//
 // It requires fence.pool: a zone whose credential reaches beyond the
 // product's own guests is not one it will act on.
 //
@@ -76,6 +86,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"sort"
@@ -84,12 +95,23 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/tomblancdev/hangar/driver"
 	_ "github.com/tomblancdev/hangar/driver/fake"
 	_ "github.com/tomblancdev/hangar/driver/proxmox"
 	"github.com/tomblancdev/hangar/sdk"
 	"github.com/tomblancdev/hangar/sdk/pluginpb"
 )
+
+// How a machine's terminal greets (Spec.Terminal).
+const (
+	TerminalOpen  = "open"
+	TerminalLogin = "login"
+)
+
+// StreamTerminal is the machine's one stream: its terminal.
+const StreamTerminal = "terminal"
 
 // Name is the plugin's own name: the operator enables it as "machines".
 const Name = "machines"
@@ -170,6 +192,12 @@ type Spec struct {
 	Network  string   `json:"network,omitempty"`
 	KeyPairs []string `json:"key_pairs,omitempty"`
 	UserData string   `json:"user_data,omitempty"`
+	// Terminal: how its terminal greets — TerminalOpen: its user signed in,
+	// nothing asked; TerminalLogin: a name and a password asked. "" = it has
+	// none to say it of (a container, a zone that opens no console), or it
+	// was born before machines said (it asks, as TerminalLogin). Set at its
+	// birth.
+	Terminal string `json:"terminal,omitempty"`
 	// IdleAfter: it is stopped once quiet this long ("30m", "1h30m"); "" =
 	// never stopped for idleness.
 	IdleAfter string `json:"idle_after,omitempty"`
@@ -275,6 +303,8 @@ const machineSchema = `{
                    "description": "Your key pairs, by name or id: their public keys let you in." },
     "user_data": { "type": "string", "maxLength": 16384,
                    "description": "Handed to its first boot (cloud-init), where its kind takes it." },
+    "terminal":  { "type": "string", "enum": ["open", "login"],
+                   "description": "How its terminal greets you — its own screen and keyboard, opened from here by you alone. open: you land in a shell as its user, nothing asked. login: it asks a name and a password (yours to set, in user_data). Absent: open for a VM that names no key pair, login for one that does. For its life." },
     "idle_after": { "type": "string", "maxLength": 16,
                    "description": "Stopped once idle this long (30m, 2h — 5m to 12h): its CPU and what it sends stayed quiet, as its engine saw them. Absent or never: it is never stopped for idleness." }
   }
@@ -354,6 +384,11 @@ type Plugin struct {
 	mu       sync.RWMutex
 	zones    map[string]driver.Driver
 	settings Settings
+
+	// the machines being rebooted now, each with what is closed when its
+	// reboot ends: a terminal open on one waits for it, and opens again
+	rmu       sync.Mutex
+	rebooting map[string]chan struct{}
 }
 
 // New returns a plugin with no zone configured.
@@ -388,6 +423,10 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 					{Name: "keep_awake", Description: "Keep it from being stopped for idleness: for a time (for: 8h), or until let_sleep. Its hours count as it runs.",
 						ParamsSchema: []byte(keepAwakeSchema), ChangesUsage: true},
 					{Name: "let_sleep", Description: "End a keep_awake: it is stopped again once idle for its idle_after."},
+				},
+				Streams: []*pluginpb.Stream{
+					{Name: StreamTerminal, Description: "Its own screen and keyboard: a terminal on it, with no key and nothing installed. Yours alone.",
+						Requires: []string{driver.GuestConsole}},
 				},
 			},
 			{
@@ -777,6 +816,18 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 		if s.UserData != "" && !g.Traits(s.Kind).UserData {
 			refuse(&pluginpb.Refusal{Field: "/user_data", Reason: fmt.Sprintf("a %s in zone %s boots no user data", kindWord(s.Kind), req.GetZone())})
 		}
+		// its terminal: one that names no key pair has no other way in
+		switch t := g.Traits(s.Kind); {
+		case t.Console && t.UserData && slices.Contains(caps, driver.GuestConsole):
+			if s.Terminal == "" {
+				s.Terminal = TerminalLogin
+				if len(s.KeyPairs) == 0 {
+					s.Terminal = TerminalOpen
+				}
+			}
+		case s.Terminal != "":
+			refuse(&pluginpb.Refusal{Field: "/terminal", Reason: fmt.Sprintf("a %s in zone %s has no terminal", kindWord(s.Kind), req.GetZone())})
+		}
 		s.Awake = ""
 		refuse(p.setIdleAfter(&s, s.IdleAfter, req.GetZone(), caps))
 	case "set_idle_after":
@@ -944,6 +995,10 @@ func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) 
 	fixed("/network", in.Network != was.Network, or(was.Network, "its zone's own lane"), "the network a machine is on")
 	fixed("/key_pairs", !sameSet(in.KeyPairs, was.KeyPairs), or(strings.Join(was.KeyPairs, ", "), "none"), "a machine's key pairs")
 	fixed("/user_data", in.UserData != was.UserData, "other user data", "what a machine's first boot is handed")
+	// only a terminal that is NAMED is compared: what a machine that names
+	// none is born with is a new machine's, never asked of one that exists
+	// (and one born before machines said asks, as login does)
+	fixed("/terminal", in.Terminal != "" && in.Terminal != or(was.Terminal, TerminalLogin), or(was.Terminal, TerminalLogin), "how a machine's terminal greets")
 	if in.DiskGB != nil {
 		fixed("/disk_gb", *in.DiskGB != was.DiskGB, strconv.Itoa(was.DiskGB)+" GB", "a machine's root disk")
 	}
@@ -1074,7 +1129,8 @@ func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*plug
 	guest, err := g.CreateGuest(ctx, driver.GuestSpec{
 		ID: r.GetId(), Kind: s.Kind, Name: r.GetName(), Label: sdk.Label(r, "machine"),
 		Cores: s.Cores, MemoryMB: w.memoryMB, DiskGB: s.DiskGB,
-		Image: ref, SSHKeys: keys, UserData: []byte(s.UserData), Tags: tagsOf(s), Holds: w.holds, CPULimit: w.cpuLimit,
+		Image: ref, SSHKeys: keys, UserData: []byte(s.UserData), SignedIn: s.Terminal == TerminalOpen,
+		Tags: tagsOf(s), Holds: w.holds, CPULimit: w.cpuLimit,
 		CPU: s.CPU, Virtualization: s.Virtualization, CPUWeight: s.CPUWeight,
 		Network: s.Network,
 		Stopped: !w.running,
@@ -1152,7 +1208,9 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 		s.Awake = ""
 		ev = sdk.Event("machine.let_sleep", "", nil)
 	case "reboot":
+		done := p.reboots(r.GetId())
 		guest, err = g.Reboot(ctx, r.GetId())
+		done()
 		ev = sdk.Event("machine.rebooted", "", nil)
 	case "resize":
 		if hold != "" {
@@ -1405,6 +1463,152 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 	}
 	resp.Events = events
 	return resp, nil
+}
+
+// reboots marks a machine as being rebooted until the func it returns is
+// called.
+func (p *Plugin) reboots(id string) (done func()) {
+	p.rmu.Lock()
+	defer p.rmu.Unlock()
+	if p.rebooting == nil {
+		p.rebooting = map[string]chan struct{}{}
+	}
+	if _, already := p.rebooting[id]; already {
+		return func() {}
+	}
+	ch := make(chan struct{})
+	p.rebooting[id] = ch
+	return func() {
+		p.rmu.Lock()
+		defer p.rmu.Unlock()
+		delete(p.rebooting, id)
+		close(ch)
+	}
+}
+
+// rebooted waits for a machine's reboot to end, if one is under way; false:
+// none was, or whoever waits left first.
+func (p *Plugin) rebooted(ctx context.Context, id string) bool {
+	p.rmu.Lock()
+	ch := p.rebooting[id]
+	p.rmu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// Open carries a machine's terminal: its console at the engine, bytes both
+// ways, until its owner lets go or the machine stops. Who may open it is not
+// this plugin's to say: the core asked that before calling.
+func (p *Plugin) Open(st grpc.BidiStreamingServer[pluginpb.OpenRequest, pluginpb.OpenResponse]) error {
+	first, err := st.Recv()
+	if err != nil {
+		return err
+	}
+	o := first.GetOpen()
+	if o == nil || o.GetResource().GetType() != "machine" || o.GetStream() != StreamTerminal {
+		return sdk.Refuse("a machine has one stream: %s", StreamTerminal)
+	}
+	r := o.GetResource()
+	g, s, err := p.machine(r)
+	if err != nil {
+		return err
+	}
+	cons, ok := p.Driver(r.GetZone()).(driver.Consoles)
+	if !ok || !g.Traits(s.Kind).Console {
+		return sdk.Refuse("a %s in zone %s has no terminal", kindWord(s.Kind), r.GetZone())
+	}
+	ctx := st.Context()
+	guest, err := g.Guest(ctx, r.GetId())
+	if err != nil {
+		return engineErr(err)
+	}
+	if !guest.Running {
+		return sdk.NotNow("%s is stopped: start it, then open its terminal", r.GetId())
+	}
+	// the console now, and the window as last said: a machine that runs anew
+	// under its terminal — rebooted, stopped and started — is opened again on
+	// the same stream, and its owner watches it boot
+	var mu sync.Mutex
+	size := driver.ConsoleSize{Cols: int(o.GetSize().GetCols()), Rows: int(o.GetSize().GetRows())}
+	c, err := cons.Console(ctx, r.GetId(), size)
+	if err != nil {
+		return engineErr(err)
+	}
+	now := func() driver.Console { mu.Lock(); defer mu.Unlock(); return c }
+	defer func() { _ = now().Close() }()
+	if err := st.Send(&pluginpb.OpenResponse{What: &pluginpb.OpenResponse_Opened{Opened: &pluginpb.StreamOpened{}}}); err != nil {
+		return err
+	}
+	// what is typed, and the window: until the core lets go
+	go func() {
+		defer func() { _ = now().Close() }()
+		for {
+			m, err := st.Recv()
+			if err != nil {
+				return
+			}
+			switch {
+			case m.GetSize() != nil:
+				mu.Lock()
+				size = driver.ConsoleSize{Cols: int(m.GetSize().GetCols()), Rows: int(m.GetSize().GetRows())}
+				mu.Unlock()
+				_ = now().Resize(size)
+			case len(m.GetData()) > 0:
+				// typed into a console that just ended: lost, as on any screen
+				_, _ = now().Write(m.GetData())
+			}
+		}
+	}()
+	// what the machine says: until it stops, or its engine lets go
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := now().Read(buf)
+		if n > 0 {
+			if st.Send(&pluginpb.OpenResponse{What: &pluginpb.OpenResponse_Data{Data: slices.Clone(buf[:n])}}) != nil {
+				return nil
+			}
+		}
+		if err == nil {
+			continue
+		}
+		// it runs anew under its terminal — or was caught down on its way
+		// there, by a reboot asked here: once that reboot has ended, its
+		// console is opened again. A machine that simply stopped ends it.
+		if errors.Is(err, driver.ErrConsoleStopped) && p.rebooted(ctx, r.GetId()) {
+			err = driver.ErrConsoleRestarted
+		} else if errors.Is(err, driver.ErrConsoleRestarted) {
+			p.rebooted(ctx, r.GetId())
+		}
+		if errors.Is(err, driver.ErrConsoleRestarted) && ctx.Err() == nil {
+			mu.Lock()
+			again, aerr := cons.Console(ctx, r.GetId(), size)
+			if aerr == nil {
+				_ = c.Close()
+				c = again
+			}
+			mu.Unlock()
+			if aerr == nil {
+				continue
+			}
+			err = aerr
+		}
+		why := "its terminal was cut: " + err.Error()
+		switch {
+		case errors.Is(err, driver.ErrConsoleStopped), errors.Is(err, driver.ErrRefused), errors.Is(err, driver.ErrNotFound):
+			why = "the machine was stopped"
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe):
+			why = "its engine closed the terminal"
+		}
+		_ = st.Send(&pluginpb.OpenResponse{What: &pluginpb.OpenResponse_Closed{Closed: &pluginpb.StreamClosed{Reason: why}}})
+		return nil
+	}
 }
 
 // Survey reads what the zone's reservations wait on, which machines carry a

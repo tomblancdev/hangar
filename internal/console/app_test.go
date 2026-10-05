@@ -30,11 +30,13 @@ func TestTheAppHoldsNoWayIn(t *testing.T) {
 			return err
 		}
 		for i, line := range strings.Split(string(b), "\n") {
-			// the one file here the app did not write (tools/editor) is read
-			// like the others, but for the name every SVG is written under —
-			// a name, in an image it draws from its own bytes: nothing is fetched
+			// the files here the app did not write (tools/editor,
+			// tools/terminal) are read like the others, but for the names
+			// every SVG and every HTML element is made under — names, of what
+			// they draw from their own bytes: nothing is fetched
 			if strings.HasPrefix(p, "vendor/") {
 				line = strings.ReplaceAll(line, "http://www.w3.org/2000/svg", "")
+				line = strings.ReplaceAll(line, "http://www.w3.org/1999/xhtml", "")
 			}
 			if m := sinks.FindString(line); m != "" {
 				at := strings.Index(line, m)

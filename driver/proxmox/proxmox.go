@@ -142,9 +142,11 @@ type Driver struct {
 	shutdown int           // seconds a shutdown is waited for before a stop
 	listLag  time.Duration // pvestatd's pass: how late /cluster/resources may list a new guest
 	answerIn time.Duration // how long a node is given to answer a survey's question
-	watch    []string
-	caps     []driver.Capability
-	fenceErr string // why fence.pool is not advertised, when it is not
+	// how often an open console looks at its guest's power; 0 = consoleLook
+	consoleLook time.Duration
+	watch       []string
+	caps        []driver.Capability
+	fenceErr    string // why fence.pool is not advertised, when it is not
 
 	// the walls written a moment ago, by VMID: a start waits for Proxmox to
 	// have them on the wire (net.go)
@@ -274,7 +276,7 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	if d.nets.on() {
 		d.caps = append(d.caps, driver.NetPrivate)
 	}
-	why, err := d.fence(ctx)
+	why, perms, err := d.fence(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("proxmox zone %s: reading what the token may do: %w", p.Zone, err)
 	}
@@ -282,6 +284,9 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 		d.caps = append(d.caps, driver.FencePool)
 	}
 	d.fenceErr = why
+	if d.consoles(perms) {
+		d.caps = append(d.caps, driver.GuestConsole)
+	}
 	return d, nil
 }
 
@@ -294,15 +299,16 @@ func (d *Driver) FenceReport() string { return d.fenceErr }
 // fence reads the token's own permissions and returns why it is NOT fenced
 // to its pools: a privilege on a guest path outside them — but VM.Audit on a
 // guest the zone watches, which reads its power and nothing more — or one
-// that could widen its own rights.
-func (d *Driver) fence(ctx context.Context) (string, error) {
+// that could widen its own rights. It returns what it read too: the token's
+// privileges, path by path.
+func (d *Driver) fence(ctx context.Context) (string, map[string]map[string]int, error) {
 	var perms map[string]map[string]int
 	if err := d.c.call(ctx, http.MethodGet, "/access/permissions", nil, &perms); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	members, err := d.poolMembers(ctx)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var why []string
 	paths := make([]string, 0, len(perms))
@@ -332,7 +338,7 @@ func (d *Driver) fence(ctx context.Context) (string, error) {
 		}
 	}
 	if len(why) == 0 {
-		return "", nil
+		return "", perms, nil
 	}
 	sort.Strings(why)
 	if len(why) > 4 {
@@ -342,7 +348,7 @@ func (d *Driver) fence(ctx context.Context) (string, error) {
 	if d.nets.on() {
 		pools = d.pool + ", " + d.images + " and " + d.nets.pool
 	}
-	return "the token reaches beyond pools " + pools + ": " + strings.Join(why, ", "), nil
+	return "the token reaches beyond pools " + pools + ": " + strings.Join(why, ", "), perms, nil
 }
 
 // poolMembers are the VMIDs in the fence's pools: the machines', the images',
@@ -728,14 +734,15 @@ func (d *Driver) Guests(ctx context.Context) ([]driver.Guest, error) {
 }
 
 // Traits: a container changes everything live (its memory down only above
-// what it holds — Resize checks) and takes no user data; a VM grows its
-// memory live (hot-plugged), changes its cores at a cold start, and boots
-// its user data from the seed disc.
+// what it holds — Resize checks), takes no user data and has no console
+// here; a VM grows its memory live (hot-plugged), changes its cores at a
+// cold start, boots its user data from the seed disc, and its console — its
+// serial port — is opened where the token may (console.go).
 func (d *Driver) Traits(kind string) driver.Traits {
 	if kind == "container" {
 		return driver.Traits{LiveCores: true, LiveMemoryUp: true, LiveMemoryDown: true}
 	}
-	return driver.Traits{UserData: true, LiveMemoryUp: true}
+	return driver.Traits{UserData: true, LiveMemoryUp: true, Console: slices.Contains(d.caps, driver.GuestConsole)}
 }
 
 func (d *Driver) CreateGuest(ctx context.Context, s driver.GuestSpec) (driver.Guest, error) {
@@ -1071,7 +1078,12 @@ func (d *Driver) upload(ctx context.Context, s driver.GuestSpec, net *seedNet, v
 	if err != nil || have {
 		return err
 	}
-	iso := nocloudSeed(s.ID, s.Name, s.SSHKeys, s.UserData, net, time.Now())
+	// a guest born signed in: the step rides beside its owner's user data
+	userData := s.UserData
+	if s.SignedIn {
+		userData = driver.FirstBoot(userData, driver.SignedInConsole)
+	}
+	iso := nocloudSeed(s.ID, s.Name, s.SSHKeys, userData, net, time.Now())
 	var upid string
 	path := "/nodes/" + url.PathEscape(d.node) + "/storage/" + url.PathEscape(d.seeds) + "/upload"
 	if err := d.c.upload(ctx, path, map[string]string{"content": "iso"}, seedName(s.ID), iso, &upid); err != nil {

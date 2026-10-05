@@ -212,3 +212,10 @@ week's image is where `@debian-13` wants it — it is never moved to the newest
 resource made again (delete, then create, its attached volumes carried across:
 the machine stopped, each detached, re-attached to the new one), shown in the
 plan and asked, as Terraform's `-/+`.*
+
+*A machine's terminal is the console's.* A stream is in the API
+(`GET /v1/resources/{id}/streams/{stream}`, a WebSocket, with the same token
+this command line sends), and a machine's `terminal` field is a flag here
+like any other (`--terminal open`); this command line has no command that
+opens one yet. A machine that names a key pair is reached by `ssh`, as
+before.

@@ -6,6 +6,11 @@
 // another plugin's credential, and it never decides who may ask: identity,
 // tiers, limits, the registry and the audit belong to the core.
 //
+// One call is not a request and its answer: Open carries bytes both ways for
+// as long as both ends hold it (a machine's terminal). Who may open one is
+// the core's to say, like everything else: a stream reaches INSIDE a
+// resource, so it is its owner's alone.
+//
 // Values that are JSON documents travel as bytes holding JSON (UTF-8): specs,
 // params, observed state, schemas. A JSON number stays a number that way,
 // which a google.protobuf.Struct would turn into a double.
@@ -325,7 +330,9 @@ type ResourceType struct {
 	// Beyond create and delete, which every type has.
 	Actions []*Action `protobuf:"bytes,6,rep,name=actions,proto3" json:"actions,omitempty"`
 	// Capability flags this type needs on a zone (on top of the plugin's).
-	Requires      []string `protobuf:"bytes,7,rep,name=requires,proto3" json:"requires,omitempty"`
+	Requires []string `protobuf:"bytes,7,rep,name=requires,proto3" json:"requires,omitempty"`
+	// What can be held open on one of its resources, beside its actions.
+	Streams       []*Stream `protobuf:"bytes,8,rep,name=streams,proto3" json:"streams,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -409,6 +416,80 @@ func (x *ResourceType) GetRequires() []string {
 	return nil
 }
 
+func (x *ResourceType) GetStreams() []*Stream {
+	if x != nil {
+		return x.Streams
+	}
+	return nil
+}
+
+// Stream is something of a resource that is held open, bytes both ways: a
+// machine's console. The core opens one for the resource's OWNER alone — an
+// operator sees a machine, stops it, deletes it, and does not enter it — and
+// keeps one open per resource and stream: a second opening ends the first.
+type Stream struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// "console". Lowercase letters and "_", as an action's.
+	Name        string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	// Capability flags it needs on the zone; where they are missing the stream
+	// is not offered there.
+	Requires      []string `protobuf:"bytes,3,rep,name=requires,proto3" json:"requires,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Stream) Reset() {
+	*x = Stream{}
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Stream) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Stream) ProtoMessage() {}
+
+func (x *Stream) ProtoReflect() protoreflect.Message {
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Stream.ProtoReflect.Descriptor instead.
+func (*Stream) Descriptor() ([]byte, []int) {
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *Stream) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Stream) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *Stream) GetRequires() []string {
+	if x != nil {
+		return x.Requires
+	}
+	return nil
+}
+
 type Action struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -429,7 +510,7 @@ type Action struct {
 
 func (x *Action) Reset() {
 	*x = Action{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[3]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -441,7 +522,7 @@ func (x *Action) String() string {
 func (*Action) ProtoMessage() {}
 
 func (x *Action) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[3]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -454,7 +535,7 @@ func (x *Action) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Action.ProtoReflect.Descriptor instead.
 func (*Action) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{3}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Action) GetName() string {
@@ -506,7 +587,7 @@ type Dimension struct {
 
 func (x *Dimension) Reset() {
 	*x = Dimension{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[4]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -518,7 +599,7 @@ func (x *Dimension) String() string {
 func (*Dimension) ProtoMessage() {}
 
 func (x *Dimension) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[4]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -531,7 +612,7 @@ func (x *Dimension) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Dimension.ProtoReflect.Descriptor instead.
 func (*Dimension) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{4}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Dimension) GetName() string {
@@ -573,7 +654,7 @@ type Credential struct {
 
 func (x *Credential) Reset() {
 	*x = Credential{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[5]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -585,7 +666,7 @@ func (x *Credential) String() string {
 func (*Credential) ProtoMessage() {}
 
 func (x *Credential) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[5]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -598,7 +679,7 @@ func (x *Credential) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Credential.ProtoReflect.Descriptor instead.
 func (*Credential) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{5}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Credential) GetRequired() bool {
@@ -626,7 +707,7 @@ type ConfigureRequest struct {
 
 func (x *ConfigureRequest) Reset() {
 	*x = ConfigureRequest{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[6]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -638,7 +719,7 @@ func (x *ConfigureRequest) String() string {
 func (*ConfigureRequest) ProtoMessage() {}
 
 func (x *ConfigureRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[6]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -651,7 +732,7 @@ func (x *ConfigureRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigureRequest.ProtoReflect.Descriptor instead.
 func (*ConfigureRequest) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{6}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ConfigureRequest) GetZones() []*ZoneConfig {
@@ -687,7 +768,7 @@ type ZoneConfig struct {
 
 func (x *ZoneConfig) Reset() {
 	*x = ZoneConfig{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[7]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -699,7 +780,7 @@ func (x *ZoneConfig) String() string {
 func (*ZoneConfig) ProtoMessage() {}
 
 func (x *ZoneConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[7]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -712,7 +793,7 @@ func (x *ZoneConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZoneConfig.ProtoReflect.Descriptor instead.
 func (*ZoneConfig) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{7}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ZoneConfig) GetName() string {
@@ -766,7 +847,7 @@ type ConfigureResponse struct {
 
 func (x *ConfigureResponse) Reset() {
 	*x = ConfigureResponse{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[8]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -778,7 +859,7 @@ func (x *ConfigureResponse) String() string {
 func (*ConfigureResponse) ProtoMessage() {}
 
 func (x *ConfigureResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[8]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -791,7 +872,7 @@ func (x *ConfigureResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigureResponse.ProtoReflect.Descriptor instead.
 func (*ConfigureResponse) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{8}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ConfigureResponse) GetZones() []*ZoneReport {
@@ -814,7 +895,7 @@ type ZoneReport struct {
 
 func (x *ZoneReport) Reset() {
 	*x = ZoneReport{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[9]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -826,7 +907,7 @@ func (x *ZoneReport) String() string {
 func (*ZoneReport) ProtoMessage() {}
 
 func (x *ZoneReport) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[9]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -839,7 +920,7 @@ func (x *ZoneReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZoneReport.ProtoReflect.Descriptor instead.
 func (*ZoneReport) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{9}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ZoneReport) GetName() string {
@@ -905,7 +986,7 @@ type Resource struct {
 
 func (x *Resource) Reset() {
 	*x = Resource{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[10]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -917,7 +998,7 @@ func (x *Resource) String() string {
 func (*Resource) ProtoMessage() {}
 
 func (x *Resource) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[10]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -930,7 +1011,7 @@ func (x *Resource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Resource.ProtoReflect.Descriptor instead.
 func (*Resource) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{10}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Resource) GetId() string {
@@ -1047,7 +1128,7 @@ type PlanRequest struct {
 
 func (x *PlanRequest) Reset() {
 	*x = PlanRequest{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[11]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1059,7 +1140,7 @@ func (x *PlanRequest) String() string {
 func (*PlanRequest) ProtoMessage() {}
 
 func (x *PlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[11]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1072,7 +1153,7 @@ func (x *PlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanRequest.ProtoReflect.Descriptor instead.
 func (*PlanRequest) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{11}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *PlanRequest) GetType() string {
@@ -1147,7 +1228,7 @@ type PlanResponse struct {
 
 func (x *PlanResponse) Reset() {
 	*x = PlanResponse{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[12]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1159,7 +1240,7 @@ func (x *PlanResponse) String() string {
 func (*PlanResponse) ProtoMessage() {}
 
 func (x *PlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[12]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1172,7 +1253,7 @@ func (x *PlanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanResponse.ProtoReflect.Descriptor instead.
 func (*PlanResponse) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{12}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *PlanResponse) GetSpec() []byte {
@@ -1234,7 +1315,7 @@ type Room struct {
 
 func (x *Room) Reset() {
 	*x = Room{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[13]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1246,7 +1327,7 @@ func (x *Room) String() string {
 func (*Room) ProtoMessage() {}
 
 func (x *Room) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[13]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1259,7 +1340,7 @@ func (x *Room) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Room.ProtoReflect.Descriptor instead.
 func (*Room) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{13}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *Room) GetGuaranteedMb() int64 {
@@ -1298,7 +1379,7 @@ type PlanChangeRequest struct {
 
 func (x *PlanChangeRequest) Reset() {
 	*x = PlanChangeRequest{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[14]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1310,7 +1391,7 @@ func (x *PlanChangeRequest) String() string {
 func (*PlanChangeRequest) ProtoMessage() {}
 
 func (x *PlanChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[14]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1323,7 +1404,7 @@ func (x *PlanChangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanChangeRequest.ProtoReflect.Descriptor instead.
 func (*PlanChangeRequest) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{14}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *PlanChangeRequest) GetCurrent() *Resource {
@@ -1362,7 +1443,7 @@ type PlanChangeResponse struct {
 
 func (x *PlanChangeResponse) Reset() {
 	*x = PlanChangeResponse{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[15]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1374,7 +1455,7 @@ func (x *PlanChangeResponse) String() string {
 func (*PlanChangeResponse) ProtoMessage() {}
 
 func (x *PlanChangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[15]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1387,7 +1468,7 @@ func (x *PlanChangeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanChangeResponse.ProtoReflect.Descriptor instead.
 func (*PlanChangeResponse) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{15}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *PlanChangeResponse) GetSteps() []*Step {
@@ -1415,7 +1496,7 @@ type Step struct {
 
 func (x *Step) Reset() {
 	*x = Step{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[16]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1427,7 +1508,7 @@ func (x *Step) String() string {
 func (*Step) ProtoMessage() {}
 
 func (x *Step) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[16]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1440,7 +1521,7 @@ func (x *Step) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Step.ProtoReflect.Descriptor instead.
 func (*Step) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{16}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Step) GetAction() string {
@@ -1468,7 +1549,7 @@ type Refusal struct {
 
 func (x *Refusal) Reset() {
 	*x = Refusal{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[17]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1480,7 +1561,7 @@ func (x *Refusal) String() string {
 func (*Refusal) ProtoMessage() {}
 
 func (x *Refusal) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[17]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1493,7 +1574,7 @@ func (x *Refusal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Refusal.ProtoReflect.Descriptor instead.
 func (*Refusal) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{17}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *Refusal) GetField() string {
@@ -1525,7 +1606,7 @@ type CreateRequest struct {
 
 func (x *CreateRequest) Reset() {
 	*x = CreateRequest{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[18]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1537,7 +1618,7 @@ func (x *CreateRequest) String() string {
 func (*CreateRequest) ProtoMessage() {}
 
 func (x *CreateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[18]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1550,7 +1631,7 @@ func (x *CreateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRequest.ProtoReflect.Descriptor instead.
 func (*CreateRequest) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{18}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CreateRequest) GetResource() *Resource {
@@ -1579,7 +1660,7 @@ type CreateResponse struct {
 
 func (x *CreateResponse) Reset() {
 	*x = CreateResponse{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[19]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1591,7 +1672,7 @@ func (x *CreateResponse) String() string {
 func (*CreateResponse) ProtoMessage() {}
 
 func (x *CreateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[19]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1604,7 +1685,7 @@ func (x *CreateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateResponse.ProtoReflect.Descriptor instead.
 func (*CreateResponse) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{19}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CreateResponse) GetObserved() []byte {
@@ -1648,7 +1729,7 @@ type Usability struct {
 
 func (x *Usability) Reset() {
 	*x = Usability{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[20]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1660,7 +1741,7 @@ func (x *Usability) String() string {
 func (*Usability) ProtoMessage() {}
 
 func (x *Usability) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[20]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1673,7 +1754,7 @@ func (x *Usability) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Usability.ProtoReflect.Descriptor instead.
 func (*Usability) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{20}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *Usability) GetUnusable() string {
@@ -1699,7 +1780,7 @@ type DeleteRequest struct {
 
 func (x *DeleteRequest) Reset() {
 	*x = DeleteRequest{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[21]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1711,7 +1792,7 @@ func (x *DeleteRequest) String() string {
 func (*DeleteRequest) ProtoMessage() {}
 
 func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[21]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1724,7 +1805,7 @@ func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRequest) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{21}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DeleteRequest) GetResource() *Resource {
@@ -1745,7 +1826,7 @@ type DeleteResponse struct {
 
 func (x *DeleteResponse) Reset() {
 	*x = DeleteResponse{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[22]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1757,7 +1838,7 @@ func (x *DeleteResponse) String() string {
 func (*DeleteResponse) ProtoMessage() {}
 
 func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[22]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1770,7 +1851,7 @@ func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteResponse) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{22}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *DeleteResponse) GetEvents() []*Event {
@@ -1801,7 +1882,7 @@ type ActRequest struct {
 
 func (x *ActRequest) Reset() {
 	*x = ActRequest{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[23]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1813,7 +1894,7 @@ func (x *ActRequest) String() string {
 func (*ActRequest) ProtoMessage() {}
 
 func (x *ActRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[23]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1826,7 +1907,7 @@ func (x *ActRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActRequest.ProtoReflect.Descriptor instead.
 func (*ActRequest) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{23}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ActRequest) GetResource() *Resource {
@@ -1875,7 +1956,7 @@ type ActResponse struct {
 
 func (x *ActResponse) Reset() {
 	*x = ActResponse{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[24]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1887,7 +1968,7 @@ func (x *ActResponse) String() string {
 func (*ActResponse) ProtoMessage() {}
 
 func (x *ActResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[24]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1900,7 +1981,7 @@ func (x *ActResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActResponse.ProtoReflect.Descriptor instead.
 func (*ActResponse) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{24}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ActResponse) GetSpec() []byte {
@@ -1954,7 +2035,7 @@ type ReconcileRequest struct {
 
 func (x *ReconcileRequest) Reset() {
 	*x = ReconcileRequest{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[25]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1966,7 +2047,7 @@ func (x *ReconcileRequest) String() string {
 func (*ReconcileRequest) ProtoMessage() {}
 
 func (x *ReconcileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[25]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1979,7 +2060,7 @@ func (x *ReconcileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReconcileRequest.ProtoReflect.Descriptor instead.
 func (*ReconcileRequest) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{25}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ReconcileRequest) GetResource() *Resource {
@@ -2017,7 +2098,7 @@ type ReconcileResponse struct {
 
 func (x *ReconcileResponse) Reset() {
 	*x = ReconcileResponse{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[26]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2029,7 +2110,7 @@ func (x *ReconcileResponse) String() string {
 func (*ReconcileResponse) ProtoMessage() {}
 
 func (x *ReconcileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[26]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2042,7 +2123,7 @@ func (x *ReconcileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReconcileResponse.ProtoReflect.Descriptor instead.
 func (*ReconcileResponse) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{26}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ReconcileResponse) GetDrift() Drift {
@@ -2123,7 +2204,7 @@ type Consumed struct {
 
 func (x *Consumed) Reset() {
 	*x = Consumed{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[27]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2135,7 +2216,7 @@ func (x *Consumed) String() string {
 func (*Consumed) ProtoMessage() {}
 
 func (x *Consumed) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[27]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2148,7 +2229,7 @@ func (x *Consumed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Consumed.ProtoReflect.Descriptor instead.
 func (*Consumed) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{27}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *Consumed) GetAmounts() map[string]float64 {
@@ -2168,7 +2249,7 @@ type Usage struct {
 
 func (x *Usage) Reset() {
 	*x = Usage{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[28]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2180,7 +2261,7 @@ func (x *Usage) String() string {
 func (*Usage) ProtoMessage() {}
 
 func (x *Usage) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[28]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2193,7 +2274,7 @@ func (x *Usage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Usage.ProtoReflect.Descriptor instead.
 func (*Usage) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{28}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *Usage) GetAmounts() map[string]int64 {
@@ -2201,6 +2282,404 @@ func (x *Usage) GetAmounts() map[string]int64 {
 		return x.Amounts
 	}
 	return nil
+}
+
+type OpenRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to What:
+	//
+	//	*OpenRequest_Open
+	//	*OpenRequest_Data
+	//	*OpenRequest_Size
+	What          isOpenRequest_What `protobuf_oneof:"what"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OpenRequest) Reset() {
+	*x = OpenRequest{}
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpenRequest) ProtoMessage() {}
+
+func (x *OpenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpenRequest.ProtoReflect.Descriptor instead.
+func (*OpenRequest) Descriptor() ([]byte, []int) {
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *OpenRequest) GetWhat() isOpenRequest_What {
+	if x != nil {
+		return x.What
+	}
+	return nil
+}
+
+func (x *OpenRequest) GetOpen() *StreamOpen {
+	if x != nil {
+		if x, ok := x.What.(*OpenRequest_Open); ok {
+			return x.Open
+		}
+	}
+	return nil
+}
+
+func (x *OpenRequest) GetData() []byte {
+	if x != nil {
+		if x, ok := x.What.(*OpenRequest_Data); ok {
+			return x.Data
+		}
+	}
+	return nil
+}
+
+func (x *OpenRequest) GetSize() *StreamSize {
+	if x != nil {
+		if x, ok := x.What.(*OpenRequest_Size); ok {
+			return x.Size
+		}
+	}
+	return nil
+}
+
+type isOpenRequest_What interface {
+	isOpenRequest_What()
+}
+
+type OpenRequest_Open struct {
+	// First, once.
+	Open *StreamOpen `protobuf:"bytes,1,opt,name=open,proto3,oneof"`
+}
+
+type OpenRequest_Data struct {
+	// What the person sends (keys typed), as it comes.
+	Data []byte `protobuf:"bytes,2,opt,name=data,proto3,oneof"`
+}
+
+type OpenRequest_Size struct {
+	// The person's window changed.
+	Size *StreamSize `protobuf:"bytes,3,opt,name=size,proto3,oneof"`
+}
+
+func (*OpenRequest_Open) isOpenRequest_What() {}
+
+func (*OpenRequest_Data) isOpenRequest_What() {}
+
+func (*OpenRequest_Size) isOpenRequest_What() {}
+
+type StreamOpen struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The resource as the registry holds it.
+	Resource *Resource `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	// The stream's name, one its type declared.
+	Stream string `protobuf:"bytes,2,opt,name=stream,proto3" json:"stream,omitempty"`
+	// The person's window as it opens; absent = unknown.
+	Size          *StreamSize `protobuf:"bytes,3,opt,name=size,proto3" json:"size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamOpen) Reset() {
+	*x = StreamOpen{}
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamOpen) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamOpen) ProtoMessage() {}
+
+func (x *StreamOpen) ProtoReflect() protoreflect.Message {
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamOpen.ProtoReflect.Descriptor instead.
+func (*StreamOpen) Descriptor() ([]byte, []int) {
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *StreamOpen) GetResource() *Resource {
+	if x != nil {
+		return x.Resource
+	}
+	return nil
+}
+
+func (x *StreamOpen) GetStream() string {
+	if x != nil {
+		return x.Stream
+	}
+	return ""
+}
+
+func (x *StreamOpen) GetSize() *StreamSize {
+	if x != nil {
+		return x.Size
+	}
+	return nil
+}
+
+// StreamSize is a terminal's grid, in characters.
+type StreamSize struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cols          uint32                 `protobuf:"varint,1,opt,name=cols,proto3" json:"cols,omitempty"`
+	Rows          uint32                 `protobuf:"varint,2,opt,name=rows,proto3" json:"rows,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamSize) Reset() {
+	*x = StreamSize{}
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamSize) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamSize) ProtoMessage() {}
+
+func (x *StreamSize) ProtoReflect() protoreflect.Message {
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamSize.ProtoReflect.Descriptor instead.
+func (*StreamSize) Descriptor() ([]byte, []int) {
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *StreamSize) GetCols() uint32 {
+	if x != nil {
+		return x.Cols
+	}
+	return 0
+}
+
+func (x *StreamSize) GetRows() uint32 {
+	if x != nil {
+		return x.Rows
+	}
+	return 0
+}
+
+type OpenResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to What:
+	//
+	//	*OpenResponse_Opened
+	//	*OpenResponse_Data
+	//	*OpenResponse_Closed
+	What          isOpenResponse_What `protobuf_oneof:"what"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OpenResponse) Reset() {
+	*x = OpenResponse{}
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpenResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpenResponse) ProtoMessage() {}
+
+func (x *OpenResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpenResponse.ProtoReflect.Descriptor instead.
+func (*OpenResponse) Descriptor() ([]byte, []int) {
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *OpenResponse) GetWhat() isOpenResponse_What {
+	if x != nil {
+		return x.What
+	}
+	return nil
+}
+
+func (x *OpenResponse) GetOpened() *StreamOpened {
+	if x != nil {
+		if x, ok := x.What.(*OpenResponse_Opened); ok {
+			return x.Opened
+		}
+	}
+	return nil
+}
+
+func (x *OpenResponse) GetData() []byte {
+	if x != nil {
+		if x, ok := x.What.(*OpenResponse_Data); ok {
+			return x.Data
+		}
+	}
+	return nil
+}
+
+func (x *OpenResponse) GetClosed() *StreamClosed {
+	if x != nil {
+		if x, ok := x.What.(*OpenResponse_Closed); ok {
+			return x.Closed
+		}
+	}
+	return nil
+}
+
+type isOpenResponse_What interface {
+	isOpenResponse_What()
+}
+
+type OpenResponse_Opened struct {
+	// First, once: it is open.
+	Opened *StreamOpened `protobuf:"bytes,1,opt,name=opened,proto3,oneof"`
+}
+
+type OpenResponse_Data struct {
+	// What the resource says, as it comes.
+	Data []byte `protobuf:"bytes,2,opt,name=data,proto3,oneof"`
+}
+
+type OpenResponse_Closed struct {
+	// Last: the plugin let go, and why — "the machine was stopped".
+	Closed *StreamClosed `protobuf:"bytes,3,opt,name=closed,proto3,oneof"`
+}
+
+func (*OpenResponse_Opened) isOpenResponse_What() {}
+
+func (*OpenResponse_Data) isOpenResponse_What() {}
+
+func (*OpenResponse_Closed) isOpenResponse_What() {}
+
+type StreamOpened struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamOpened) Reset() {
+	*x = StreamOpened{}
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamOpened) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamOpened) ProtoMessage() {}
+
+func (x *StreamOpened) ProtoReflect() protoreflect.Message {
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamOpened.ProtoReflect.Descriptor instead.
+func (*StreamOpened) Descriptor() ([]byte, []int) {
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{34}
+}
+
+type StreamClosed struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Reason        string                 `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamClosed) Reset() {
+	*x = StreamClosed{}
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamClosed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamClosed) ProtoMessage() {}
+
+func (x *StreamClosed) ProtoReflect() protoreflect.Message {
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamClosed.ProtoReflect.Descriptor instead.
+func (*StreamClosed) Descriptor() ([]byte, []int) {
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *StreamClosed) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
 }
 
 type SurveyRequest struct {
@@ -2214,7 +2693,7 @@ type SurveyRequest struct {
 
 func (x *SurveyRequest) Reset() {
 	*x = SurveyRequest{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[29]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2226,7 +2705,7 @@ func (x *SurveyRequest) String() string {
 func (*SurveyRequest) ProtoMessage() {}
 
 func (x *SurveyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[29]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2239,7 +2718,7 @@ func (x *SurveyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SurveyRequest.ProtoReflect.Descriptor instead.
 func (*SurveyRequest) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{29}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SurveyRequest) GetZone() string {
@@ -2269,7 +2748,7 @@ type Condition struct {
 
 func (x *Condition) Reset() {
 	*x = Condition{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[30]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2281,7 +2760,7 @@ func (x *Condition) String() string {
 func (*Condition) ProtoMessage() {}
 
 func (x *Condition) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[30]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2294,7 +2773,7 @@ func (x *Condition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Condition.ProtoReflect.Descriptor instead.
 func (*Condition) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{30}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *Condition) GetWhat() isCondition_What {
@@ -2357,7 +2836,7 @@ type SurveyResponse struct {
 
 func (x *SurveyResponse) Reset() {
 	*x = SurveyResponse{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[31]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2369,7 +2848,7 @@ func (x *SurveyResponse) String() string {
 func (*SurveyResponse) ProtoMessage() {}
 
 func (x *SurveyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[31]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2382,7 +2861,7 @@ func (x *SurveyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SurveyResponse.ProtoReflect.Descriptor instead.
 func (*SurveyResponse) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{31}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *SurveyResponse) GetConditions() []*ConditionState {
@@ -2418,7 +2897,7 @@ type ConditionState struct {
 
 func (x *ConditionState) Reset() {
 	*x = ConditionState{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[32]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2430,7 +2909,7 @@ func (x *ConditionState) String() string {
 func (*ConditionState) ProtoMessage() {}
 
 func (x *ConditionState) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[32]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2443,7 +2922,7 @@ func (x *ConditionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConditionState.ProtoReflect.Descriptor instead.
 func (*ConditionState) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{32}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ConditionState) GetMet() bool {
@@ -2472,7 +2951,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[33]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2484,7 +2963,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[33]
+	mi := &file_hangar_plugin_v1_plugin_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2497,7 +2976,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{33}
+	return file_hangar_plugin_v1_plugin_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *Event) GetName() string {
@@ -2539,7 +3018,7 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\n" +
 	"credential\x18\x06 \x01(\v2\x1c.hangar.plugin.v1.CredentialR\n" +
 	"credential\x12\x16\n" +
-	"\x06events\x18\a \x03(\tR\x06events\"\xdf\x01\n" +
+	"\x06events\x18\a \x03(\tR\x06events\"\x93\x02\n" +
 	"\fResourceType\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\tid_prefix\x18\x02 \x01(\tR\bidPrefix\x12\x14\n" +
@@ -2547,7 +3026,12 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\vdescription\x18\x04 \x01(\tR\vdescription\x12\x16\n" +
 	"\x06schema\x18\x05 \x01(\fR\x06schema\x122\n" +
 	"\aactions\x18\x06 \x03(\v2\x18.hangar.plugin.v1.ActionR\aactions\x12\x1a\n" +
-	"\brequires\x18\a \x03(\tR\brequires\"\xa4\x01\n" +
+	"\brequires\x18\a \x03(\tR\brequires\x122\n" +
+	"\astreams\x18\b \x03(\v2\x18.hangar.plugin.v1.StreamR\astreams\"Z\n" +
+	"\x06Stream\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x1a\n" +
+	"\brequires\x18\x03 \x03(\tR\brequires\"\xa4\x01\n" +
 	"\x06Action\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12#\n" +
@@ -2693,7 +3177,29 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\aamounts\x18\x01 \x03(\v2$.hangar.plugin.v1.Usage.AmountsEntryR\aamounts\x1a:\n" +
 	"\fAmountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"`\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\x93\x01\n" +
+	"\vOpenRequest\x122\n" +
+	"\x04open\x18\x01 \x01(\v2\x1c.hangar.plugin.v1.StreamOpenH\x00R\x04open\x12\x14\n" +
+	"\x04data\x18\x02 \x01(\fH\x00R\x04data\x122\n" +
+	"\x04size\x18\x03 \x01(\v2\x1c.hangar.plugin.v1.StreamSizeH\x00R\x04sizeB\x06\n" +
+	"\x04what\"\x8e\x01\n" +
+	"\n" +
+	"StreamOpen\x126\n" +
+	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\x12\x16\n" +
+	"\x06stream\x18\x02 \x01(\tR\x06stream\x120\n" +
+	"\x04size\x18\x03 \x01(\v2\x1c.hangar.plugin.v1.StreamSizeR\x04size\"4\n" +
+	"\n" +
+	"StreamSize\x12\x12\n" +
+	"\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n" +
+	"\x04rows\x18\x02 \x01(\rR\x04rows\"\xa0\x01\n" +
+	"\fOpenResponse\x128\n" +
+	"\x06opened\x18\x01 \x01(\v2\x1e.hangar.plugin.v1.StreamOpenedH\x00R\x06opened\x12\x14\n" +
+	"\x04data\x18\x02 \x01(\fH\x00R\x04data\x128\n" +
+	"\x06closed\x18\x03 \x01(\v2\x1e.hangar.plugin.v1.StreamClosedH\x00R\x06closedB\x06\n" +
+	"\x04what\"\x0e\n" +
+	"\fStreamOpened\"&\n" +
+	"\fStreamClosed\x12\x16\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason\"`\n" +
 	"\rSurveyRequest\x12\x12\n" +
 	"\x04zone\x18\x01 \x01(\tR\x04zone\x12;\n" +
 	"\n" +
@@ -2733,7 +3239,7 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\rDRIFT_IN_SYNC\x10\x01\x12\x12\n" +
 	"\x0eDRIFT_REPAIRED\x10\x02\x12\x11\n" +
 	"\rDRIFT_DRIFTED\x10\x03\x12\x11\n" +
-	"\rDRIFT_MISSING\x10\x042\xd9\x05\n" +
+	"\rDRIFT_MISSING\x10\x042\xa4\x06\n" +
 	"\rPluginService\x12Q\n" +
 	"\bDescribe\x12!.hangar.plugin.v1.DescribeRequest\x1a\".hangar.plugin.v1.DescribeResponse\x12T\n" +
 	"\tConfigure\x12\".hangar.plugin.v1.ConfigureRequest\x1a#.hangar.plugin.v1.ConfigureResponse\x12E\n" +
@@ -2744,7 +3250,8 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x06Delete\x12\x1f.hangar.plugin.v1.DeleteRequest\x1a .hangar.plugin.v1.DeleteResponse\x12B\n" +
 	"\x03Act\x12\x1c.hangar.plugin.v1.ActRequest\x1a\x1d.hangar.plugin.v1.ActResponse\x12T\n" +
 	"\tReconcile\x12\".hangar.plugin.v1.ReconcileRequest\x1a#.hangar.plugin.v1.ReconcileResponse\x12K\n" +
-	"\x06Survey\x12\x1f.hangar.plugin.v1.SurveyRequest\x1a .hangar.plugin.v1.SurveyResponseB,Z*github.com/tomblancdev/hangar/sdk/pluginpbb\x06proto3"
+	"\x06Survey\x12\x1f.hangar.plugin.v1.SurveyRequest\x1a .hangar.plugin.v1.SurveyResponse\x12I\n" +
+	"\x04Open\x12\x1d.hangar.plugin.v1.OpenRequest\x1a\x1e.hangar.plugin.v1.OpenResponse(\x010\x01B,Z*github.com/tomblancdev/hangar/sdk/pluginpbb\x06proto3"
 
 var (
 	file_hangar_plugin_v1_plugin_proto_rawDescOnce sync.Once
@@ -2759,122 +3266,138 @@ func file_hangar_plugin_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_hangar_plugin_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_hangar_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_hangar_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_hangar_plugin_v1_plugin_proto_goTypes = []any{
 	(DimensionKind)(0),         // 0: hangar.plugin.v1.DimensionKind
 	(Drift)(0),                 // 1: hangar.plugin.v1.Drift
 	(*DescribeRequest)(nil),    // 2: hangar.plugin.v1.DescribeRequest
 	(*DescribeResponse)(nil),   // 3: hangar.plugin.v1.DescribeResponse
 	(*ResourceType)(nil),       // 4: hangar.plugin.v1.ResourceType
-	(*Action)(nil),             // 5: hangar.plugin.v1.Action
-	(*Dimension)(nil),          // 6: hangar.plugin.v1.Dimension
-	(*Credential)(nil),         // 7: hangar.plugin.v1.Credential
-	(*ConfigureRequest)(nil),   // 8: hangar.plugin.v1.ConfigureRequest
-	(*ZoneConfig)(nil),         // 9: hangar.plugin.v1.ZoneConfig
-	(*ConfigureResponse)(nil),  // 10: hangar.plugin.v1.ConfigureResponse
-	(*ZoneReport)(nil),         // 11: hangar.plugin.v1.ZoneReport
-	(*Resource)(nil),           // 12: hangar.plugin.v1.Resource
-	(*PlanRequest)(nil),        // 13: hangar.plugin.v1.PlanRequest
-	(*PlanResponse)(nil),       // 14: hangar.plugin.v1.PlanResponse
-	(*Room)(nil),               // 15: hangar.plugin.v1.Room
-	(*PlanChangeRequest)(nil),  // 16: hangar.plugin.v1.PlanChangeRequest
-	(*PlanChangeResponse)(nil), // 17: hangar.plugin.v1.PlanChangeResponse
-	(*Step)(nil),               // 18: hangar.plugin.v1.Step
-	(*Refusal)(nil),            // 19: hangar.plugin.v1.Refusal
-	(*CreateRequest)(nil),      // 20: hangar.plugin.v1.CreateRequest
-	(*CreateResponse)(nil),     // 21: hangar.plugin.v1.CreateResponse
-	(*Usability)(nil),          // 22: hangar.plugin.v1.Usability
-	(*DeleteRequest)(nil),      // 23: hangar.plugin.v1.DeleteRequest
-	(*DeleteResponse)(nil),     // 24: hangar.plugin.v1.DeleteResponse
-	(*ActRequest)(nil),         // 25: hangar.plugin.v1.ActRequest
-	(*ActResponse)(nil),        // 26: hangar.plugin.v1.ActResponse
-	(*ReconcileRequest)(nil),   // 27: hangar.plugin.v1.ReconcileRequest
-	(*ReconcileResponse)(nil),  // 28: hangar.plugin.v1.ReconcileResponse
-	(*Consumed)(nil),           // 29: hangar.plugin.v1.Consumed
-	(*Usage)(nil),              // 30: hangar.plugin.v1.Usage
-	(*SurveyRequest)(nil),      // 31: hangar.plugin.v1.SurveyRequest
-	(*Condition)(nil),          // 32: hangar.plugin.v1.Condition
-	(*SurveyResponse)(nil),     // 33: hangar.plugin.v1.SurveyResponse
-	(*ConditionState)(nil),     // 34: hangar.plugin.v1.ConditionState
-	(*Event)(nil),              // 35: hangar.plugin.v1.Event
-	nil,                        // 36: hangar.plugin.v1.ZoneConfig.OptionsEntry
-	nil,                        // 37: hangar.plugin.v1.Resource.TagsEntry
-	nil,                        // 38: hangar.plugin.v1.PlanResponse.UsageEntry
-	nil,                        // 39: hangar.plugin.v1.PlanResponse.ChoicesEntry
-	nil,                        // 40: hangar.plugin.v1.Consumed.AmountsEntry
-	nil,                        // 41: hangar.plugin.v1.Usage.AmountsEntry
-	nil,                        // 42: hangar.plugin.v1.SurveyResponse.HoldsEntry
-	nil,                        // 43: hangar.plugin.v1.Event.FieldsEntry
+	(*Stream)(nil),             // 5: hangar.plugin.v1.Stream
+	(*Action)(nil),             // 6: hangar.plugin.v1.Action
+	(*Dimension)(nil),          // 7: hangar.plugin.v1.Dimension
+	(*Credential)(nil),         // 8: hangar.plugin.v1.Credential
+	(*ConfigureRequest)(nil),   // 9: hangar.plugin.v1.ConfigureRequest
+	(*ZoneConfig)(nil),         // 10: hangar.plugin.v1.ZoneConfig
+	(*ConfigureResponse)(nil),  // 11: hangar.plugin.v1.ConfigureResponse
+	(*ZoneReport)(nil),         // 12: hangar.plugin.v1.ZoneReport
+	(*Resource)(nil),           // 13: hangar.plugin.v1.Resource
+	(*PlanRequest)(nil),        // 14: hangar.plugin.v1.PlanRequest
+	(*PlanResponse)(nil),       // 15: hangar.plugin.v1.PlanResponse
+	(*Room)(nil),               // 16: hangar.plugin.v1.Room
+	(*PlanChangeRequest)(nil),  // 17: hangar.plugin.v1.PlanChangeRequest
+	(*PlanChangeResponse)(nil), // 18: hangar.plugin.v1.PlanChangeResponse
+	(*Step)(nil),               // 19: hangar.plugin.v1.Step
+	(*Refusal)(nil),            // 20: hangar.plugin.v1.Refusal
+	(*CreateRequest)(nil),      // 21: hangar.plugin.v1.CreateRequest
+	(*CreateResponse)(nil),     // 22: hangar.plugin.v1.CreateResponse
+	(*Usability)(nil),          // 23: hangar.plugin.v1.Usability
+	(*DeleteRequest)(nil),      // 24: hangar.plugin.v1.DeleteRequest
+	(*DeleteResponse)(nil),     // 25: hangar.plugin.v1.DeleteResponse
+	(*ActRequest)(nil),         // 26: hangar.plugin.v1.ActRequest
+	(*ActResponse)(nil),        // 27: hangar.plugin.v1.ActResponse
+	(*ReconcileRequest)(nil),   // 28: hangar.plugin.v1.ReconcileRequest
+	(*ReconcileResponse)(nil),  // 29: hangar.plugin.v1.ReconcileResponse
+	(*Consumed)(nil),           // 30: hangar.plugin.v1.Consumed
+	(*Usage)(nil),              // 31: hangar.plugin.v1.Usage
+	(*OpenRequest)(nil),        // 32: hangar.plugin.v1.OpenRequest
+	(*StreamOpen)(nil),         // 33: hangar.plugin.v1.StreamOpen
+	(*StreamSize)(nil),         // 34: hangar.plugin.v1.StreamSize
+	(*OpenResponse)(nil),       // 35: hangar.plugin.v1.OpenResponse
+	(*StreamOpened)(nil),       // 36: hangar.plugin.v1.StreamOpened
+	(*StreamClosed)(nil),       // 37: hangar.plugin.v1.StreamClosed
+	(*SurveyRequest)(nil),      // 38: hangar.plugin.v1.SurveyRequest
+	(*Condition)(nil),          // 39: hangar.plugin.v1.Condition
+	(*SurveyResponse)(nil),     // 40: hangar.plugin.v1.SurveyResponse
+	(*ConditionState)(nil),     // 41: hangar.plugin.v1.ConditionState
+	(*Event)(nil),              // 42: hangar.plugin.v1.Event
+	nil,                        // 43: hangar.plugin.v1.ZoneConfig.OptionsEntry
+	nil,                        // 44: hangar.plugin.v1.Resource.TagsEntry
+	nil,                        // 45: hangar.plugin.v1.PlanResponse.UsageEntry
+	nil,                        // 46: hangar.plugin.v1.PlanResponse.ChoicesEntry
+	nil,                        // 47: hangar.plugin.v1.Consumed.AmountsEntry
+	nil,                        // 48: hangar.plugin.v1.Usage.AmountsEntry
+	nil,                        // 49: hangar.plugin.v1.SurveyResponse.HoldsEntry
+	nil,                        // 50: hangar.plugin.v1.Event.FieldsEntry
 }
 var file_hangar_plugin_v1_plugin_proto_depIdxs = []int32{
 	4,  // 0: hangar.plugin.v1.DescribeResponse.types:type_name -> hangar.plugin.v1.ResourceType
-	6,  // 1: hangar.plugin.v1.DescribeResponse.dimensions:type_name -> hangar.plugin.v1.Dimension
-	7,  // 2: hangar.plugin.v1.DescribeResponse.credential:type_name -> hangar.plugin.v1.Credential
-	5,  // 3: hangar.plugin.v1.ResourceType.actions:type_name -> hangar.plugin.v1.Action
-	0,  // 4: hangar.plugin.v1.Dimension.kind:type_name -> hangar.plugin.v1.DimensionKind
-	9,  // 5: hangar.plugin.v1.ConfigureRequest.zones:type_name -> hangar.plugin.v1.ZoneConfig
-	36, // 6: hangar.plugin.v1.ZoneConfig.options:type_name -> hangar.plugin.v1.ZoneConfig.OptionsEntry
-	11, // 7: hangar.plugin.v1.ConfigureResponse.zones:type_name -> hangar.plugin.v1.ZoneReport
-	37, // 8: hangar.plugin.v1.Resource.tags:type_name -> hangar.plugin.v1.Resource.TagsEntry
-	15, // 9: hangar.plugin.v1.Resource.room:type_name -> hangar.plugin.v1.Room
-	12, // 10: hangar.plugin.v1.PlanRequest.current:type_name -> hangar.plugin.v1.Resource
-	12, // 11: hangar.plugin.v1.PlanRequest.refs:type_name -> hangar.plugin.v1.Resource
-	38, // 12: hangar.plugin.v1.PlanResponse.usage:type_name -> hangar.plugin.v1.PlanResponse.UsageEntry
-	39, // 13: hangar.plugin.v1.PlanResponse.choices:type_name -> hangar.plugin.v1.PlanResponse.ChoicesEntry
-	19, // 14: hangar.plugin.v1.PlanResponse.refusals:type_name -> hangar.plugin.v1.Refusal
-	15, // 15: hangar.plugin.v1.PlanResponse.room:type_name -> hangar.plugin.v1.Room
-	12, // 16: hangar.plugin.v1.PlanChangeRequest.current:type_name -> hangar.plugin.v1.Resource
-	12, // 17: hangar.plugin.v1.PlanChangeRequest.refs:type_name -> hangar.plugin.v1.Resource
-	18, // 18: hangar.plugin.v1.PlanChangeResponse.steps:type_name -> hangar.plugin.v1.Step
-	19, // 19: hangar.plugin.v1.PlanChangeResponse.fixed:type_name -> hangar.plugin.v1.Refusal
-	12, // 20: hangar.plugin.v1.CreateRequest.resource:type_name -> hangar.plugin.v1.Resource
-	12, // 21: hangar.plugin.v1.CreateRequest.refs:type_name -> hangar.plugin.v1.Resource
-	35, // 22: hangar.plugin.v1.CreateResponse.events:type_name -> hangar.plugin.v1.Event
-	22, // 23: hangar.plugin.v1.CreateResponse.usability:type_name -> hangar.plugin.v1.Usability
-	12, // 24: hangar.plugin.v1.DeleteRequest.resource:type_name -> hangar.plugin.v1.Resource
-	35, // 25: hangar.plugin.v1.DeleteResponse.events:type_name -> hangar.plugin.v1.Event
-	29, // 26: hangar.plugin.v1.DeleteResponse.consumed:type_name -> hangar.plugin.v1.Consumed
-	12, // 27: hangar.plugin.v1.ActRequest.resource:type_name -> hangar.plugin.v1.Resource
-	12, // 28: hangar.plugin.v1.ActRequest.refs:type_name -> hangar.plugin.v1.Resource
-	35, // 29: hangar.plugin.v1.ActResponse.events:type_name -> hangar.plugin.v1.Event
-	22, // 30: hangar.plugin.v1.ActResponse.usability:type_name -> hangar.plugin.v1.Usability
-	29, // 31: hangar.plugin.v1.ActResponse.consumed:type_name -> hangar.plugin.v1.Consumed
-	12, // 32: hangar.plugin.v1.ReconcileRequest.resource:type_name -> hangar.plugin.v1.Resource
-	1,  // 33: hangar.plugin.v1.ReconcileResponse.drift:type_name -> hangar.plugin.v1.Drift
-	35, // 34: hangar.plugin.v1.ReconcileResponse.events:type_name -> hangar.plugin.v1.Event
-	15, // 35: hangar.plugin.v1.ReconcileResponse.room:type_name -> hangar.plugin.v1.Room
-	22, // 36: hangar.plugin.v1.ReconcileResponse.usability:type_name -> hangar.plugin.v1.Usability
-	30, // 37: hangar.plugin.v1.ReconcileResponse.usage:type_name -> hangar.plugin.v1.Usage
-	29, // 38: hangar.plugin.v1.ReconcileResponse.consumed:type_name -> hangar.plugin.v1.Consumed
-	40, // 39: hangar.plugin.v1.Consumed.amounts:type_name -> hangar.plugin.v1.Consumed.AmountsEntry
-	41, // 40: hangar.plugin.v1.Usage.amounts:type_name -> hangar.plugin.v1.Usage.AmountsEntry
-	32, // 41: hangar.plugin.v1.SurveyRequest.conditions:type_name -> hangar.plugin.v1.Condition
-	34, // 42: hangar.plugin.v1.SurveyResponse.conditions:type_name -> hangar.plugin.v1.ConditionState
-	42, // 43: hangar.plugin.v1.SurveyResponse.holds:type_name -> hangar.plugin.v1.SurveyResponse.HoldsEntry
-	43, // 44: hangar.plugin.v1.Event.fields:type_name -> hangar.plugin.v1.Event.FieldsEntry
-	2,  // 45: hangar.plugin.v1.PluginService.Describe:input_type -> hangar.plugin.v1.DescribeRequest
-	8,  // 46: hangar.plugin.v1.PluginService.Configure:input_type -> hangar.plugin.v1.ConfigureRequest
-	13, // 47: hangar.plugin.v1.PluginService.Plan:input_type -> hangar.plugin.v1.PlanRequest
-	16, // 48: hangar.plugin.v1.PluginService.PlanChange:input_type -> hangar.plugin.v1.PlanChangeRequest
-	20, // 49: hangar.plugin.v1.PluginService.Create:input_type -> hangar.plugin.v1.CreateRequest
-	23, // 50: hangar.plugin.v1.PluginService.Delete:input_type -> hangar.plugin.v1.DeleteRequest
-	25, // 51: hangar.plugin.v1.PluginService.Act:input_type -> hangar.plugin.v1.ActRequest
-	27, // 52: hangar.plugin.v1.PluginService.Reconcile:input_type -> hangar.plugin.v1.ReconcileRequest
-	31, // 53: hangar.plugin.v1.PluginService.Survey:input_type -> hangar.plugin.v1.SurveyRequest
-	3,  // 54: hangar.plugin.v1.PluginService.Describe:output_type -> hangar.plugin.v1.DescribeResponse
-	10, // 55: hangar.plugin.v1.PluginService.Configure:output_type -> hangar.plugin.v1.ConfigureResponse
-	14, // 56: hangar.plugin.v1.PluginService.Plan:output_type -> hangar.plugin.v1.PlanResponse
-	17, // 57: hangar.plugin.v1.PluginService.PlanChange:output_type -> hangar.plugin.v1.PlanChangeResponse
-	21, // 58: hangar.plugin.v1.PluginService.Create:output_type -> hangar.plugin.v1.CreateResponse
-	24, // 59: hangar.plugin.v1.PluginService.Delete:output_type -> hangar.plugin.v1.DeleteResponse
-	26, // 60: hangar.plugin.v1.PluginService.Act:output_type -> hangar.plugin.v1.ActResponse
-	28, // 61: hangar.plugin.v1.PluginService.Reconcile:output_type -> hangar.plugin.v1.ReconcileResponse
-	33, // 62: hangar.plugin.v1.PluginService.Survey:output_type -> hangar.plugin.v1.SurveyResponse
-	54, // [54:63] is the sub-list for method output_type
-	45, // [45:54] is the sub-list for method input_type
-	45, // [45:45] is the sub-list for extension type_name
-	45, // [45:45] is the sub-list for extension extendee
-	0,  // [0:45] is the sub-list for field type_name
+	7,  // 1: hangar.plugin.v1.DescribeResponse.dimensions:type_name -> hangar.plugin.v1.Dimension
+	8,  // 2: hangar.plugin.v1.DescribeResponse.credential:type_name -> hangar.plugin.v1.Credential
+	6,  // 3: hangar.plugin.v1.ResourceType.actions:type_name -> hangar.plugin.v1.Action
+	5,  // 4: hangar.plugin.v1.ResourceType.streams:type_name -> hangar.plugin.v1.Stream
+	0,  // 5: hangar.plugin.v1.Dimension.kind:type_name -> hangar.plugin.v1.DimensionKind
+	10, // 6: hangar.plugin.v1.ConfigureRequest.zones:type_name -> hangar.plugin.v1.ZoneConfig
+	43, // 7: hangar.plugin.v1.ZoneConfig.options:type_name -> hangar.plugin.v1.ZoneConfig.OptionsEntry
+	12, // 8: hangar.plugin.v1.ConfigureResponse.zones:type_name -> hangar.plugin.v1.ZoneReport
+	44, // 9: hangar.plugin.v1.Resource.tags:type_name -> hangar.plugin.v1.Resource.TagsEntry
+	16, // 10: hangar.plugin.v1.Resource.room:type_name -> hangar.plugin.v1.Room
+	13, // 11: hangar.plugin.v1.PlanRequest.current:type_name -> hangar.plugin.v1.Resource
+	13, // 12: hangar.plugin.v1.PlanRequest.refs:type_name -> hangar.plugin.v1.Resource
+	45, // 13: hangar.plugin.v1.PlanResponse.usage:type_name -> hangar.plugin.v1.PlanResponse.UsageEntry
+	46, // 14: hangar.plugin.v1.PlanResponse.choices:type_name -> hangar.plugin.v1.PlanResponse.ChoicesEntry
+	20, // 15: hangar.plugin.v1.PlanResponse.refusals:type_name -> hangar.plugin.v1.Refusal
+	16, // 16: hangar.plugin.v1.PlanResponse.room:type_name -> hangar.plugin.v1.Room
+	13, // 17: hangar.plugin.v1.PlanChangeRequest.current:type_name -> hangar.plugin.v1.Resource
+	13, // 18: hangar.plugin.v1.PlanChangeRequest.refs:type_name -> hangar.plugin.v1.Resource
+	19, // 19: hangar.plugin.v1.PlanChangeResponse.steps:type_name -> hangar.plugin.v1.Step
+	20, // 20: hangar.plugin.v1.PlanChangeResponse.fixed:type_name -> hangar.plugin.v1.Refusal
+	13, // 21: hangar.plugin.v1.CreateRequest.resource:type_name -> hangar.plugin.v1.Resource
+	13, // 22: hangar.plugin.v1.CreateRequest.refs:type_name -> hangar.plugin.v1.Resource
+	42, // 23: hangar.plugin.v1.CreateResponse.events:type_name -> hangar.plugin.v1.Event
+	23, // 24: hangar.plugin.v1.CreateResponse.usability:type_name -> hangar.plugin.v1.Usability
+	13, // 25: hangar.plugin.v1.DeleteRequest.resource:type_name -> hangar.plugin.v1.Resource
+	42, // 26: hangar.plugin.v1.DeleteResponse.events:type_name -> hangar.plugin.v1.Event
+	30, // 27: hangar.plugin.v1.DeleteResponse.consumed:type_name -> hangar.plugin.v1.Consumed
+	13, // 28: hangar.plugin.v1.ActRequest.resource:type_name -> hangar.plugin.v1.Resource
+	13, // 29: hangar.plugin.v1.ActRequest.refs:type_name -> hangar.plugin.v1.Resource
+	42, // 30: hangar.plugin.v1.ActResponse.events:type_name -> hangar.plugin.v1.Event
+	23, // 31: hangar.plugin.v1.ActResponse.usability:type_name -> hangar.plugin.v1.Usability
+	30, // 32: hangar.plugin.v1.ActResponse.consumed:type_name -> hangar.plugin.v1.Consumed
+	13, // 33: hangar.plugin.v1.ReconcileRequest.resource:type_name -> hangar.plugin.v1.Resource
+	1,  // 34: hangar.plugin.v1.ReconcileResponse.drift:type_name -> hangar.plugin.v1.Drift
+	42, // 35: hangar.plugin.v1.ReconcileResponse.events:type_name -> hangar.plugin.v1.Event
+	16, // 36: hangar.plugin.v1.ReconcileResponse.room:type_name -> hangar.plugin.v1.Room
+	23, // 37: hangar.plugin.v1.ReconcileResponse.usability:type_name -> hangar.plugin.v1.Usability
+	31, // 38: hangar.plugin.v1.ReconcileResponse.usage:type_name -> hangar.plugin.v1.Usage
+	30, // 39: hangar.plugin.v1.ReconcileResponse.consumed:type_name -> hangar.plugin.v1.Consumed
+	47, // 40: hangar.plugin.v1.Consumed.amounts:type_name -> hangar.plugin.v1.Consumed.AmountsEntry
+	48, // 41: hangar.plugin.v1.Usage.amounts:type_name -> hangar.plugin.v1.Usage.AmountsEntry
+	33, // 42: hangar.plugin.v1.OpenRequest.open:type_name -> hangar.plugin.v1.StreamOpen
+	34, // 43: hangar.plugin.v1.OpenRequest.size:type_name -> hangar.plugin.v1.StreamSize
+	13, // 44: hangar.plugin.v1.StreamOpen.resource:type_name -> hangar.plugin.v1.Resource
+	34, // 45: hangar.plugin.v1.StreamOpen.size:type_name -> hangar.plugin.v1.StreamSize
+	36, // 46: hangar.plugin.v1.OpenResponse.opened:type_name -> hangar.plugin.v1.StreamOpened
+	37, // 47: hangar.plugin.v1.OpenResponse.closed:type_name -> hangar.plugin.v1.StreamClosed
+	39, // 48: hangar.plugin.v1.SurveyRequest.conditions:type_name -> hangar.plugin.v1.Condition
+	41, // 49: hangar.plugin.v1.SurveyResponse.conditions:type_name -> hangar.plugin.v1.ConditionState
+	49, // 50: hangar.plugin.v1.SurveyResponse.holds:type_name -> hangar.plugin.v1.SurveyResponse.HoldsEntry
+	50, // 51: hangar.plugin.v1.Event.fields:type_name -> hangar.plugin.v1.Event.FieldsEntry
+	2,  // 52: hangar.plugin.v1.PluginService.Describe:input_type -> hangar.plugin.v1.DescribeRequest
+	9,  // 53: hangar.plugin.v1.PluginService.Configure:input_type -> hangar.plugin.v1.ConfigureRequest
+	14, // 54: hangar.plugin.v1.PluginService.Plan:input_type -> hangar.plugin.v1.PlanRequest
+	17, // 55: hangar.plugin.v1.PluginService.PlanChange:input_type -> hangar.plugin.v1.PlanChangeRequest
+	21, // 56: hangar.plugin.v1.PluginService.Create:input_type -> hangar.plugin.v1.CreateRequest
+	24, // 57: hangar.plugin.v1.PluginService.Delete:input_type -> hangar.plugin.v1.DeleteRequest
+	26, // 58: hangar.plugin.v1.PluginService.Act:input_type -> hangar.plugin.v1.ActRequest
+	28, // 59: hangar.plugin.v1.PluginService.Reconcile:input_type -> hangar.plugin.v1.ReconcileRequest
+	38, // 60: hangar.plugin.v1.PluginService.Survey:input_type -> hangar.plugin.v1.SurveyRequest
+	32, // 61: hangar.plugin.v1.PluginService.Open:input_type -> hangar.plugin.v1.OpenRequest
+	3,  // 62: hangar.plugin.v1.PluginService.Describe:output_type -> hangar.plugin.v1.DescribeResponse
+	11, // 63: hangar.plugin.v1.PluginService.Configure:output_type -> hangar.plugin.v1.ConfigureResponse
+	15, // 64: hangar.plugin.v1.PluginService.Plan:output_type -> hangar.plugin.v1.PlanResponse
+	18, // 65: hangar.plugin.v1.PluginService.PlanChange:output_type -> hangar.plugin.v1.PlanChangeResponse
+	22, // 66: hangar.plugin.v1.PluginService.Create:output_type -> hangar.plugin.v1.CreateResponse
+	25, // 67: hangar.plugin.v1.PluginService.Delete:output_type -> hangar.plugin.v1.DeleteResponse
+	27, // 68: hangar.plugin.v1.PluginService.Act:output_type -> hangar.plugin.v1.ActResponse
+	29, // 69: hangar.plugin.v1.PluginService.Reconcile:output_type -> hangar.plugin.v1.ReconcileResponse
+	40, // 70: hangar.plugin.v1.PluginService.Survey:output_type -> hangar.plugin.v1.SurveyResponse
+	35, // 71: hangar.plugin.v1.PluginService.Open:output_type -> hangar.plugin.v1.OpenResponse
+	62, // [62:72] is the sub-list for method output_type
+	52, // [52:62] is the sub-list for method input_type
+	52, // [52:52] is the sub-list for extension type_name
+	52, // [52:52] is the sub-list for extension extendee
+	0,  // [0:52] is the sub-list for field type_name
 }
 
 func init() { file_hangar_plugin_v1_plugin_proto_init() }
@@ -2883,6 +3406,16 @@ func file_hangar_plugin_v1_plugin_proto_init() {
 		return
 	}
 	file_hangar_plugin_v1_plugin_proto_msgTypes[30].OneofWrappers = []any{
+		(*OpenRequest_Open)(nil),
+		(*OpenRequest_Data)(nil),
+		(*OpenRequest_Size)(nil),
+	}
+	file_hangar_plugin_v1_plugin_proto_msgTypes[33].OneofWrappers = []any{
+		(*OpenResponse_Opened)(nil),
+		(*OpenResponse_Data)(nil),
+		(*OpenResponse_Closed)(nil),
+	}
+	file_hangar_plugin_v1_plugin_proto_msgTypes[37].OneofWrappers = []any{
 		(*Condition_GuestRunning)(nil),
 		(*Condition_NodeDown)(nil),
 	}
@@ -2892,7 +3425,7 @@ func file_hangar_plugin_v1_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hangar_plugin_v1_plugin_proto_rawDesc), len(file_hangar_plugin_v1_plugin_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   42,
+			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

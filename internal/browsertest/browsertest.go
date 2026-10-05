@@ -183,6 +183,10 @@ func (b *Browser) Page(width, height int, phone bool) *Page {
 	b.must(p.call("Runtime.enable", nil, nil))
 	b.must(p.call("Log.enable", nil, nil))
 	b.must(p.call("Emulation.setDeviceMetricsOverride", map[string]any{"width": width, "height": height, "deviceScaleFactor": 1, "mobile": phone}, nil))
+	if phone {
+		// a finger, not a mouse: what a page shows only to a touch screen
+		b.must(p.call("Emulation.setTouchEmulationEnabled", map[string]any{"enabled": true}, nil))
+	}
 	// no motion: what is drawn is there at once, and a picture shows it whole
 	b.must(p.call("Emulation.setEmulatedMedia", map[string]any{"features": []map[string]string{{"name": "prefers-reduced-motion", "value": "reduce"}}}, nil))
 	return p

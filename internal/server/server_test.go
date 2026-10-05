@@ -158,6 +158,10 @@ func newStackClock(t *testing.T, cfgText string, now func() time.Time, enabled .
 		s.core.Now, s.core.ScheduleEvery = now, 0
 	}
 	srv, err := New(s.cfg, s.core, identity.New(s.cfg.Identity, s.store, nil), s.store, s.host, a, m, log, "test")
+	if err == nil {
+		// a stream's credential asked again soon: a test does not wait half a minute
+		srv.recheck = 200 * time.Millisecond
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

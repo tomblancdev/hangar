@@ -11,6 +11,7 @@ import {summary, label, plural, show, fieldsOf} from './schema.js';
 import {nested, pairs} from './json.js';
 import {listing} from './code.js';
 import {buildForm, refusal} from './form.js';
+import {terminal} from './terminal.js';
 
 const idShape = /^[a-z][a-z0-9]{0,7}-[0-9a-f]{17}$/;
 const moving = ['creating', 'updating', 'deleting'];
@@ -406,18 +407,46 @@ export function resource(ctx, id) {
   const head = h('div', {});
   const actions = h('div', {class: 'actions'});
   const panel = h('div', {});
+  // its terminal has a place of its own: an action asked meanwhile — a
+  // reboot, watched from it — does not take it away
+  const termBox = h('div', {class: 'term-panel'});
   const said = h('div', {class: 'said', 'aria-live': 'polite'});
-  const asked = h('div', {class: 'kv panel'});
+  const specBox = h('div', {class: 'kv panel'});
   const seen = h('div', {class: 'kv screen'});
   const names = h('div', {class: 'rows'});
   const namedBy = h('div', {class: 'rows'});
   const history = h('div', {class: 'ops'});
   const danger = h('div', {});
-  const node = h('div', {class: 'page'}, head, said, actions, panel,
-    h('div', {class: 'two'}, h('div', {}, section('AS ASKED', '', asked)), h('div', {}, section('AS SEEN', '', seen))),
+  const node = h('div', {class: 'page'}, head, said, actions, panel, termBox,
+    h('div', {class: 'two'}, h('div', {}, section('AS ASKED', '', specBox)), h('div', {}, section('AS SEEN', '', seen))),
     section('WHAT IT NAMES', '', names), section('WHAT NAMES IT', '', namedBy), section('ITS HISTORY', '', history), danger);
   let open = '';
   let gone = false;
+  // the stream shown in the page — its terminal — while one is
+  let shown = null;
+  function hide() {
+    if (!shown) return;
+    shown.t.close();
+    shown = null;
+    clear(termBox);
+    for (const b of actions.querySelectorAll('button[data-stream]')) { b.classList.remove('chosen'); b.setAttribute('aria-expanded', 'false'); }
+  }
+  // unfold opens it under the keys, with a switch to the whole window (its
+  // own address: the same screen, alone) and a way to put it away
+  function unfold(name) {
+    if (shown && shown.name === name) { hide(); return; }
+    hide();
+    const t = terminal({id, stream: name, controls: [
+      h('a', {class: 'btn small ghost', href: `#/r/${id}/${name}`, title: 'The whole window: the same screen, alone'}, 'Full screen'),
+      h('button', {type: 'button', class: 'btn small ghost', onclick: hide}, 'Close')]});
+    shown = {name, t};
+    clear(termBox, t.node);
+    for (const b of actions.querySelectorAll('button[data-stream]')) { const on = b.dataset.stream === name; b.classList.toggle('chosen', on); b.setAttribute('aria-expanded', String(on)); }
+    t.open();
+  }
+  ctx.onLeave(hide);
+  // come back from the whole window: it is shown again, where it was
+  let asked = new URLSearchParams(location.hash.split('?')[1] || '').get('open') || '';
   // what a person unfolded stays unfolded while the page is looked at again
   const unfolded = new Set();
 
@@ -447,14 +476,24 @@ export function resource(ctx, id) {
 
     // its actions: the ones its type offers in its zone
     const acts = t && own && r.state !== 'deleted' ? t.actions.filter((a) => a.zones.includes(r.zone)) : [];
+    // its streams — its terminal: its owner's alone, an operator included
+    const mine = r.owner === ctx.me.subject && r.state !== 'deleted';
+    const streams = t && mine ? (t.streams || []).filter((s) => s.zones.includes(r.zone)) : [];
     clear(actions, acts.map((a) => h('button', {type: 'button', class: 'btn' + (open === a.name ? ' chosen' : ''), title: a.description || '', 'aria-expanded': a.fields.length ? String(open === a.name) : null,
       onclick: () => (a.fields.length ? toggle(a, r) : act(a, r, {}))}, label(a.name))),
+      streams.map((s) => h('button', {type: 'button', class: 'btn' + (shown && shown.name === s.name ? ' chosen' : ''), 'data-stream': s.name, title: s.description || '',
+        'aria-expanded': String(!!shown && shown.name === s.name), onclick: () => unfold(s.name)}, label(s.name))),
       // what it is called is the brain's own: every type takes a rename
       own && r.state !== 'deleted' ? h('button', {type: 'button', class: 'btn' + (open === renameWord ? ' chosen' : ''), title: 'What you call it, and your line about it. Its id stays.',
         'aria-expanded': String(open === renameWord), onclick: () => rename(r)}, renameWord) : null,
       !own && r.state !== 'deleted' ? h('span', {class: 'muted'}, `${ownerOf(r)}'s, shared with you to see and use — only its owner changes it.`) : null);
 
-    drawPairs(asked, t, r);
+    // a stream that is no longer its owner's to open is put away
+    if (shown && !streams.some((s) => s.name === shown.name)) hide();
+    if (asked && !shown && streams.some((s) => s.name === asked)) unfold(asked);
+    asked = '';
+
+    drawPairs(specBox, t, r);
     drawSeen(seen, r);
     drawDanger(r, own);
     const [ops] = await Promise.all([api('GET', `/v1/operations?resource=${id}&limit=12`), drawNames(r, t)]);
@@ -622,6 +661,26 @@ export function resource(ctx, id) {
 
   ctx.every(4000, async () => (gone ? false : look()), 15000);
   return node;
+}
+
+// ---- A stream: a resource's terminal, as a page of its own ------------------------
+
+// stream is the page that is nothing but one of a resource's streams: the
+// screen, and a bar that says whose it is and leads back.
+export function stream(ctx, id, name) {
+  const back = h('a', {class: 'term-back', href: '#/r/' + id, title: 'Its page'}, '‹ ' + id);
+  const t = terminal({id, stream: name, controls: [
+    h('a', {class: 'btn small ghost', href: `#/r/${id}?open=${name}`, title: 'Back in its page, the terminal still shown'}, 'Leave full screen')]});
+  t.node.querySelector('.term-bar').prepend(back);
+  ctx.onLeave(() => t.close());
+  // what it is called, once read; a stream nobody may open says so itself
+  ctx.now(async () => {
+    const r = await api('GET', '/v1/resources/' + id);
+    back.textContent = '‹ ' + nameOf(r);
+    document.title = `${nameOf(r)} · ${name} — Le Hangar`;
+  });
+  t.open();
+  return h('main', {class: 'term-page'}, t.node);
 }
 
 // ---- Operations -----------------------------------------------------------------

@@ -47,6 +47,11 @@ type Options struct {
 	URL string
 	// Idle: a sign-in unused this long ends (default 12h).
 	Idle time.Duration
+	// StreamCheck: how often the sign-in under an open stream is looked at —
+	// its token renewed when it is about to end, the new one passed on to the
+	// brain, the stream closed if the provider no longer renews it (default
+	// 20s: under the half minute after which the brain asks again).
+	StreamCheck time.Duration
 	// HTTP reaches the identity provider (default: a client with a timeout).
 	HTTP *http.Client
 	// Static is the app: index.html and what it loads.
@@ -86,6 +91,9 @@ func New(o Options) (*Console, error) {
 	if o.Idle == 0 {
 		o.Idle = 12 * time.Hour
 	}
+	if o.StreamCheck == 0 {
+		o.StreamCheck = 20 * time.Second
+	}
 	if o.HTTP == nil {
 		o.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
@@ -117,6 +125,7 @@ func New(o Options) (*Console, error) {
 	mux.HandleFunc("GET "+Prefix+"/callback", c.callback)
 	mux.HandleFunc("POST "+Prefix+"/signin/token", c.signinToken)
 	mux.HandleFunc("POST "+Prefix+"/signout", c.signout)
+	mux.HandleFunc("GET "+Prefix+"/api/v1/resources/{id}/streams/{stream}", c.stream)
 	mux.HandleFunc(Prefix+"/api/", c.api)
 	mux.HandleFunc(Prefix+"/", func(w http.ResponseWriter, _ *http.Request) {
 		problem(w, 404, "not-found", "nothing here: the console is at "+Prefix+"/")
@@ -200,11 +209,17 @@ func (c *Console) load() error {
 }
 
 // headers are every answer's: the page may load only what the console
-// itself serves, run no inline script, sit in no frame.
+// itself serves, run no inline script, sit in no frame — and open a socket
+// to the console alone (a stream's): its own address is named beside 'self',
+// which not every browser reads as covering a WebSocket.
 func (c *Console) headers(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+		socket := "ws://"
+		if c.secure(r) {
+			socket = "wss://"
+		}
+		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' "+socket+c.address(r).Host+"; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")

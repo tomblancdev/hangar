@@ -1,0 +1,13 @@
+{
+  "name": "hangar-console-terminal",
+  "private": true,
+  "description": "What the console's terminal takes from xterm.js, as one file: ui/console/vendor/xterm.js (build.sh).",
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-webgl": "0.19.0",
+    "@xterm/xterm": "6.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

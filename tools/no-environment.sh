@@ -33,9 +33,10 @@ trap 'rm -f "$tmp" "$hatch"' EXIT INT TERM
 # Everything git tracks, minus this file — which is full of the shapes it
 # forbids and would fail itself — and minus the licences of what the console
 # vendors: their authors' own words, kept as they wrote them, their names and
-# mailboxes with them (tools/editor/build.sh writes that file, and --check
-# holds it to what the lock builds).
-licences='ui/console/vendor/codemirror.licenses.txt'
+# mailboxes and addresses with them (tools/editor/build.sh and
+# tools/terminal/build.sh write those files, and --check holds each to what
+# its lock builds).
+licences='ui/console/vendor/[a-z]*\.licenses\.txt'
 files=$(git ls-files | grep -v -e "^$self$" -e "^$licences$")
 # Prose, where a hostname is written plainly rather than quoted. Code and
 # config are excluded from the unquoted rule: `p.local`, `s.home` and Jinja's

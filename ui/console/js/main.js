@@ -15,7 +15,7 @@ const state = {me: null, types: [], byName: new Map(), page: null};
 // A page is looked at again while it is shown, and never after: each route
 // gets a life of its own, ended when the next begins.
 function life() {
-  const l = {alive: true};
+  const l = {alive: true, left: []};
   const notice = () => document.getElementById('notice');
   async function run(f) {
     try {
@@ -37,6 +37,8 @@ function life() {
       type: (name) => state.byName.get(name),
       go: (hash) => { location.hash = hash; },
       alive: () => l.alive,
+      // onLeave: what a page holds open (a terminal) is let go of when it is left
+      onLeave: (f) => { l.left.push(f); },
       now: run,
       // every: look now, then again — soon while something is moving (f
       // answers true), seldom otherwise, and not at all in a hidden tab
@@ -103,9 +105,23 @@ async function lamps() {
 
 // ---- The routes -----------------------------------------------------------------
 
+// streamOf: a resource's type, said by its id's prefix, has a stream of that name.
+function streamOf(id, name) {
+  const t = state.types.find((x) => id.startsWith(x.id_prefix + '-'));
+  return t && (t.streams || []).find((s) => s.name === name);
+}
+
+// leave ends the page that is shown: nothing of it looks again, and what it
+// held open is let go of.
+function leave() {
+  if (!state.page) return;
+  state.page.l.alive = false;
+  for (const f of state.page.l.left.splice(0)) { try { f(); } catch (e) { console.error(e); } }
+}
+
 function route() {
   if (!state.me) return;
-  if (state.page) state.page.l.alive = false;
+  leave();
   const parts = (location.hash.replace(/^#\/?/, '').split('?')[0]).split('/').filter(Boolean).map(decodeURIComponent);
   const page = life();
   state.page = page;
@@ -123,6 +139,13 @@ function route() {
     if (t) typeCrumb(t.name);
     // its page writes what it is called there, once read
     crumbs.push({words: parts[1], id: 'here'});
+  } else if (parts[0] === 'r' && parts.length === 3 && streamOf(parts[1], parts[2])) {
+    // one of its streams — its terminal — is a page of its own: the screen,
+    // and nothing of the console around it
+    document.title = parts[1] + ' — Le Hangar';
+    clear(app, h('div', {class: 'hazard', 'aria-hidden': 'true'}), views.stream(page.ctx, parts[1], parts[2]),
+      statusLine([state.me.name || state.me.subject, 'tier ' + state.me.tier], parts[2]));
+    return;
   } else if (parts[0] === 'operations') { node = views.operations(page.ctx); name = 'Operations'; crumbs.push({words: 'operations'}); }
   else if (parts[0] === 'tokens') { node = views.tokens(page.ctx); name = 'Tokens'; crumbs.push({words: 'tokens'}); }
   else node = h('div', {class: 'page'}, h('p', {class: 'muted'}, 'No such page.'), h('p', {}, h('a', {href: '#/'}, 'Home')));
@@ -136,7 +159,7 @@ function route() {
 // ---- Signing in -----------------------------------------------------------------
 
 function showSignIn({error = '', detail = ''}) {
-  if (state.page) state.page.l.alive = false;
+  leave();
   document.title = 'Sign in — Le Hangar';
   const words = {
     refused: 'The sign-in was refused.', expired: 'That sign-in took too long, or was not begun here.',
