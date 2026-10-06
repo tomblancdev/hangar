@@ -1,5 +1,80 @@
 # Changelog
 
+## v0.6.1 — 2026-10-06
+
+- **Le terminal rouvert — a terminal opened again draws.** A machine keeps
+  no picture of its screen, and nothing on the way to the page does: a shell
+  left on its port is there at the next opening, and says nothing until a
+  key is pressed. `v0.6.0`'s page opened a terminal anew every time it was
+  shown — the whole window and back included — and showed an empty screen
+  and a cursor (read in a real browser on a real Proxmox VE: `open`,
+  47 × 31, not a character after six seconds). Three things answer it
+  ([docs/console.md](docs/console.md#a-machines-terminal)):
+  **Carried, not opened again.** *Full screen* and *Leave full screen* move
+  the same terminal — its screen, the line being typed, its socket — and so
+  does any other way back to the machine's page (the name in the terminal's
+  bar, the browser's own). The brain's audit holds one opening where it held
+  three; left for anywhere else, a terminal is let go of at once, as before.
+  **Said, not typed.** A terminal that *is* opened again — the page loaded
+  anew, a phone, `Close` then `terminal` — and hears nothing from its
+  machine for four seconds says so on a slip over its screen, with
+  a **Redraw** key: it types Ctrl-L, which a shell, an editor or a pager
+  answers by drawing its screen, the line begun on it too. The page types
+  nothing by itself: a key pressed for someone lands in whatever reads the
+  keyboard then — a password being asked, a file being written. A first
+  opening never shows the slip: a machine about to sign someone in asks the
+  terminal its size every two seconds, and the four are counted from the
+  brain's own opening, which the console now says in the socket
+  (`{"opened":true}`, before anything the machine says) — the page said
+  « open » at the console's accept, before the brain had been asked. And a
+  screen the page kept across an ending forgets a program's asking for
+  focus reports before its machine is opened again: taking the keyboard
+  back typed `ESC [ I` into whatever read it.
+  **A window's size no longer costs the screen.** The line the cursor is on
+  is wrapped and unwrapped with the others: no shell on a serial port is
+  told its window changed, so none draws its line again, and a window
+  narrowed under a long line cut it at the edge for good. And a window with
+  no room for a terminal — under 16 columns or 4 rows, a moment on its way
+  to another size — is not fitted to: a window of one pixel fitted the grid
+  to two columns, and the line being typed was left with two characters.
+  The bar's « resized: exit signs you in at this size » is measured from the
+  machine's own asking, and leaves when it asks again — after that `exit`.
+  **A page that was left opens nothing**: a machine's page whose first
+  answer came after it was left went on to open the terminal its address
+  asked for, on a screen nobody could see or close.
+- **The fake engine's port has the real one's form.** Its other end is its
+  guest's and its boot's, not a console's: a shell left there is there at
+  the next opening, with what was typed and not entered; a second opening
+  hears nothing; a login asked at boot was asked of nobody, and asks again
+  at Enter; Ctrl-L draws a shell's line again; a shell keeps the size of its
+  sign-in, whatever its window does afterwards. It greeted at every opening
+  before, and took every window's size — which is why every test of `v0.6.0`
+  was green over an empty screen. Held by `TestAPortOutlivesItsConsole`, and
+  by the page's test in a real browser, which now carries a half-typed line
+  to the whole window and ends it there, comes back by three ways, narrows
+  the window under a long line, and reads the slip and its key on a phone —
+  where Redraw draws a line left half typed and does not enter it;
+  `TestBenchATerminalInThePage` does the same on a real Proxmox VE, with a
+  real shell.
+- **On a cluster, the terminal's proxy runs where the API is asked**
+  ([docs/proxmox.md](docs/proxmox.md#a-machines-terminal)): neither call is
+  passed on to the guest's node, and the proxy's last leg is the cluster's
+  own ssh from the one to the other. A zone's `endpoint` need not be the
+  node its machines run on; what a terminal needs between the nodes is what
+  a migration needs. Read on a three-node cluster — the bench has one node.
+- **The bench: what a container was told, waited for.**
+  `TestBenchAMachineBornBehindItsWall` asked a container its address once,
+  right after its start, and was red twice in four runs: its init writes it
+  a moment later on a bench that has run other tests.
+  `TestBenchTwoNetworksAndAJump` asked the same way. Both ask until it is
+  there (`toldInside`), and their logs say at which read it was; the wait
+  has a test of its own, which needs no bench
+  (`TestToldInsideAsksUntilItIsThere`).
+
+Nothing to do at an upgrade: no setting, no migration, nothing in the API or
+in a plugin's contract. A page left open keeps the scripts it loaded: load
+it again.
+
 ## v0.6.0 — 2026-10-05
 
 - **Le terminal — a machine entered from the page.** A machine's own screen
