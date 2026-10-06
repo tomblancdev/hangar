@@ -24,7 +24,10 @@ import (
 // request, and nothing else stops another site's page from asking. And a
 // page cannot read why an opening was refused: so the socket is taken
 // first, the brain asked next, and a refusal is said inside it — a text
-// message {"refused": the brain's problem} — before it is closed.
+// message {"refused": the brain's problem} — before it is closed. The same
+// order means the page's socket is open before the brain's stream is: the
+// console says when that one is too — {"opened": true}, before anything the
+// resource says — and « open », for the page, begins there.
 //
 // A stream ends with its sign-in: signed out, or left unused too long,
 // whatever was open on it closes. And while one is open the sign-in is
@@ -85,6 +88,15 @@ func (c *Console) stream(w http.ResponseWriter, r *http.Request) {
 	defer brain.CloseNow()
 	page.SetReadLimit(256 << 10)
 	brain.SetReadLimit(1 << 20)
+	// the page's socket was taken before the brain was asked: it is told
+	// when the brain's own stream is open — before anything the machine
+	// says — and counts « open », and a machine's silence, from there
+	octx, done := context.WithTimeout(ctx, 10*time.Second)
+	err = page.Write(octx, websocket.MessageText, []byte(`{"opened":true}`))
+	done()
+	if err != nil {
+		return
+	}
 
 	// the brain → the page; its end is the page's end, in the same words
 	go func() {

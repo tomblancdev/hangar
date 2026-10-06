@@ -117,6 +117,28 @@ func (tm *term) until(want string) string {
 	return out
 }
 
+// quiet holds that the machine says nothing more for a while: a shell left
+// on a port says nothing by itself.
+func (tm *term) quiet(d time.Duration) {
+	tm.t.Helper()
+	select {
+	case s := <-tm.said:
+		tm.t.Fatalf("the terminal spoke by itself: %q", s)
+	case ce := <-tm.end:
+		tm.t.Fatalf("the terminal ended: %d %q", ce.Code, ce.Reason)
+	case <-time.After(d):
+	}
+}
+
+// again is a terminal opened on a machine whose shell was left there: it
+// says nothing by itself, and answers Enter with its prompt.
+func (tm *term) again() {
+	tm.t.Helper()
+	tm.quiet(100 * time.Millisecond)
+	tm.typ("\r")
+	tm.until("$ ")
+}
+
 func (tm *term) typ(keys string) {
 	tm.t.Helper()
 	if err := tm.conn.Write(context.Background(), websocket.MessageBinary, []byte(keys)); err != nil {
@@ -227,9 +249,17 @@ func TestAMachinesTerminalIsItsOwnersAlone(t *testing.T) {
 	if err := tm.conn.Write(context.Background(), websocket.MessageText, []byte(`{"size":[100,30]}`)); err != nil {
 		t.Fatal(err)
 	}
+	// …tells the machine's shell nothing — a port carries no size — until
+	// exit signs in again, at the size the window has by then
+	tm.typ("stty size\r")
+	if got := tm.until("$ "); !strings.Contains(got, "41 132") || strings.Contains(got, "30 100") {
+		t.Fatalf("a window that changed, before exit: %q", got)
+	}
+	tm.typ("exit\r")
+	tm.until("(automatic login)")
 	tm.typ("stty size\r")
 	if got := tm.until("$ "); !strings.Contains(got, "30 100") {
-		t.Fatalf("a window that changed: %q", got)
+		t.Fatalf("a window that changed, after exit: %q", got)
 	}
 	tm.typ("echo a-secret-word\r")
 	tm.until("$ ")
@@ -274,7 +304,8 @@ func TestATerminalIsOpenInOnePlaceAndEndsWithItsMachine(t *testing.T) {
 	if ce := first.ended(); ce.Code != StreamTaken || !strings.Contains(ce.Reason, "opened elsewhere") {
 		t.Fatalf("the older of two openings is told it was taken: %d %q", ce.Code, ce.Reason)
 	}
-	second.until("$ ")
+	// the shell the first one left is there, and says nothing by itself
+	second.quiet(200 * time.Millisecond)
 	second.typ("hostname\r")
 	second.until("$ ")
 	if n := s.core.Streams(); n != 1 {
@@ -356,6 +387,9 @@ func TestHowATerminalGreetsIsSetAtBirth(t *testing.T) {
 		t.Fatalf("a VM that names a key pair asks a login: %q", how)
 	}
 	tm, _ := s.open(alice, keyed, "terminal", "")
+	// its login was asked at boot, of nobody: Enter asks again
+	tm.quiet(200 * time.Millisecond)
+	tm.typ("\r")
 	if got := tm.until("login: "); strings.Contains(got, "automatic") {
 		t.Fatalf("a terminal that asks: %q", got)
 	}
@@ -452,7 +486,7 @@ func TestAStreamEndsWithItsCredential(t *testing.T) {
 	second, secondID := mint("alice")
 	third, thirdID := mint("alice")
 	tm, _ = s.open(second, machine, "terminal", "")
-	tm.until("$ ")
+	tm.again()
 	renew, _ := json.Marshal(map[string]string{"token": third})
 	if err := tm.conn.Write(ctx, websocket.MessageText, renew); err != nil {
 		t.Fatal(err)
@@ -481,7 +515,7 @@ func TestAStreamEndsWithItsCredential(t *testing.T) {
 	// a person taken out of every group: the next token the provider gives
 	// them says so, and the stream held on it is closed
 	tm, _ = s.open(third, machine, "terminal", "")
-	tm.until("$ ")
+	tm.again()
 	out, _ := json.Marshal(map[string]string{"token": s.iss.Token(t, testoidc.Claims{Subject: "alice", Name: "alice", Audience: "hangar"})})
 	if err := tm.conn.Write(ctx, websocket.MessageText, out); err != nil {
 		t.Fatal(err)
@@ -492,7 +526,7 @@ func TestAStreamEndsWithItsCredential(t *testing.T) {
 
 	// the brain's own stop: every stream ended, with the reason, its closing written
 	tm, _ = s.open(third, machine, "terminal", "")
-	tm.until("$ ")
+	tm.again()
 	s.core.EndStreams("the brain is restarting")
 	if ce := tm.ended(); ce.Code != StreamEnded || ce.Reason != "the brain is restarting" {
 		t.Fatalf("a terminal at the brain's stop: %d %q", ce.Code, ce.Reason)

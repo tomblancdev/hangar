@@ -24,12 +24,15 @@ import (
 // binary's brain serving its console, a person signed in at an identity
 // provider. She asks for a VM and names no key pair; its page offers its
 // terminal; she opens it and is in, as the machine's user, nothing asked —
-// at her window's size, with its colours. Another person finds neither the
-// machine nor its terminal. An operator finds the machine, no terminal on
-// its page, and is refused one by its address. The brain's audit holds her
-// opening and her closing — how long, how many bytes — and not a word of
-// what she typed. Without the bench's variables, or without a browser, it
-// skips:
+// at her window's size, with its colours. The whole window and back is the
+// same terminal, carried: nothing is opened again, so nothing has to be
+// drawn again. Opened again on her phone, her shell is where she left it and
+// says nothing by itself: the page says so over an empty screen, and its key
+// asks the machine to draw. Another person finds neither the machine nor its
+// terminal. An operator finds the machine, no terminal on its page, and is
+// refused one by its address. The brain's audit holds her opening and her
+// closing — how long, how many bytes — and not a word of what she typed.
+// Without the bench's variables, or without a browser, it skips:
 //
 //	sh tools/bench/bench.sh up && eval "$(sh tools/bench/bench.sh env)" && HANGAR_BROWSER=… go test ./cmd/hangar -run BenchATerminalInThePage -v -timeout 30m
 func TestBenchATerminalInThePage(t *testing.T) {
@@ -172,6 +175,10 @@ reconcile: {every: 10s}
 	const (
 		read   = `(document.querySelector('.term') && document.querySelector('.term').read ? document.querySelector('.term').read() : '')`
 		noKeys = `!document.querySelector('.actions [data-stream]')`
+		// the slip a terminal lays over its screen while its machine says nothing
+		quiet = `document.querySelector('.term[data-quiet] .slip')`
+		// the keyboard is the terminal's: what is typed goes to the machine
+		keys = `document.activeElement && document.activeElement.closest('.term')`
 	)
 	state := func(p *browsertest.Page, word string) {
 		t.Helper()
@@ -221,6 +228,54 @@ reconcile: {every: 10s}
 	// under the page's own policy: nothing it had to block
 	p.Quiet()
 
+	// ---- the whole window, and back: the same terminal, carried — on a real
+	// machine nothing else would draw its screen again
+	p.Type("echo carried-over", true)
+	says(p, "a mark on her screen", `\ncarried-over\n[^\n]*\$$`)
+	p.Press("Full screen")
+	p.Wait("the terminal's own address", "location.hash.endsWith('/terminal')")
+	state(p, "open")
+	says(p, "the same screen, in the whole window", `\ncarried-over\n[^\n]*\$$`)
+	p.Wait("the keyboard its own again, in the whole window", keys)
+	p.Type("echo in-the-whole-window", true)
+	says(p, "typed in the whole window", `\nin-the-whole-window\n[^\n]*\$$`)
+	p.Shot("50a-bench-terminal-whole-window")
+	// a window that changed tells her shell nothing — its port carries no
+	// size: it keeps its sign-in's, the bar says so, and exit signs her in
+	// again at the size the window has now, which the machine asks for
+	if err := p.Eval(`document.querySelector('.term-grid').textContent`, &grid); err != nil {
+		t.Fatal(err)
+	}
+	var wcols, wrows int
+	if _, err := fmt.Sscanf(grid, "%d × %d", &wcols, &wrows); err != nil || wcols <= cols || wrows <= rows {
+		t.Fatalf("the whole window's grid: %q, no larger than %d × %d (%v)", grid, cols, rows, err)
+	}
+	p.Sees("resized: exit signs you in at this size")
+	p.Type("stty size", true)
+	says(p, "her shell's size, still its sign-in's", fmt.Sprintf(`stty size\n%d %d\n[^\n]*\$$`, rows, cols))
+	p.Patience = time.Minute
+	p.Type("exit", true)
+	says(p, "signed in again, in the whole window", `logout[\s\S]*automatic login[\s\S]*debian@box:~\$$`)
+	p.Type("stty size", true)
+	says(p, "the whole window's size, taken at the new sign-in", fmt.Sprintf(`stty size\n%d %d\n[^\n]*\$$`, wrows, wcols))
+	p.Wait("the bar no longer says « resized »: the machine asked the size again", `!document.querySelector('.term-grid .term-hint')`)
+	p.Patience = 30 * time.Second
+	p.Type("echo in-the-whole-window", true)
+	says(p, "typed after the new sign-in", `\nin-the-whole-window\n[^\n]*\$$`)
+	p.Press("Leave full screen")
+	p.Wait("its page again", `location.hash.startsWith("#/r/`+id+`") && !location.hash.includes("/terminal")`)
+	p.Wait("the terminal back under the keys", `document.querySelector('.term-panel .term[data-state="open"]')`)
+	says(p, "the same screen, back in its page", `\nin-the-whole-window\n[^\n]*\$$`)
+	p.Wait("the keyboard its own again, under the keys", keys)
+	p.Type("echo back-under-the-keys", true)
+	says(p, "typed under the keys again", `\nback-under-the-keys\n[^\n]*\$$`)
+	if n := strings.Count(logs.String(), `"result":"opened"`); n != 1 {
+		t.Fatalf("the whole window and back is the same terminal: the brain's audit holds %d openings", n)
+	}
+	// a line begun at the desk and not entered, left there
+	p.Type("echo left-ha", false)
+	says(p, "a line begun at the desk", `\$ echo left-ha$`)
+
 	// ---- opened again elsewhere, by her: it moves there, and the first is
 	// told. One port, one terminal: the engine serves the second only once
 	// the first has let go, so the brain ends the first before it asks
@@ -230,7 +285,24 @@ reconcile: {every: 10s}
 	phone.Press("SIGN IN")
 	state(phone, "open")
 	state(p, "taken")
+	// opened again: her shell is where she left it, and says nothing by
+	// itself — an empty screen, which the page explains, with the key that
+	// asks the machine to draw. Nothing is typed for her meanwhile
+	phone.Wait("the page says her machine is quiet", quiet)
+	var held string
+	if err := phone.Eval(read, &held); err != nil || held != "" {
+		t.Fatalf("a terminal opened again holds %q before anything is asked (%v)", held, err)
+	}
+	phone.Shot("52a-bench-terminal-opened-again")
+	// Redraw: her shell draws its screen again, the line she had begun on it
+	// — drawn, not entered: nothing it would have said is there
+	phone.Press("Redraw")
+	says(phone, "her shell, drawn at her asking: the line she left, not run", `^debian@box:~\$ echo left-ha$`)
+	phone.Wait("the slip gone at the machine's first word", `!document.querySelector('.term[data-quiet]')`)
+	phone.Shot("52b-bench-terminal-drawn-again")
 	phone.Patience = time.Minute
+	phone.Type("lf", true)
+	says(phone, "the line left at the desk, ended on the phone", `\$ echo left-half\nleft-half\n[^\n]*\$$`)
 	phone.Type("echo on-the-phone", true)
 	says(phone, "the same machine, on the phone", `\non-the-phone\n`)
 	phone.Shot("52-bench-terminal-phone")
@@ -326,7 +398,8 @@ reconcile: {every: 10s}
 	if len(refused) != 2 || !strings.Contains(strings.Join(refused, "\n"), `"actor":"`+olive+`"`) || !strings.Contains(strings.Join(refused, "\n"), `"reason":"owner"`) {
 		t.Errorf("the audit holds the two refusals, the operator's by its reason:\n%s", strings.Join(refused, "\n"))
 	}
-	for _, typed := range []string{"a-typed-secret", "still-here", "stty size", "on-the-phone", "back-at-the-desk", "after-the-reboot", "set-before-the-reboot"} {
+	for _, typed := range []string{"a-typed-secret", "still-here", "stty size", "on-the-phone", "back-at-the-desk", "after-the-reboot", "set-before-the-reboot",
+		"carried-over", "in-the-whole-window", "back-under-the-keys", "left-ha"} {
 		if strings.Contains(logs.String(), typed) {
 			t.Errorf("%q, typed in a terminal, is in the brain's log", typed)
 		}

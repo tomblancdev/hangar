@@ -35,7 +35,7 @@ release refuses the line.
 | path | privileges | why |
 |---|---|---|
 | `/pool/<machines pool>` | `VM.Allocate`, `VM.Audit`, `VM.Clone`, `VM.Config.CDROM`, `VM.Config.CPU`, `VM.Config.Cloudinit`, `VM.Config.Disk`, `VM.Config.HWType`, `VM.Config.Memory`, `VM.Config.Network`, `VM.Config.Options`, `VM.PowerMgmt`, `VM.GuestAgent.Audit`, `Datastore.AllocateSpace`, `Datastore.Audit`, **`Pool.Audit`** | making and running its guests. `Pool.Audit` looks optional and is not: without it `/cluster/resources` **leaves out every guest's pool** (`API2/Cluster.pm`), and the driver could not tell its guests from anyone's |
-| `/pool/<machines pool>`, **for a terminal — the operator's choice** | `VM.Console` | a machine's terminal is its serial port, opened through the node's terminal proxy — see [A machine's terminal](#a-machines-terminal). Without it nothing else changes: the zone offers no terminal, and a machine that names no key pair is made as before |
+| `/pool/<machines pool>`, **for a terminal — the operator's choice** | `VM.Console` | a machine's terminal is its serial port, opened through Proxmox's terminal proxy (on a cluster: the one of the node the API is asked on) — see [A machine's terminal](#a-machines-terminal). Without it nothing else changes: the zone offers no terminal, and a machine that names no key pair is made as before |
 | `/pool/<images pool>` | `VM.Audit`, `VM.Clone`, `Pool.Audit` | reading and cloning the templates — never changing them |
 | `/storage/<disks>` | `Datastore.AllocateSpace`, `Datastore.Audit` | the guests' disks |
 | `/storage/<where the archives are>` | `Datastore.Audit` | `pct create` reads the archive (it asks for `Datastore.AllocateSpace` **or** `Datastore.Audit` there) |
@@ -504,6 +504,37 @@ Read on a live node (Proxmox VE 9.2) before the driver was written:
   opens, says « starting serial terminal », and stays silent while the first
   holds the port. The brain keeps one terminal per machine: a second opening
   ends the first.
+- **A port opened again says nothing.** What sits at its other end — a
+  shell, an editor, a login asked at boot — drew itself once, for whoever
+  was there, or for nobody: the next socket hears not a byte until a key is
+  pressed (read with a hand client: six seconds of silence, then a prompt at
+  Enter; and in the page, in a real browser: an empty screen and a cursor).
+  Nothing between a machine and the page keeps a picture of its screen —
+  the driver, the brain and the console pass bytes and hold none. So the
+  console carries a terminal between its own two pages rather than open it
+  again, and says over an empty screen that the machine is quiet, with a key
+  that types Ctrl-L ([console.md](console.md#a-machines-terminal)). **The
+  port is the machine's console too**: a line of its init, or of its
+  shutdown, lands on the screen among what is typed. **And it carries no
+  window size**: the proxy's `1:<cols>:<rows>:` sizes the proxy's own end,
+  never the guest's — a shell has the size its getty was answered at its
+  sign-in, until `exit` signs in again.
+- **On a cluster, the proxy runs where the API is asked — and its last leg
+  is the cluster's own.** Neither call is passed on to the guest's node: the
+  node that answers `termproxy` starts the proxy itself and holds the
+  socket. When the guest runs on another node, what that proxy runs is the
+  cluster's ssh, as root, from the one to the other (`ssh -t root@<the
+  guest's node> qm terminal <vmid> -iface serial0`), where a `socat` holds
+  the port. Read on a three-node cluster, the API asked on one node for a VM
+  of another: the `termproxy` process and its `vncproxy` task on the node
+  that was asked, `qm terminal` on the guest's, root's session there coming
+  from the first. So a zone's `endpoint` need not be the node its machines
+  run on, and a terminal needs what a migration needs: port 22 from the
+  node the API is asked on to the guest's, with the cluster's own key — and
+  the guest's node awake, which a running guest says already. The product
+  puts nothing on that leg, no key and no rule: an operator who walls the
+  nodes from one another keeps that door open as the cluster's own. (The
+  bench has one node: this was read on a cluster, not there.)
 - **Proxmox says nothing when a guest stops.** A socket open on a guest that
   was stopped stayed open and silent for as long as it was watched (20 s).
   The driver looks at the guest itself, every five seconds — its power, and

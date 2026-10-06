@@ -42,7 +42,12 @@ same way — it does not know what a machine is.
   watched from it**: the machine goes down and comes back on the same
   screen. **Full screen** leads to the same screen alone, at an address of
   its own (`#/r/<id>/terminal`); **Leave full screen** comes back with it
-  still shown. `Close`, or leaving the page, lets go of it.
+  still shown — and so does any other way back to the machine's page: the
+  name in the terminal's bar, the browser's own. Both ways it is **the same
+  terminal, carried**: its screen, the line being typed, its socket —
+  nothing is opened again, and the audit holds one opening. It is handed to
+  the page the same navigation shows, and to no other: `Close`, or leaving
+  for anywhere else, lets go of it at once.
 - **Signed in, or asked.** A VM born with no key pair lands you in a shell
   as its user, nothing asked: the gateway and its second factor already said
   who you are. One born with a key asks a login unless its form says
@@ -51,10 +56,37 @@ same way — it does not know what a machine is.
 - **Its size.** A machine's serial port carries no window size: the machine
   asks the terminal when it signs you in, and takes what it answers. A
   window that changes afterwards redraws here at once, and the bar says so —
-  `exit` signs you in again at the new size.
+  `exit` signs you in again at the new size, and the bar stops saying it
+  when the machine asks again. (A terminal opened again shows a shell at the
+  size of the window it was signed in from.) A program that draws the whole
+  screen — an editor, a pager — draws at the size it was started at: on a
+  smaller screen it is cut. No shell on a serial port is
+  told its window changed, so none draws its line again: the line you are on
+  is wrapped and unwrapped with the others as the window narrows and widens,
+  never cut at the narrower edge. A window with no room for a terminal —
+  under 16 columns or 4 rows, a moment on its way to another size — is not
+  fitted to.
 - **One place at a time.** Opened again — another tab, your phone — it moves
   there, and the first is told (« TAKEN »), with a key to take it back. It
   is one screen: what was running on it is still there.
+- **Opened again, it is where it was left — and says nothing by itself.** A
+  machine keeps no picture of its screen, and nothing on the way to you
+  does: a terminal opened again (the page loaded anew, your phone, `Close`
+  then `terminal`) starts empty, the shell that was left there waiting for a
+  key. After four seconds without a word from the machine the page
+  says so on a slip over the screen, with a **Redraw** key: it types Ctrl-L,
+  which a shell, an editor or a pager answers by drawing its screen again —
+  the line you had begun on it too. **The page types nothing by itself**: a
+  key pressed for you would land in whatever reads the keyboard then — a
+  password being asked, a file being written. At a login, Enter asks again.
+  The slip leaves at the machine's first word, or at your first key. A first
+  opening never shows it: a machine about to sign you in asks the terminal
+  its size every two seconds, and the four are counted from the moment the
+  brain's own stream is open, which the console says in the socket. A screen
+  this page kept across an ending (« OPEN IT HERE ») is told to forget one
+  thing before its machine is opened again: a program's asking to be told of
+  the window's focus — that program may be gone, and the page taking the
+  keyboard would type a report into whatever reads it now.
 - **Why it ended** is said on a notice over the screen, in the brain's own
   words: the machine was stopped (for a game on the zone's room, by its idle
   rule, by you), it was opened elsewhere, your sign-in ended, the brain
@@ -69,7 +101,9 @@ two as they come. Two things are the console's own, because a browser
 reaches it on a cookie: the socket is taken **only from the console's own
 pages** (its `Origin` — a cookie rides a WebSocket's opening as it rides any
 request), and a refusal is **said inside the socket** before it closes (a
-page cannot read why an opening failed). What is open on a sign-in ends with
+page cannot read why an opening failed) — as is, for the same reason, the
+moment the brain's own stream is open (`{"opened":true}`): the page says
+« open » then, not when its socket was taken. What is open on a sign-in ends with
 it — and while a terminal is open the sign-in under it is **looked at**,
 every twenty seconds: its token renewed at the provider before it ends, the
 new one handed to the brain (which asks again, every half minute, what the
@@ -82,7 +116,10 @@ opening and the closing — how long, how many bytes — never a word.
 **Named, not hidden:** an open terminal is not what a machine's `idle_after`
 counts (its CPU and what it sends are) — `keep awake` holds a quiet machine;
 a shell left on the screen stays there for whoever opens the terminal next,
-which is only ever its owner; a terminal has no say in a screen reader yet.
+which is only ever its owner; the screen is the machine's console too — a
+line of its init, or of its shutdown, can land among what you type (Redraw
+is one key on a phone; Ctrl-L anywhere); a terminal has no say in a screen
+reader yet.
 
 ## Signing in
 
@@ -327,12 +364,23 @@ A terminal has three. `TestAStreamThroughTheConsole` and its two neighbours
 hold the door: what passes, passes as it came, inside the brain and on its
 own; a refusal is read in the socket; another site's page with the person's
 cookie is refused before anything opens; a sign-out closes what was open,
-and so does a provider that stops renewing the sign-in under it.
+and so does a provider that stops renewing the sign-in under it; a stream
+the brain opened says so first, in the console's own word.
 `TestATerminalInThePage` is the page in a real browser, under its own
 policy, with the browser's complaints read (none): a machine with no key
-made and entered, the window's size told, the whole window and back, the
-phone taking it and the desk taking it back, an operator offered none and
-refused by its address, the machine stopped under it. And
-`TestBenchATerminalInThePage` (`cmd/hangar`) is the same on a real Proxmox
-VE — a real machine's first boot, its user, its colours — with the audit's
-two lines read and nothing typed found in the brain's log.
+made and entered, the window's size told, the whole window and back as one
+terminal (a line begun on one page ended on the other, one opening in the
+audit; back by its key, by the browser's way, by the name in its bar), the
+shell's size kept until `exit`, a window narrowed and widened under a long
+line and shrunk to one pixel, the phone taking it — an empty screen, the
+slip, Redraw drawing a half-typed line without entering it — and the desk
+taking it back, its slip gone at a key the machine answers nothing to, no
+report typed when it takes the keyboard again, an operator offered none and
+refused by its address, the machine stopped under it. The engine it runs on
+is the fake one, **whose port has learnt the real one's form**: its other
+end outlives a console, a second opening hears nothing, a shell keeps the
+size of its sign-in (`driver/fake/console.go`) — it used to greet at every
+opening and take every window's size, and hid all of the above. And `TestBenchATerminalInThePage` (`cmd/hangar`) is
+the same on a real Proxmox VE — a real machine's first boot, its user, its
+colours, its own shell drawn again at Redraw — with the audit's lines read
+and nothing typed found in the brain's log.

@@ -77,6 +77,17 @@ func (s *socket) next() [2]string {
 	}
 }
 
+// opened takes the console's own first word on a stream the brain opened:
+// the page's socket is taken before the brain is asked, and « open » — and a
+// machine's silence — is counted from this word, which comes before anything
+// the resource says.
+func (s *socket) opened() {
+	s.t.Helper()
+	if m := s.next(); m != [2]string{"text", `{"opened":true}`} {
+		s.t.Fatalf("a stream the brain opened says so first, in the console's word: %q", m)
+	}
+}
+
 func (s *socket) ended() websocket.CloseError {
 	s.t.Helper()
 	select {
@@ -123,6 +134,7 @@ func TestAStreamThroughTheConsole(t *testing.T) {
 		if s == nil {
 			t.Fatalf("its owner's stream: %s", resp.Status)
 		}
+		s.opened()
 		s.send("hello")
 		if m := s.next(); m != [2]string{"binary", "hello"} {
 			t.Fatalf("what was sent comes back: %q", m)
@@ -137,6 +149,7 @@ func TestAStreamThroughTheConsole(t *testing.T) {
 		if ce := s.ended(); ce.Code != 4001 || !strings.Contains(ce.Reason, "opened elsewhere") {
 			t.Fatalf("the older of two: %d %q", ce.Code, ce.Reason)
 		}
+		again.opened()
 		// ended from the box's side: the reason, as the plugin gave it
 		again.send("bye")
 		if ce := again.ended(); ce.Code != 4000 || ce.Reason != "the box said bye" {
@@ -208,6 +221,7 @@ func TestAStreamEndsWithItsSignIn(t *testing.T) {
 		b := d.browser()
 		b.signIn("")
 		s, _ := b.open("/console/api/v1/resources/"+box(t, b)+"/streams/echo", "")
+		s.opened()
 		s.send("a")
 		s.next()
 		if a := b.ask("POST", "/console/signout", nil); a.code != 204 {
@@ -239,6 +253,7 @@ func TestAStreamIsHeldOnASignInThatIsLookedAt(t *testing.T) {
 	b := d.browser()
 	b.signIn("")
 	s, _ := b.open("/console/api/v1/resources/"+box(t, b)+"/streams/echo", "")
+	s.opened()
 	before := d.stack.Iss.Refreshes()
 	// past the life of the token it was opened on, typing all the while
 	for until := time.Now().Add(3 * time.Second); time.Now().Before(until); time.Sleep(200 * time.Millisecond) {

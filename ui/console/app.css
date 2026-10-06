@@ -288,7 +288,19 @@ textarea.input { font-size: 14px; line-height: 1.5; resize: vertical; }
 .term-grid { color: var(--ash); font-variant-numeric: tabular-nums; }
 .term-hint { color: var(--signal); }
 /* the screen takes what is left; its grid is fitted to it (terminal.js) */
+.term-view { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .term-screen { flex: 1 1 auto; min-height: 0; padding: 8px 2px 4px 10px; overflow: hidden; }
+/* laid over the screen while the machine says nothing: a slip, not a flyer —
+   nothing ended. The screen under it still takes a tap. */
+.term-quiet { position: absolute; top: 0; right: 0; z-index: 1; max-width: 100%; padding: 10px 24px; pointer-events: none; }
+.term-quiet:empty { display: none; }
+/* out of the way of the line being typed: a wide screen's top right, where
+   lines seldom reach; a phone's bottom, an empty screen's cursor being on top */
+@media (pointer: coarse), (max-width: 560px) { .term-quiet { top: auto; left: 0; bottom: 0; padding: 0 12px 14px; } }
+.slip { pointer-events: auto; display: grid; gap: 8px; max-width: 400px; padding: 12px 14px; font-size: 12px; line-height: 1.5; color: var(--chalk); background: var(--steel); border: 1px solid var(--rebar); border-left: 3px solid var(--signal); border-radius: var(--radius); box-shadow: 0 6px 0 rgba(0, 0, 0, .5); }
+.slip-title { font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--signal); }
+.slip p { margin: 0; }
+.slip-end { display: flex; justify-content: flex-end; }
 .term-screen .xterm { height: 100%; }
 /* the keys a phone's keyboard has none of: shown where a finger is the pointer */
 .term-keys { display: none; gap: 6px; padding: 6px 8px; background: var(--steel); border-top: 1px solid var(--rebar); }

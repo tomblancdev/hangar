@@ -150,6 +150,7 @@ type Page struct {
 	b       *Browser
 	t       testing.TB
 	session string
+	phone   bool
 
 	// Patience: how long a wait may last (default 20 s; a real engine takes
 	// minutes to make a machine).
@@ -175,7 +176,7 @@ func (b *Browser) Page(width, height int, phone bool) *Page {
 		SessionID string `json:"sessionId"`
 	}
 	b.must(b.call("", "Target.attachToTarget", map[string]any{"targetId": target.TargetID, "flatten": true}, &att))
-	p := &Page{b: b, t: b.t, session: att.SessionID}
+	p := &Page{b: b, t: b.t, session: att.SessionID, phone: phone}
 	b.mu.Lock()
 	b.pages[p.session] = p
 	b.mu.Unlock()
@@ -477,6 +478,28 @@ func (p *Page) Submit() {
 	const find = `[...document.querySelectorAll('form button[type=submit]')].find(__t.shown)`
 	p.Wait("a form to send", find)
 	if err := p.Eval(find+".click()", nil); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+// Ctrl presses Ctrl and a letter, as a keyboard does.
+func (p *Page) Ctrl(letter byte) {
+	p.t.Helper()
+	up := letter &^ 0x20
+	for _, kind := range []string{"rawKeyDown", "keyUp"} {
+		if err := p.call("Input.dispatchKeyEvent", map[string]any{
+			"type": kind, "modifiers": 2, "key": string(letter), "code": "Key" + string(up),
+			"windowsVirtualKeyCode": int(up), "nativeVirtualKeyCode": int(up),
+		}, nil); err != nil {
+			p.t.Fatal(err)
+		}
+	}
+}
+
+// Size gives the tab another size: a window dragged narrower, a phone turned.
+func (p *Page) Size(width, height int) {
+	p.t.Helper()
+	if err := p.call("Emulation.setDeviceMetricsOverride", map[string]any{"width": width, "height": height, "deviceScaleFactor": 1, "mobile": p.phone}, nil); err != nil {
 		p.t.Fatal(err)
 	}
 }

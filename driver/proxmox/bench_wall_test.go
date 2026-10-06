@@ -2,6 +2,7 @@ package proxmox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"slices"
 	"strconv"
@@ -34,6 +35,81 @@ func eventually(t *testing.T, what string, within time.Duration, ok func() bool)
 			t.Fatalf("%s: still not so after %s", what, within)
 		}
 		time.Sleep(2 * time.Second)
+	}
+}
+
+// toldInside waits for a container to hold what it was told at its birth.
+// Its own init writes it there a moment after its start — a second or so on
+// a bench that has run other tests — so a read asked once, right then,
+// sometimes finds it not yet there: it is asked until it is, and the log
+// says how many reads that took.
+func toldInside(t testing.TB, read func() string, told ...string) {
+	t.Helper()
+	began := time.Now()
+	for asked := 1; ; asked++ {
+		at := time.Since(began).Round(100 * time.Millisecond)
+		last := read()
+		missing := ""
+		for _, want := range told {
+			if !strings.Contains(last, want) {
+				missing = want
+				break
+			}
+		}
+		if missing == "" {
+			t.Logf("what it was told was inside it at read %d, asked %s after its birth returned", asked, at)
+			return
+		}
+		if time.Since(began) > toldWithin {
+			t.Fatalf("inside it, still no %q %s after its birth (%d reads):\n%s", missing, toldWithin, asked, last)
+			return
+		}
+		t.Logf("read %d, asked %s after its birth returned: no %q inside yet", asked, at, missing)
+		time.Sleep(toldEvery)
+	}
+}
+
+// toldWithin, toldEvery: how long toldInside asks, and how often.
+var toldWithin, toldEvery = time.Minute, time.Second
+
+// refusing is a test that is told it failed, and goes on: what toldInside
+// says of a container that never holds what it was told.
+type refusing struct {
+	testing.TB
+	said []string
+}
+
+func (r *refusing) Helper()                   {}
+func (r *refusing) Logf(string, ...any)       {}
+func (r *refusing) Fatalf(f string, a ...any) { r.said = append(r.said, fmt.Sprintf(f, a...)) }
+
+// The wait itself, without a bench: a container that holds what it was told
+// only at the third read is asked three times, and one that never does is
+// refused in words that name what is missing — the read asked once, as the
+// bench's tests asked it, was red on the first of these.
+func TestToldInsideAsksUntilItIsThere(t *testing.T) {
+	within, every := toldWithin, toldEvery
+	toldWithin, toldEvery = 300*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { toldWithin, toldEvery = within, every })
+
+	asked := 0
+	late := func() string {
+		asked++
+		if asked < 3 {
+			return "inet 198.51.100.7/24" // its address, and not yet its route
+		}
+		return "inet 198.51.100.7/24\ndefault via 198.51.100.1"
+	}
+	r := &refusing{TB: t}
+	toldInside(r, late, "inet 198.51.100.7/24", "default via 198.51.100.1")
+	if asked != 3 || len(r.said) != 0 {
+		t.Fatalf("a container told late: asked %d times, refused %q", asked, r.said)
+	}
+
+	never := &refusing{TB: t}
+	toldInside(never, func() string { return "inet 198.51.100.7/24" }, "inet 198.51.100.7/24", "default via 198.51.100.1")
+	if len(never.said) != 1 || !strings.Contains(never.said[0], `no "default via 198.51.100.1"`) {
+		t.Fatalf("a container never told its route: %q", never.said)
 	}
 }
 
@@ -105,12 +181,10 @@ func TestBenchAMachineBornBehindItsWall(t *testing.T) {
 	if av != strconv.Itoa(next) || a.Address != addr || a.Wall != driver.WallExact || !a.Running {
 		t.Fatalf("born as %+v — want guest %d at %s, behind its wall", a, next, addr)
 	}
-	inside, _ := in(av, "ip -4 -o addr show eth0; ip route show default; cat /etc/resolv.conf")
-	for _, want := range []string{"inet " + addr + "/24", "default via 198.51.100.1", "nameserver 198.51.100.1"} {
-		if !strings.Contains(inside, want) {
-			t.Errorf("inside it, no %q:\n%s", want, inside)
-		}
-	}
+	toldInside(t, func() string {
+		out, _ := in(av, "ip -4 -o addr show eth0; ip route show default; cat /etc/resolv.conf")
+		return out
+	}, "inet "+addr+"/24", "default via 198.51.100.1", "nameserver 198.51.100.1")
 	file := b.must(t, "cat /etc/pve/firewall/"+av+".fw")
 	for _, want := range []string{"enable: 1", "policy_in: DROP", "dhcp: 0", "[IPSET ipfilter-net0]", addr, "GROUP hangar-floor", "OUT DROP -p udp -sport 67"} {
 		if !strings.Contains(file, want) {

@@ -82,6 +82,9 @@ type Engine struct {
 	imageKinds []string
 	state      state
 	failNext   error
+	// ports: the other end of each guest's serial port (console.go). Not in
+	// the file: who sits at a port is this process's, as a console is.
+	ports map[string]*port
 }
 
 type state struct {

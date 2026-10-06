@@ -149,12 +149,10 @@ func TestBenchTwoNetworksAndAJump(t *testing.T) {
 	if status(gwA) != "status: running" || status(gwB) != "status: stopped" {
 		t.Fatalf("its network's gateway %s, the other %s", status(gwA), status(gwB))
 	}
-	inside, _ := in(v1, "ip -4 -o addr show eth0; ip route show default; cat /etc/resolv.conf")
-	for _, want := range []string{"inet " + m1.Address + "/27", "default via " + a.Gateway, "nameserver 198.51.100.1"} {
-		if !strings.Contains(inside, want) {
-			t.Errorf("inside it, no %q:\n%s", want, inside)
-		}
-	}
+	toldInside(t, func() string {
+		out, _ := in(v1, "ip -4 -o addr show eth0; ip route show default; cat /etc/resolv.conf")
+		return out
+	}, "inet "+m1.Address+"/27", "default via "+a.Gateway, "nameserver 198.51.100.1")
 	mfile := b.must(t, "cat /etc/pve/firewall/"+v1+".fw")
 	if !strings.Contains(mfile, "IN ACCEPT -source "+a.Range) || strings.Contains(mfile, "GROUP") || !strings.Contains(mfile, m1.Address) {
 		t.Fatalf("its firewall file — its own network in, no group of the lane's:\n%s", mfile)

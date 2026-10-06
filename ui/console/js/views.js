@@ -11,7 +11,7 @@ import {summary, label, plural, show, fieldsOf} from './schema.js';
 import {nested, pairs} from './json.js';
 import {listing} from './code.js';
 import {buildForm, refusal} from './form.js';
-import {terminal} from './terminal.js';
+import {terminal, carriedTo} from './terminal.js';
 
 const idShape = /^[a-z][a-z0-9]{0,7}-[0-9a-f]{17}$/;
 const moving = ['creating', 'updating', 'deleting'];
@@ -444,9 +444,20 @@ export function resource(ctx, id) {
     for (const b of actions.querySelectorAll('button[data-stream]')) { const on = b.dataset.stream === name; b.classList.toggle('chosen', on); b.setAttribute('aria-expanded', String(on)); }
     t.open();
   }
-  ctx.onLeave(hide);
-  // come back from the whole window: it is shown again, where it was
+  // left for its own whole window, its terminal goes there as it is: the
+  // same screen on the same socket. Left for anywhere else, it is let go of.
+  ctx.onLeave(() => {
+    if (!shown || location.hash !== `#/r/${id}/${shown.name}`) { hide(); return; }
+    shown.t.pass();
+    shown = null;
+  });
+  // come back from the whole window — by its key, by the bar's name, by the
+  // browser's own way back: its terminal comes with it, as it was there,
+  // taken now, in the turn it was passed in. One asked for by the address
+  // alone is opened once the machine is read, if it is yours to open
   let asked = new URLSearchParams(location.hash.split('?')[1] || '').get('open') || '';
+  const came = carriedTo(id);
+  if (came) { unfold(came); asked = ''; }
   // what a person unfolded stays unfolded while the page is looked at again
   const unfolded = new Set();
 
@@ -458,6 +469,9 @@ export function resource(ctx, id) {
       if (p instanceof Problem && p.status === 404) { clear(node, missing(`No resource ${id} — or not one you may see.`)); gone = true; return false; }
       throw p;
     }
+    // left while the brain answered: a page that is gone draws nothing, and
+    // opens nothing — what it would open, nobody could see or close
+    if (!ctx.alive()) return false;
     const t = ctx.type(r.type);
     const own = r.owner === ctx.me.subject || ctx.me.operator;
     // where you are, by what it is called
@@ -669,10 +683,11 @@ export function resource(ctx, id) {
 // screen, and a bar that says whose it is and leads back.
 export function stream(ctx, id, name) {
   const back = h('a', {class: 'term-back', href: '#/r/' + id, title: 'Its page'}, '‹ ' + id);
-  const t = terminal({id, stream: name, controls: [
+  const t = terminal({id, stream: name, lead: back, controls: [
     h('a', {class: 'btn small ghost', href: `#/r/${id}?open=${name}`, title: 'Back in its page, the terminal still shown'}, 'Leave full screen')]});
-  t.node.querySelector('.term-bar').prepend(back);
-  ctx.onLeave(() => t.close());
+  // left for its machine's page — by any way there — it goes as it is;
+  // left for anywhere else, it is let go of
+  ctx.onLeave(() => (location.hash.split('?')[0] === '#/r/' + id ? t.pass() : t.close()));
   // what it is called, once read; a stream nobody may open says so itself
   ctx.now(async () => {
     const r = await api('GET', '/v1/resources/' + id);
