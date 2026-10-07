@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.6.2 — 2026-10-07
+
+- **Derrière une passerelle — behind a gateway, the page heals itself.** A
+  front that locks the console behind a verdict of its own (a proxy's
+  `forward_auth`) keeps that verdict for a time; past it, every address of
+  the console is answered a redirect to the gateway's sign-in, on another
+  origin. A page follows that; a call cannot — and `v0.6.1`'s page said
+  « the console cannot be reached: check your connection » at every look,
+  for as long as the tab stayed, while a reload cured it in a second (read
+  on a live gateway: nine calls answered `302` in 76 seconds; a terminal
+  closed then said « CUT », with an **OPEN AGAIN** that could only fail).
+  Now ([docs/console.md](docs/console.md#behind-a-gateway)):
+  **The page loads itself anew.** No call of the app follows a redirect any
+  more — the console never answers one to a call, so one that comes is the
+  gateway's. At the first, the page reloads: through the gateway, nothing
+  asked, back where it was. A tab someone comes back to asks at once, so it
+  is healed before they press anything.
+  **Unless it holds something.** With a terminal on the page — open, or
+  ended with its screen kept — or a form someone has used, it says so
+  instead: a notice, « TIMED OUT », with **Reload** and a way to keep what
+  is there — the console opened in another tab goes through the gateway,
+  and this page carries on, its notice gone. Once nothing is held, it loads
+  itself anew at its next look. And only after a minute in which every
+  answer was the console's: a page turned back as soon as it is loaded is
+  not cured by loading it again, nor is one whose front turns back some of
+  its looks, and neither tries.
+  **A terminal says which ending it is.** An open one is left alone: it
+  outlives the gateway's time. One that is cut, or asked for past the time,
+  asks the console with a call — a browser tells a page nothing of why a
+  socket did not open — and where the gateway answers, reads « TIMED OUT »,
+  with **RELOAD** and an **OPEN AGAIN** that asks first.
+  **Three things said truly on the way.** A terminal put away by its key is
+  no longer what its page's address asks for (`?open=terminal` stayed, and a
+  page loaded anew opened it again). An action the brain took, whose end the
+  page could then not read — the console out of reach, a gateway in the way
+  — is said as asked, no longer as « REFUSED … nothing was changed ». And
+  an address that names no resource asks the console nothing.
+  Held by `TestThePageBehindAGateway`: a real browser in front of a proxy
+  that plays a gateway as one was read live, in front of the whole stack —
+  and by twenty-two controls, each rule taken out in turn and the test red
+  on that rule's own line (without the guard, 112 loads in two seconds).
+
 ## v0.6.1 — 2026-10-06
 
 - **Le terminal rouvert — a terminal opened again draws.** A machine keeps
