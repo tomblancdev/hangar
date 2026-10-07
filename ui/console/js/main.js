@@ -2,9 +2,10 @@
 // Everything it shows comes from the brain's API through the console's own
 // server (api.js); what may be asked for comes from the catalogue.
 
-import {api, loadSession, session, signInWithToken, signOut, whenSignedOut, Problem} from './api.js';
+import {api, loadSession, reach, session, signInWithToken, signOut, whenAnswered, whenSignedOut, whenTurnedBack, Problem} from './api.js';
 import {h, clear} from './dom.js';
 import {fieldsOf, plural} from './schema.js';
+import {holding} from './terminal.js';
 import * as views from './views.js';
 
 const app = document.getElementById('app');
@@ -23,7 +24,7 @@ function life() {
       if (l.alive && notice()) clear(notice());
       return out;
     } catch (p) {
-      if (!l.alive || (p instanceof Problem && p.status === 401)) return false;
+      if (!l.alive || (p instanceof Problem && (p.status === 401 || p.kind === 'gateway'))) return false;
       if (notice()) clear(notice(), h('div', {class: 'banner', role: 'alert'}, p.message || String(p)));
       if (!(p instanceof Problem)) console.error(p);
       return false;
@@ -54,6 +55,76 @@ function life() {
   };
 }
 
+// ---- Behind a gateway -----------------------------------------------------------
+
+// A front that locks the console behind a verdict of its own lets a person
+// through for a time, then turns the page's calls back to its sign-in
+// (api.js). A page loaded anew goes through it — nothing asked, where the
+// gateway still knows the person — and comes back where it was: so the page
+// reloads itself. Unless it holds what loading it anew would lose — a
+// terminal, a form someone has used: then it says so, and waits for them.
+// And only after a minute in which every answer was the console's: a page
+// turned back as soon as it is loaded is not cured by loading it again, nor
+// is one whose front turns some of its looks back, time after time — the
+// longest wait between two looks is half that minute.
+const steady = 60000;
+let since = null; // since when every answer is the console's; null while one was not
+let stopped = null; // the gateway is in the way: {steady, asked} — whether the page had worked before, and the calls asked when it last turned one back
+let typed = false; // someone has used a form of the page that is shown
+let leaving = false;
+
+const holds = () => holding() || (typed && document.forms.length > 0);
+
+for (const kind of ['input', 'keydown']) {
+  app.addEventListener(kind, (e) => { if (e.composedPath().some((n) => n.tagName === 'FORM')) typed = true; }, true);
+}
+
+whenTurnedBack((asked) => {
+  if (!stopped) stopped = {steady: since !== null && performance.now() - since >= steady};
+  stopped.asked = asked;
+  since = null;
+  if (leaving) return;
+  if (stopped.steady && !holds()) {
+    leaving = true;
+    // still here in a while, it was not loaded anew (a load someone stopped):
+    // it says so, and tries no more by itself
+    setTimeout(() => { leaving = false; if (stopped) { stopped.steady = false; timedOut(); } }, 10000);
+    location.reload();
+    return;
+  }
+  timedOut();
+});
+
+whenAnswered((n) => {
+  // an answer to what was asked before the gateway last turned a call back
+  // says nothing of the gateway now
+  if (stopped && n <= stopped.asked) return;
+  if (since === null) since = performance.now();
+  if (!stopped) return;
+  // let through again — another tab of the console went through: carry on
+  stopped = null;
+  const slot = document.getElementById('gate');
+  if (slot) { clear(slot); delete slot.dataset.holds; }
+});
+
+// timedOut says it on the page, where the page has a place for it — once: a
+// notice someone is reading is not drawn again under them.
+function timedOut() {
+  const slot = document.getElementById('gate');
+  const held = String(holds());
+  if (!slot || slot.dataset.holds === held) return;
+  slot.dataset.holds = held;
+  clear(slot, h('div', {class: 'flyer', role: 'alert'}, h('div', {class: 'flyer-title'}, 'TIMED OUT'),
+    h('p', {class: 'flyer-detail'}, 'What stands in front of this console asks who you are again, as it does from time to time. Reload the page to go through.'),
+    held === 'true' ? h('p', {class: 'flyer-detail'}, 'What is open here goes with it. To keep it, open the console in ',
+      h('a', {href: './', target: '_blank', rel: 'noopener'}, 'another tab'), ' first, then come back: this page carries on.') : null,
+    h('div', {class: 'flyer-end'}, h('button', {type: 'button', class: 'btn solid', onclick: () => location.reload()}, 'RELOAD'))));
+}
+
+// a tab someone comes back to asks at once: turned back, it is healed before
+// they press anything; let through again, its notice leaves
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state.me) reach(); });
+
 // ---- The frame ------------------------------------------------------------------
 
 function frame(crumbs) {
@@ -81,6 +152,7 @@ function frame(crumbs) {
             crumbs.map((c, i) => [i ? h('span', {class: 'sep', 'aria-hidden': 'true'}, '/') : null, c.href ? h('a', {href: c.href}, c.words) : h('span', {id: c.id || null}, c.words)]),
             h('span', {class: 'cursor', 'aria-hidden': 'true'})),
           h('div', {id: 'zones', class: 'lamps'})),
+        h('div', {id: 'gate'}),
         h('div', {id: 'notice'}),
         h('main', {id: 'view'}),
         statusLine([state.me.name || state.me.subject, 'tier ' + state.me.tier, 'signed in ' + (session.via === 'token' ? 'with a token' : 'at the provider')], 'the command line does the same: hangar --help'))),
@@ -125,6 +197,7 @@ function route() {
   const parts = (location.hash.replace(/^#\/?/, '').split('?')[0]).split('/').filter(Boolean).map(decodeURIComponent);
   const page = life();
   state.page = page;
+  typed = false;
   let node;
   let name = 'Home';
   const crumbs = [{href: '#/', words: 'hangar'}];
@@ -152,6 +225,7 @@ function route() {
   document.title = name + ' — Le Hangar';
   clear(app, frame(crumbs));
   clear(document.getElementById('view'), node);
+  if (stopped) timedOut();
   page.ctx.every(30000, lamps);
   window.scrollTo(0, 0);
 }

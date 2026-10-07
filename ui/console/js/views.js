@@ -431,14 +431,21 @@ export function resource(ctx, id) {
     clear(termBox);
     for (const b of actions.querySelectorAll('button[data-stream]')) { b.classList.remove('chosen'); b.setAttribute('aria-expanded', 'false'); }
   }
+  // putAway: by its key. It is no longer what this address asks for: a page
+  // loaded anew — by itself too, behind a gateway (main.js) — opens no
+  // terminal nobody asked for
+  function putAway() {
+    hide();
+    if (location.hash.startsWith(`#/r/${id}?`)) window.history.replaceState(null, '', location.pathname + location.search + '#/r/' + id);
+  }
   // unfold opens it under the keys, with a switch to the whole window (its
   // own address: the same screen, alone) and a way to put it away
   function unfold(name) {
-    if (shown && shown.name === name) { hide(); return; }
+    if (shown && shown.name === name) { putAway(); return; }
     hide();
     const t = terminal({id, stream: name, controls: [
       h('a', {class: 'btn small ghost', href: `#/r/${id}/${name}`, title: 'The whole window: the same screen, alone'}, 'Full screen'),
-      h('button', {type: 'button', class: 'btn small ghost', onclick: hide}, 'Close')]});
+      h('button', {type: 'button', class: 'btn small ghost', onclick: putAway}, 'Close')]});
     shown = {name, t};
     clear(termBox, t.node);
     for (const b of actions.querySelectorAll('button[data-stream]')) { const on = b.dataset.stream === name; b.classList.toggle('chosen', on); b.setAttribute('aria-expanded', String(on)); }
@@ -636,7 +643,16 @@ export function resource(ctx, id) {
   async function follow(op, what) {
     clear(said, h('p', {class: 'busy'}, what + ': running…'));
     ctx.now(look);
-    const done = await settled(op.id);
+    let done;
+    try {
+      done = await settled(op.id);
+    } catch (p) {
+      // asked, and running: what could not be read is how it ends — which is
+      // no refusal (the console out of reach, a gateway in the way)
+      if (!(p instanceof Problem) || p.status !== 0) throw p;
+      if (ctx.alive()) clear(said, h('p', {class: 'busy'}, what + ': asked — how it ends could not be read from here. Its history says.'));
+      return;
+    }
     if (!ctx.alive()) return;
     clear(said, done.state === 'failed' ? h('div', {class: 'flyer', role: 'alert'}, h('div', {class: 'flyer-title'}, 'FAILED'), h('p', {class: 'flyer-detail'}, `${what}: ${done.error || 'it failed'}`))
       : h('p', {class: 'on'}, `${what}: done in ${took(done.created_at, done.finished_at || done.updated_at)}`));
@@ -682,6 +698,7 @@ export function resource(ctx, id) {
 // stream is the page that is nothing but one of a resource's streams: the
 // screen, and a bar that says whose it is and leads back.
 export function stream(ctx, id, name) {
+  if (!idShape.test(id)) return missing('That is not an id.');
   const back = h('a', {class: 'term-back', href: '#/r/' + id, title: 'Its page'}, '‹ ' + id);
   const t = terminal({id, stream: name, lead: back, controls: [
     h('a', {class: 'btn small ghost', href: `#/r/${id}?open=${name}`, title: 'Back in its page, the terminal still shown'}, 'Leave full screen')]});

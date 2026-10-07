@@ -90,7 +90,9 @@ same way — it does not know what a machine is.
 - **Why it ended** is said on a notice over the screen, in the brain's own
   words: the machine was stopped (for a game on the zone's room, by its idle
   rule, by you), it was opened elsewhere, your sign-in ended, the brain
-  refused it (« m-… is stopped: start it, then open its terminal »).
+  refused it (« m-… is stopped: start it, then open its terminal ») — or,
+  where a gateway stands in front of the console, that it wants to see you
+  again (« TIMED OUT », [below](#behind-a-gateway)).
 - **On a phone**, a row of the keys its keyboard has none of: Esc, Tab, Ctrl
   (pressed, then a letter), the four arrows.
 
@@ -218,6 +220,69 @@ also `$HANGAR_CONSOLE_BRAIN`, `_LISTEN`, `_URL`, `_HOUSE`, `_IDLE`; its
 
 Both ways are one code path — inside `hangar serve` the console calls the
 brain's own handler as a request would — and the tests run each on both.
+
+## Behind a gateway
+
+A front may lock the console behind a verdict of its own: a proxy that asks
+an identity provider before it lets a request through (`forward_auth`, an
+identity-aware proxy). Such a gateway keeps its verdict for a time — an hour,
+say. Past it, every address of the console is answered **a redirect to the
+gateway's sign-in**, on another origin. A page follows that: loaded anew, it
+goes through — nothing asked, while the gateway's provider still knows the
+person — and comes back. A call the page makes cannot: what answers is not
+the console, and the page's own policy lets it reach nothing else.
+
+**So the page heals itself.** No call of the app follows a redirect (the
+console never answers one to a call): one that comes is the gateway's, and
+the page acts on it.
+
+- **It loads itself anew**, at the first call turned back — and a tab you
+  come back to asks at once, so it is healed before you press anything. It
+  comes back **where it was**: a browser carries the address's `#/…` across
+  the gateway's redirects. (A gateway whose way back passes through a page
+  of its own drops it: the console then opens on Home.)
+- **Unless it holds what that would lose** — a terminal, open or ended with
+  its screen kept; a form you have typed in. Then it says so on a notice at
+  the top of the page, « TIMED OUT », with two ways through. **Reload**; or
+  **another tab**: the console opened beside this one goes through the
+  gateway, the verdict is the browser's and not a tab's, and this page
+  carries on — its notice gone, the form as you left it, its terminal never
+  touched. Once nothing is held any more (the terminal put away), the page
+  loads itself anew at its next look — and opens no terminal by itself: one
+  put away by its key is no longer what the page's address asks for.
+- **And only after a minute in which every answer was the console's.** A
+  page turned back as soon as it is loaded — a front that lets the page
+  through and none of its calls — is not cured by loading it again, and does
+  not try: it says so and waits. Nor does one whose front turns back some of
+  its looks, time after time: the longest wait between two looks is half
+  that minute. An answer to what was asked *before* the gateway last turned
+  a call back counts for nothing: it says what the gateway did then.
+- **A terminal that is open is left alone.** Its socket was let through at
+  its opening and nothing asks for it again: it outlives the gateway's time.
+  One that is cut afterwards (a proxy's reload ends every socket it carries),
+  or asked for past the time, is turned back like a call — and a browser
+  tells a page nothing of why a socket did not open. So the page asks the
+  console with a call, and where the gateway answers, the ending reads
+  « TIMED OUT » in place of « CUT — The connection was lost », with
+  **RELOAD** and an **OPEN AGAIN** that asks first, and tries no socket the
+  gateway would turn back once more. Its screen is kept meanwhile. A
+  terminal that holds nothing yet — its first opening turned back, or the
+  files that draw it — leads to the reload like any call.
+
+An action the brain took, and whose end the gateway (or a lost connection)
+then kept the page from reading, is said as that — « asked — how it ends
+could not be read from here » — and no longer as a refusal with « nothing
+was changed »: its history says how it went.
+
+**Named, not hidden:** what you ask in the instant before the page loads
+itself anew is not done — the page comes back as it was, and it is asked
+again. A page loaded less than a minute before the gateway's time is up says
+so and waits for your key, where an older one would have loaded itself. The
+sign-in page of a console with no provider (a token, typed) has no place for
+the notice: a sign-in turned back says so under its field, and a reload is
+yours to do. A gateway that turns a call back with something other than a
+redirect — a `401` of its own, its sign-in page served in the call's place —
+is not recognised: the page reads that answer as the console's.
 
 ## How a form is drawn
 
@@ -384,3 +449,36 @@ opening and take every window's size, and hid all of the above. And `TestBenchAT
 the same on a real Proxmox VE — a real machine's first boot, its user, its
 colours, its own shell drawn again at Redraw — with the audit's lines read
 and nothing typed found in the brain's log.
+
+`TestThePageBehindAGateway` puts **a gateway in front of the whole stack**
+and a real browser in front of the gateway. The test's own
+(`gateway_browser_test.go`) is a proxy that plays one as it was read on a
+live `forward_auth`: whatever carries no verdict it holds — a page, a call, a
+socket's opening — is answered a redirect to a sign-in on another origin and
+a fresh cookie; a page that follows it comes back through the gateway's own
+callback to the address it asked for; what is let through reaches the
+console under the same host, sockets too. The test can end every verdict,
+cut every socket it carries, turn a path back whatever the verdict, keep a
+call on its way, and end its time right behind one. The page's clock is the
+test's to move on (the minute is not waited sixty real seconds; the six
+seconds are). Read there: the place asked for kept through the gateway and
+the sign-in; a page turned back as soon as it is loaded, loaded once and no
+more; one that worked for six seconds, saying so and loaded by its key; a
+tab come back to after a minute's work, loaded anew at the same machine —
+one page, once through the gateway, and what was turned back first was the
+page's own question; a terminal open and typed in past the gateway's time,
+under a notice that a look answered late does not take away and a look
+turned back does not draw again or double with a banner, the page carrying
+on after another tab went through; an action taken as the time ends, said
+as asked and not as refused; the terminal put away, its address asking for
+it no more, the page loading itself anew and opening none; a form kept for
+a key pressed in it, and for what was typed — sent again after another tab
+went through — and a form nobody touched kept for nothing; a socket cut
+with the gateway letting through (« CUT », opened again) and past its time
+(« TIMED OUT », its screen kept, **OPEN AGAIN** asking a word and trying no
+socket, opened again after another tab went through, or by **RELOAD**); a
+terminal asked for past the time, by its socket and by the file that draws
+it, each loading the page anew; and an address that names no resource,
+asking the console nothing. The browser's own complaints are read: one
+socket turned back, one script's address refused by the page's policy,
+nothing else.

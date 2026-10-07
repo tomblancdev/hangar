@@ -23,6 +23,50 @@ export const session = {signedIn: false, csrf: '', via: '', how: '', provider: '
 let onSignedOut = () => {};
 export function whenSignedOut(f) { onSignedOut = f; }
 
+// A front that locks the console behind a verdict of its own — a gateway: a
+// proxy that asks an identity provider before it lets a request through —
+// keeps that verdict for a time. Past it, it answers the app's calls a
+// redirect to its own sign-in: a page can follow that, a call cannot. The
+// console itself never answers a call a redirect, so none is followed here
+// (redirect: 'manual'): one that comes is the gateway's. It is told to
+// whoever heals the page (whenTurnedBack), and so is any other answer
+// (whenAnswered): the gateway lets through. Calls are counted as they leave:
+// an answer says what the gateway did when its call was asked, which may be
+// before it turned another one back.
+let onTurnedBack = () => {};
+let onAnswered = () => {};
+export function whenTurnedBack(f) { onTurnedBack = f; }
+export function whenAnswered(f) { onAnswered = f; }
+let asked = 0;
+
+// ask is every call's way out.
+async function ask(url, init = {}) {
+  const n = ++asked;
+  let resp;
+  try {
+    resp = await fetch(url, {...init, redirect: 'manual'});
+  } catch {
+    throw new Problem(0, {kind: 'unreachable', detail: 'the console cannot be reached: check your connection'});
+  }
+  if (resp.type === 'opaqueredirect') {
+    onTurnedBack(asked);
+    throw new Problem(0, {kind: 'gateway', title: 'timed out', detail: 'what stands in front of this console asks who you are again: this did not go through'});
+  }
+  onAnswered(n);
+  return resp;
+}
+
+// reach asks the console the lightest thing it answers, to learn what
+// answers: 'console', 'gateway' (and the page is told), or '' — nothing.
+export async function reach() {
+  try {
+    await read(await ask('session', {headers: {Accept: 'application/json'}}));
+    return 'console';
+  } catch (p) {
+    return p instanceof Problem && p.kind === 'gateway' ? 'gateway' : '';
+  }
+}
+
 async function read(resp) {
   const text = await resp.text();
   let body = null;
@@ -34,7 +78,7 @@ async function read(resp) {
 }
 
 export async function loadSession() {
-  const s = await read(await fetch('session', {headers: {Accept: 'application/json'}}));
+  const s = await read(await ask('session', {headers: {Accept: 'application/json'}}));
   session.signedIn = s.signed_in === true;
   session.csrf = s.csrf || '';
   session.via = s.via || '';
@@ -52,12 +96,7 @@ export async function api(method, path, body) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
-  let resp;
-  try {
-    resp = await fetch('api' + path, init);
-  } catch {
-    throw new Problem(0, {kind: 'unreachable', detail: 'the console cannot be reached: check your connection'});
-  }
+  const resp = await ask('api' + path, init);
   try {
     return await read(resp);
   } catch (p) {
@@ -70,7 +109,7 @@ export async function api(method, path, body) {
 }
 
 export async function signInWithToken(token) {
-  const s = await read(await fetch('signin/token', {
+  const s = await read(await ask('signin/token', {
     method: 'POST', headers: {'Content-Type': 'application/json', Accept: 'application/json'},
     body: JSON.stringify({token}),
   }));
@@ -80,7 +119,7 @@ export async function signInWithToken(token) {
 }
 
 export async function signOut() {
-  await fetch('signout', {method: 'POST', headers: {'X-Hangar-Csrf': session.csrf}});
+  await ask('signout', {method: 'POST', headers: {'X-Hangar-Csrf': session.csrf}});
   session.signedIn = false;
   session.csrf = '';
 }

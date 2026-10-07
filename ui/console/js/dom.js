@@ -21,10 +21,11 @@ export function h(tag, attrs, ...children) {
   return el;
 }
 
-// internal: a link leads to a place in the app, or to the console's own
-// sign-in — nowhere else, whatever a field says.
+// internal: a link leads to a place in the app, to the console's own page
+// (opened beside this one) or to its sign-in — nowhere else, whatever a
+// field says.
 function internal(href) {
-  if (href.startsWith('#/') || href === '#' || href.startsWith('signin?') || href === 'signin') return href;
+  if (href.startsWith('#/') || href === '#' || href === './' || href.startsWith('signin?') || href === 'signin') return href;
   throw new Error('not a link inside the console: ' + href);
 }
 

@@ -150,6 +150,8 @@ type Page struct {
 	b       *Browser
 	t       testing.TB
 	session string
+	target  string
+	context string // the browser context it lives in: its cookies' own
 	phone   bool
 
 	// Patience: how long a wait may last (default 20 s; a real engine takes
@@ -163,20 +165,41 @@ type Page struct {
 // Page opens a tab of the given size; phone: a touch screen's.
 func (b *Browser) Page(width, height int, phone bool) *Page {
 	b.t.Helper()
-	var target struct {
-		TargetID string `json:"targetId"`
-	}
 	// a browser context of its own: its cookies are its alone
 	var ctx struct {
 		ID string `json:"browserContextId"`
 	}
 	b.must(b.call("", "Target.createBrowserContext", nil, &ctx))
-	b.must(b.call("", "Target.createTarget", map[string]any{"url": "about:blank", "browserContextId": ctx.ID}, &target))
+	return b.tab(ctx.ID, width, height, phone)
+}
+
+// Tab opens another tab beside this one: the same person's — the same
+// cookies.
+func (p *Page) Tab(width, height int) *Page {
+	p.t.Helper()
+	return p.b.tab(p.context, width, height, p.phone)
+}
+
+// Close closes the tab.
+func (p *Page) Close() {
+	p.t.Helper()
+	p.b.must(p.b.call("", "Target.closeTarget", map[string]any{"targetId": p.target}, nil))
+	p.b.mu.Lock()
+	delete(p.b.pages, p.session)
+	p.b.mu.Unlock()
+}
+
+func (b *Browser) tab(context string, width, height int, phone bool) *Page {
+	b.t.Helper()
+	var target struct {
+		TargetID string `json:"targetId"`
+	}
+	b.must(b.call("", "Target.createTarget", map[string]any{"url": "about:blank", "browserContextId": context}, &target))
 	var att struct {
 		SessionID string `json:"sessionId"`
 	}
 	b.must(b.call("", "Target.attachToTarget", map[string]any{"targetId": target.TargetID, "flatten": true}, &att))
-	p := &Page{b: b, t: b.t, session: att.SessionID, phone: phone}
+	p := &Page{b: b, t: b.t, session: att.SessionID, target: target.TargetID, context: context, phone: phone}
 	b.mu.Lock()
 	b.pages[p.session] = p
 	b.mu.Unlock()

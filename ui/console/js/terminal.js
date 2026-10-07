@@ -18,6 +18,7 @@
 // (pass). And one that is opened again and hears nothing says so over its
 // screen, with a key that asks the machine to draw (quiet).
 
+import {reach} from './api.js';
 import {h, clear} from './dom.js';
 
 let fetched = null;
@@ -68,6 +69,23 @@ function ending(ev, refused) {
   return {word: 'CUT', why: 'The connection was lost.', again: 'OPEN AGAIN'};
 }
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// A socket that was cut may be one a gateway in front of the console never
+// let through: past its time it answers a socket's opening as it answers a
+// call, a redirect to its sign-in — and a browser tells a page nothing of
+// why a socket did not open. A call asks (api.js), and the ending is said
+// again in its own words: what leads through the gateway is a page loaded
+// anew, here or in another tab. This screen is kept meanwhile.
+const timedOut = () => ({word: 'TIMED OUT', again: 'OPEN AGAIN', reload: 'RELOAD', why: [
+  'What stands in front of this console asks who you are again, and a terminal cannot answer. Reload the page to go through — or, to keep this screen, open the console in ',
+  h('a', {href: './', target: '_blank', rel: 'noopener'}, 'another tab'), ' first, then open it again here.']});
+
+// Every terminal that was opened and not put away since: open, or keeping on
+// its screen what its machine said.
+const live = new Set();
+
+// holding: the page shows a terminal that loading it anew would lose.
+export const holding = () => live.size > 0;
 
 // piece: the most bytes one message carries of what is typed or pasted
 const piece = 16 * 1024;
@@ -252,7 +270,10 @@ export function terminal({id, stream, lead = null, controls = []}) {
       if (document.fonts && document.fonts.load) await Promise.all([document.fonts.load('14px "IBM Plex Mono"'), document.fonts.load('600 14px "IBM Plex Mono"')]).catch(() => {});
     } catch (e) {
       say('failed', 'bad');
-      clear(note, flyer('FAILED', 'The terminal could not be loaded: ' + (e.message || e), 'TRY AGAIN'));
+      clear(note, flyer({word: 'FAILED', why: 'The terminal could not be loaded: ' + (e.message || e), again: 'TRY AGAIN'}));
+      // not loaded — or turned back by a gateway, as a socket is (below):
+      // a call asks, and the page is told
+      reach();
       return;
     }
     if (!wanted) return;
@@ -330,6 +351,7 @@ export function terminal({id, stream, lead = null, controls = []}) {
     // stream: « open » is true once it says the brain's own is — and a
     // machine's silence is counted from there
     const opened = () => {
+      live.add(t);
       say('open', 'on');
       sized();
       term.focus();
@@ -352,15 +374,35 @@ export function terminal({id, stream, lead = null, controls = []}) {
       setCtrl(false);
       spoke();
       const end = ending(ev, refused);
-      say(end.word.toLowerCase(), end.word === 'CLOSED' ? '' : 'bad');
-      node.dataset.why = end.why;
-      if (wanted) clear(note, flyer(end.word, end.why, end.again));
+      ended(end);
+      // cut — or never let through: what answers the console's address says
+      if (end.word === 'CUT') reach().then((at) => { if (at === 'gateway' && !ws && wanted && node.dataset.state === 'cut') ended(timedOut()); });
     };
   }
 
-  function flyer(word, why, again) {
+  function ended(end) {
+    say(end.word.toLowerCase(), end.word === 'CLOSED' ? '' : 'bad');
+    if (wanted) clear(note, flyer(end));
+  }
+
+  // again: opened again — once the gateway lets through, where it did not:
+  // a socket asked of it before that is only turned back once more
+  async function again(end) {
+    if (end.reload) {
+      say('opening…', 'busy');
+      if (await reach() === 'gateway') {
+        if (wanted && !ws) ended(timedOut());
+        return;
+      }
+    }
+    if (wanted && !ws) open();
+  }
+
+  function flyer({word, why, again: key, reload}) {
     return h('div', {class: 'flyer', role: 'alert'}, h('div', {class: 'flyer-title'}, word), h('p', {class: 'flyer-detail'}, why),
-      again ? h('div', {class: 'flyer-end'}, h('button', {type: 'button', class: 'btn solid', onclick: () => open()}, again)) : null);
+      key || reload ? h('div', {class: 'flyer-end'},
+        reload ? h('button', {type: 'button', class: 'btn solid', onclick: () => location.reload()}, reload) : null,
+        key ? h('button', {type: 'button', class: 'btn solid', onclick: () => again({reload})}, key) : null) : null);
   }
 
   // pass: its page is left for its other page. It stays as it is — its
@@ -373,6 +415,7 @@ export function terminal({id, stream, lead = null, controls = []}) {
   }
 
   function close() {
+    live.delete(t);
     wanted = false;
     passed = false;
     arriving = false;
