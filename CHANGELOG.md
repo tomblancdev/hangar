@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.7.0 — 2026-10-20
+
+- **La fin d'une machine — a machine's end.** A machine made for one run
+  gives itself back by powering itself off; one kept between runs stops
+  itself when its own judge says it is idle. Until now the brain undid both
+  at its next look (« put back: [power] », read live on a CI job's machine
+  whose runner had powered it off: started again ten seconds later, and
+  booting when its asker deleted it half a minute after), and knew no time after which a machine is gone
+  ([ARCHITECTURE.md](ARCHITECTURE.md) §6 « A machine's end »,
+  [docs/proxmox.md](docs/proxmox.md#a-machines-end)).
+  **`on_poweroff`** says what its own power-off means: `restart` — the
+  default, nothing changes for a machine that says nothing —, `stop` (it
+  stays stopped: its spec says `running: false`, its borrowed room given
+  back, `machine.stopped_itself`), `delete` (it is deleted, its disk with
+  it, `machine.ended`). EC2's `InstanceInitiatedShutdownBehavior`. Its own
+  power-off is **any stop nobody asked through the brain, found at looks
+  at least 30 seconds apart**: the first leaves it stopped and says so, a
+  later one applies it — a container rebooting itself is running again by
+  then. Not its own: the brain's stop, idle stop, spent month, a hold — the
+  brain's, or one its node wrote alone —, a stop or reboot the brain asked
+  that went wrong, a guest its engine's own work holds (a backup, a
+  migration), one the last look did not see running, or saw running only
+  under that work. **A node's
+  stop cannot be told from it on Proxmox VE**: the token sees no task but
+  its own, and QEMU calls a host's ACPI shutdown the guest's — a `delete`
+  machine on a node that reboots is deleted, and its event says the stop
+  could have been either.
+  **`until`** — a time — and **`at_end`** (`stop`, the default, or
+  `delete`): when the brain ends it at the latest, running or not. Compute
+  Engine's `terminationTime` and `instanceTerminationAction`. **`for: 2h`**,
+  at its birth, writes it from now (a minute to a year). Cleared when it
+  comes; a start past it is refused.
+  **`set_end`** changes any of them (`until: never` takes it off); `hangar
+  apply` asks for it as a step — `until` only when the file names one, and
+  one that has passed asks nothing.
+  **In the contract**, a reconcile's answer may say its resource came to
+  its **`end`** (`ReconcileResponse.end`): the core deletes it as its
+  owner's delete would — an operation of its owner's, in their list, its
+  audit line's actor `hangar`, and an `end` line that says why —, refused
+  as a delete is: with a volume attached or a resource standing on it, it
+  is left stopped, and that is said once. Until it is gone its spec says
+  so (`ending`) and every look hands its end over again — deleted once the
+  volume goes, tried again after a delete its engine failed; its owner's
+  start takes it back. **A driver reads one thing
+  more**: a guest's `lock` (`driver.Guest.Lock`), its engine's own work; the
+  fake engine refuses to start, stop or delete a guest that carries one, as
+  Proxmox VE does.
+  Held by `TestAMachinesOwnPowerOff`, `TestAMachinesUntil`, `TestSetEnd`,
+  `TestAMachinesEndThroughTheBrain`, `TestAMachinesEndAtTheCommandLine`,
+  `TestAGuestsLock` and `TestALockedGuest` — and by forty-two controls,
+  each rule taken out in turn and a test red on it. A second reader of the
+  code found seven defects under green tests; each is fixed and held.
+- **Une liste vide — `[]`, never `null`.** `-o json` of a list that holds
+  nothing — machines, key pairs, networks, operations — printed `null`; a
+  script that reads it as a list died on it. It is `[]`.
+
 ## v0.6.2 — 2026-10-07
 
 - **Derrière une passerelle — behind a gateway, the page heals itself.** A
