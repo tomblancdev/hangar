@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,8 +29,12 @@ func table(w io.Writer, header string, rows [][]string) error {
 	return tw.Flush()
 }
 
-// show prints a value as YAML (for people) or JSON (-o json).
+// show prints a value as YAML (for people) or JSON (-o json). A list that
+// holds nothing is an empty list, never null.
 func show(w io.Writer, format string, v any) error {
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Slice && rv.IsNil() {
+		v = []any{}
+	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err

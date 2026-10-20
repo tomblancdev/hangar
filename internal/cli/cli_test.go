@@ -471,6 +471,18 @@ func TestSignInByTheDeviceFlow(t *testing.T) {
 	}
 }
 
+// A list that holds nothing is [] in JSON — a script's reader takes it as
+// it takes any list — and so is an empty list of operations.
+func TestAnEmptyListIsAList(t *testing.T) {
+	s := stacktest.New(t, labConfig, "machines", "volumes")
+	alice := newCmd(t, s.URL, s.Token(t, "alice", "users"))
+	for _, args := range [][]string{{"machine", "list"}, {"keypair", "list"}, {"operations"}} {
+		if out, _ := alice.ok(append(args, "-o", "json")...); strings.TrimSpace(out) != "[]" {
+			t.Fatalf("%v: %q", args, out)
+		}
+	}
+}
+
 // A machine's end at the command line: its fields are flags of the type,
 // set_end a command, both drawn from the plugin's schema.
 func TestAMachinesEndAtTheCommandLine(t *testing.T) {
