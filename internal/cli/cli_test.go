@@ -471,6 +471,33 @@ func TestSignInByTheDeviceFlow(t *testing.T) {
 	}
 }
 
+// A machine's end at the command line: its fields are flags of the type,
+// set_end a command, both drawn from the plugin's schema.
+func TestAMachinesEndAtTheCommandLine(t *testing.T) {
+	s := stacktest.New(t, labConfig, "machines", "volumes")
+	alice := newCmd(t, s.URL, s.Token(t, "alice", "users"))
+	id, _ := alice.ok("machine", "create", "--kind", "container", "--image", "debian-13", "--cores", "1", "--memory-gb", "1",
+		"--on-poweroff", "delete", "--for", "2h", "--at-end", "delete", "-o", "id")
+	id = strings.TrimSpace(id)
+	out, _ := alice.ok("machine", "get", id, "-o", "json")
+	if !strings.Contains(out, `"on_poweroff": "delete"`) || !strings.Contains(out, `"at_end": "delete"`) || !strings.Contains(out, `"until": "20`) || strings.Contains(out, `"for"`) {
+		t.Fatalf("born with its end: %s", out)
+	}
+	if out, _ := alice.ok("machine", "list"); !strings.Contains(out, "deleted once it powers off") || !strings.Contains(out, ", then deleted") {
+		t.Fatalf("the summary says its end: %s", out)
+	}
+	alice.ok("machine", "set-end", id, "--until", "never", "--on-poweroff", "stop")
+	if out, _ := alice.ok("machine", "get", id, "-o", "json"); strings.Contains(out, `"until"`) || !strings.Contains(out, `"on_poweroff": "stop"`) {
+		t.Fatalf("set-end: %s", out)
+	}
+	if _, errs, code := alice.run("machine", "set-end", id, "--for", "30s"); code == 0 || !strings.Contains(errs, "between 1m and a year") {
+		t.Fatalf("a for of half a minute: %d %s", code, errs)
+	}
+	if out, _ := alice.ok("machine", "--help"); !strings.Contains(out, "set-end") || !strings.Contains(out, "--on-poweroff") || !strings.Contains(out, "--until") {
+		t.Fatalf("the type's help: %s", out)
+	}
+}
+
 // The hours at the command line: idle_after is a flag of the type, its
 // actions are commands drawn from the plugin's schema, and `limits` shows the
 // month's meter — what was consumed, of how much a month, and when it is back.

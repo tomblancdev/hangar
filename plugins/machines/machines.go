@@ -8,8 +8,8 @@
 // Two types:
 //
 //   - machine (m-…): create · start · stop · reboot · resize · set_idle_after
-//     · set_cpu_weight · keep_awake · let_sleep · delete; and one stream,
-//     terminal.
+//     · set_cpu_weight · keep_awake · let_sleep · set_end · delete; and one
+//     stream, terminal.
 //   - keypair (kp-…): a public key, imported. A pair is never generated
 //     here: the brain would then hold a private key. A machine names its key
 //     pairs by id ("x-hangar-ref"); the core checks they are the owner's own
@@ -34,7 +34,10 @@
 //
 // A machine that says idle_after is stopped once its CPU and what it sends
 // stayed quiet that long, as its engine's own history saw them (power.go);
-// keep_awake holds that stop off, for a time or until let_sleep. The hours a
+// keep_awake holds that stop off, for a time or until let_sleep. Its end is
+// its own to say (end.go): what its own power-off means — started again,
+// left stopped, or deleted (on_poweroff) — and when the brain ends it at the
+// latest, and how (until, at_end). The hours a
 // machine runs are counted, each once per core — the meter machines.vcpu_hours,
 // a tier's limit a month — and when its owner's month is spent it is stopped.
 //
@@ -204,7 +207,19 @@ type Spec struct {
 	// Awake: kept from that stop — "always" (until let_sleep), or until a
 	// time (RFC 3339); "" = not kept. keep_awake's, never a create's; a stop
 	// ends it.
-	Awake   string `json:"awake,omitempty"`
+	Awake string `json:"awake,omitempty"`
+	// OnPoweroff: what its own power-off means — "" (restart: it is started
+	// again), OnPoweroffStop or OnPoweroffDelete (end.go).
+	OnPoweroff string `json:"on_poweroff,omitempty"`
+	// Until: when the brain ends it at the latest (RFC 3339, UTC); "" =
+	// never. Cleared when it comes.
+	Until string `json:"until,omitempty"`
+	// AtEnd: what its until does — "" (stop) or AtEndDelete.
+	AtEnd string `json:"at_end,omitempty"`
+	// Ending: why its end came, its delete the core's and not done yet —
+	// handed over again at every look until it is gone; a start ends it.
+	// Never a create's.
+	Ending  string `json:"ending,omitempty"`
 	Running bool   `json:"running"`
 }
 
@@ -243,6 +258,12 @@ type Observed struct {
 	CountedAt *time.Time `json:"counted_at,omitempty"`
 	// QuietFor: with an idle_after, how long it has stayed quiet ("12m").
 	QuietFor string `json:"quiet_for,omitempty"`
+	// Unasked: since when it is found stopped though nobody asked it here,
+	// with an on_poweroff that does not start it again: applied at a look
+	// that still finds it so, confirmAfter later (end.go).
+	Unasked *time.Time `json:"stopped_unasked,omitempty"`
+	// Lock: what its engine's own work holds it for (a backup, a migration).
+	Lock string `json:"locked,omitempty"`
 }
 
 // KeyPair is a key pair's spec.
@@ -267,7 +288,7 @@ const machineSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "x-hangar-summary": ["{kind}", "{cores} cores", "{cpu=host?host CPU}", "{virtualization?runs VMs}", "CPU weight {cpu_weight}", "{memory_gb} GB[ ({floor_gb} guaranteed)]", "{class=spot?spot}", "{image|image_id}", "{address|addresses}", "on {network}", "{wall=exact?walled}", "{wall=range?walled, to its zone's range}"],
+  "x-hangar-summary": ["{kind}", "{cores} cores", "{cpu=host?host CPU}", "{virtualization?runs VMs}", "CPU weight {cpu_weight}", "{memory_gb} GB[ ({floor_gb} guaranteed)]", "{class=spot?spot}", "{image|image_id}", "{address|addresses}", "on {network}", "{wall=exact?walled}", "{wall=range?walled, to its zone's range}", "{on_poweroff=stop?stays stopped once it powers off}", "{on_poweroff=delete?deleted once it powers off}", "until {until}[{at_end=delete?, then deleted}]"],
   "x-hangar-status": { "field": "running", "on": "running", "off": "stopped" },
   "properties": {
     "kind":      { "type": "string", "enum": ["vm", "container"], "default": "vm",
@@ -306,7 +327,15 @@ const machineSchema = `{
     "terminal":  { "type": "string", "enum": ["open", "login"],
                    "description": "How its terminal greets you — its own screen and keyboard, opened from here by you alone. open: you land in a shell as its user, nothing asked. login: it asks a name and a password (yours to set, in user_data). Absent: open for a VM that names no key pair, login for one that does. For its life." },
     "idle_after": { "type": "string", "maxLength": 16,
-                   "description": "Stopped once idle this long (30m, 2h — 5m to 12h): its CPU and what it sends stayed quiet, as its engine saw them. Absent or never: it is never stopped for idleness." }
+                   "description": "Stopped once idle this long (30m, 2h — 5m to 12h): its CPU and what it sends stayed quiet, as its engine saw them. Absent or never: it is never stopped for idleness." },
+    "on_poweroff": { "type": "string", "enum": ["restart", "stop", "delete"], "default": "restart",
+                   "description": "What its own power-off means — a poweroff from inside it, or any stop of it nobody asked here: restart, it is started again; stop, it stays stopped; delete, it is deleted, its disk with it. A stop asked here is never its own." },
+    "until":     { "type": "string", "maxLength": 40,
+                   "description": "When it ends at the latest — a time, 2026-10-20T18:30:00Z — running or not; at_end says how. Or for." },
+    "for":       { "type": "string", "maxLength": 16,
+                   "description": "At its birth: its until, as a time from now (2h, 90m — 1m to a year)." },
+    "at_end":    { "type": "string", "enum": ["stop", "delete"], "default": "stop",
+                   "description": "What its until does: stop, it is stopped and stays so; delete, it is deleted, its disk with it." }
   }
 }`
 
@@ -389,6 +418,11 @@ type Plugin struct {
 	// reboot ends: a terminal open on one waits for it, and opens again
 	rmu       sync.Mutex
 	rebooting map[string]chan struct{}
+
+	// the machines the brain asked a stop or a reboot of that did not end
+	// well (end.go)
+	amu   sync.Mutex
+	asked map[string]bool
 }
 
 // New returns a plugin with no zone configured.
@@ -423,6 +457,8 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 					{Name: "keep_awake", Description: "Keep it from being stopped for idleness: for a time (for: 8h), or until let_sleep. Its hours count as it runs.",
 						ParamsSchema: []byte(keepAwakeSchema), ChangesUsage: true},
 					{Name: "let_sleep", Description: "End a keep_awake: it is stopped again once idle for its idle_after."},
+					{Name: "set_end", Description: "Set how it ends: what its own power-off means (on_poweroff), when it ends at the latest (until, or for from now; never: no end), and how (at_end).",
+						ParamsSchema: []byte(setEndSchema), ChangesUsage: true},
 				},
 				Streams: []*pluginpb.Stream{
 					{Name: StreamTerminal, Description: "Its own screen and keyboard: a terminal on it, with no key and nothing installed. Yours alone.",
@@ -453,7 +489,8 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 			Description: "Per zone, the engine's credential fenced to the product's own guests (Proxmox: an API token, user@realm!name=secret — the least it needs is in docs/proxmox.md). None for the fake engine."},
 		Events: []string{"machine.created", "machine.deleted", "machine.started", "machine.stopped", "machine.rebooted",
 			"machine.resized", "machine.repaired", "machine.held", "machine.released", "machine.idle", "machine.spent",
-			"machine.idle_after_set", "machine.cpu_weight_set", "machine.kept_awake", "machine.let_sleep", "keypair.imported", "keypair.deleted"},
+			"machine.idle_after_set", "machine.cpu_weight_set", "machine.kept_awake", "machine.let_sleep",
+			"machine.end_set", "machine.stopped_itself", "machine.ended", "keypair.imported", "keypair.deleted"},
 	}, nil
 }
 
@@ -768,6 +805,7 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 			Cores    *int    `json:"cores"`
 			MemoryGB *int    `json:"memory_gb"`
 			DiskGB   *int    `json:"disk_gb"`
+			For      *string `json:"for"`
 		}
 		in.Kind, in.Class, in.Resume = "vm", Spot, true
 		if err := sdk.Decode(req.GetSpec(), &in); err != nil {
@@ -828,8 +866,22 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 		case s.Terminal != "":
 			refuse(&pluginpb.Refusal{Field: "/terminal", Reason: fmt.Sprintf("a %s in zone %s has no terminal", kindWord(s.Kind), req.GetZone())})
 		}
-		s.Awake = ""
+		s.Awake, s.Ending = "", ""
 		refuse(p.setIdleAfter(&s, s.IdleAfter, req.GetZone(), caps))
+		e := endParams{OnPoweroff: &in.OnPoweroff, AtEnd: &in.AtEnd, For: in.For}
+		if in.Until != "" {
+			e.Until = &in.Until
+		}
+		refuse(setEnd(&s, e, p.now(req.GetZone()))...)
+	case "set_end":
+		if err := sdk.Decode(req.GetCurrent().GetSpec(), &s); err != nil {
+			return nil, err
+		}
+		var e endParams
+		if err := sdk.Decode(req.GetParams(), &e); err != nil {
+			return nil, err
+		}
+		refuse(setEnd(&s, e, p.now(req.GetZone()))...)
 	case "set_idle_after":
 		if err := sdk.Decode(req.GetCurrent().GetSpec(), &s); err != nil {
 			return nil, err
@@ -901,6 +953,11 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 		s.Running = req.GetAction() == "start"
 		if !s.Running {
 			s.Awake = "" // a keep_awake is a running machine's: a stop ends it
+		} else {
+			s.Ending = "" // started by its owner: its end, not carried out yet, is undone
+		}
+		if u, err := time.Parse(time.RFC3339, s.Until); s.Running && err == nil && !p.now(req.GetZone()).Before(u) {
+			refuse(&pluginpb.Refusal{Field: "/until", Reason: fmt.Sprintf("its until, %s, has passed: it would end at the next look — set_end a later one, or never, first", s.Until)})
 		}
 	default:
 		return nil, sdk.Refuse("no action %q to plan on a machine", req.GetAction())
@@ -920,8 +977,8 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 }
 
 // PlanChange says what brings a machine to another spec: its size through
-// resize, its idle_after and its CPU weight through their own actions;
-// everything else a machine is set at its birth. Power is no field
+// resize, its idle_after and its CPU weight through their own actions, its
+// end through set_end; everything else a machine is set at its birth. Power is no field
 // of the spec: a change never starts nor stops a machine. A field the wanted
 // spec leaves out is wanted at its default — but for disk_gb, whose default
 // follows its image: only a disk_gb written is compared.
@@ -958,6 +1015,7 @@ func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) 
 		Cores    *int    `json:"cores"`
 		MemoryGB *int    `json:"memory_gb"`
 		DiskGB   *int    `json:"disk_gb"`
+		For      *string `json:"for"` // a birth's word: never compared
 	}
 	in.Kind, in.Class, in.Resume = "vm", Spot, true
 	if err := sdk.Decode(req.GetSpec(), &in); err != nil {
@@ -1011,6 +1069,34 @@ func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) 
 	}
 	if weight(in.CPUWeight) != was.CPUWeight {
 		out.Steps = append(out.Steps, sdk.Step("set_cpu_weight", map[string]any{"cpu_weight": driver.WeightOf(weight(in.CPUWeight))}))
+	}
+	// its end: on_poweroff and at_end as the file says (absent: restart and
+	// stop); an until only when the file names one — what an asker wrote on
+	// a machine is not undone by a file that says nothing of it —, and one
+	// that has passed asks nothing: that end came
+	var e Spec
+	if r := setEnd(&e, endParams{OnPoweroff: &in.OnPoweroff, AtEnd: &in.AtEnd}, time.Time{}); len(r) > 0 {
+		return nil, sdk.Refuse("%s: %s", r[0].Field, r[0].Reason)
+	}
+	end := map[string]any{}
+	if e.OnPoweroff != was.OnPoweroff {
+		end["on_poweroff"] = or(e.OnPoweroff, OnPoweroffRestart)
+	}
+	if e.AtEnd != was.AtEnd {
+		end["at_end"] = or(e.AtEnd, AtEndStop)
+	}
+	if in.Until != "" {
+		until, err := parseUntil(in.Until, p.now(cur.GetZone()))
+		switch {
+		case errors.Is(err, errPassed):
+		case err != nil:
+			return nil, sdk.Refuse("/until: %v", err)
+		case until != was.Until:
+			end["until"] = or(until, "never")
+		}
+	}
+	if len(end) > 0 {
+		out.Steps = append(out.Steps, sdk.Step("set_end", end))
 	}
 	if want.Type != was.Type || want.Cores != was.Cores || want.MemoryGB != was.MemoryGB {
 		if want.Type != "" {
@@ -1207,6 +1293,10 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 	case "let_sleep":
 		s.Awake = ""
 		ev = sdk.Event("machine.let_sleep", "", nil)
+	case "set_end":
+		// planned: the spec carries it already
+		ev = sdk.Event("machine.end_set", "", map[string]string{"on_poweroff": cmp.Or(s.OnPoweroff, OnPoweroffRestart),
+			"until": cmp.Or(s.Until, "never"), "at_end": cmp.Or(s.AtEnd, AtEndStop)})
 	case "reboot":
 		done := p.reboots(r.GetId())
 		guest, err = g.Reboot(ctx, r.GetId())
@@ -1242,10 +1332,18 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 		return nil, sdk.Refuse("no action %q on a machine", req.GetAction())
 	}
 	if err != nil {
+		if a := req.GetAction(); a == "stop" || a == "reboot" {
+			p.askedDown(r.GetId()) // it may be down all the same: that stop is the brain's
+		}
 		return nil, engineErr(err)
 	}
 	obs := observe(guest)
 	obs.CountedAt = &counted
+	// found stopped unasked at a look before: an action meanwhile does not
+	// make the next look forget it
+	if was := observedOf(r).Unasked; was != nil && s.Running && !guest.Running {
+		obs.Unasked = was
+	}
 	return &pluginpb.ActResponse{Spec: sdk.JSON(s), Observed: sdk.JSON(obs), Events: []*pluginpb.Event{ev}, Consumed: consumed}, nil
 }
 
@@ -1388,6 +1486,20 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 		s.Running, s.Awake = false, ""
 		resp.Spec, resp.Room = sdk.JSON(s), room(s)
 	}
+	// its end first: its until come, or its own power-off its on_poweroff
+	// does not undo (end.go) — and then nothing below has a stop to make
+	e := ending(&s, guest, hold, observedOf(r), p.tookAskedDown(r.GetId()))
+	switch {
+	case e.again:
+		resp.End = e.why
+	case e.why != "":
+		stopped()
+		why = e.why
+		events = append(events, e.event)
+		if e.delete {
+			resp.End = e.why
+		}
+	}
 	switch idle, _ := parseIdleAfter(s.IdleAfter); {
 	case !s.Running:
 	case hold != "" && s.Class == Spot && !s.Resume:
@@ -1425,10 +1537,20 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 		if g.Running {
 			o.QuietFor = quiet
 		}
+		if e.unasked != nil && !g.Running {
+			at := e.unasked.UTC().Truncate(time.Second)
+			o.Unasked = &at
+		}
 		return sdk.JSON(o)
 	}
 	wasHeld := len(guest.Holds) > 0
-	guest, fixed, short, err := converge(ctx, g, r.GetId(), s, hold, sdk.Label(r, "machine"), guest)
+	// found stopped unasked for the first time: not started again before
+	// the next look says whether it stays so
+	brought := s
+	if e.unasked != nil {
+		brought.Running = false
+	}
+	guest, fixed, short, err := converge(ctx, g, r.GetId(), brought, hold, sdk.Label(r, "machine"), guest)
 	if err != nil && !errors.Is(err, driver.ErrRefused) && !errors.Is(err, driver.ErrNotFound) {
 		return nil, engineErr(err) // not reached: the core tries again at its next pass
 	}
@@ -1448,12 +1570,17 @@ func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) 
 	switch {
 	case short != "":
 		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_DRIFTED, short
+	case why != "":
+		// stopped for its idleness, its owner's spent month or its end:
+		// nothing was put back, and its own event says so — said even when
+		// its guest had stopped already, for its spec moved
+		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_REPAIRED, why
+	case e.again:
+		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_DRIFTED, e.why+" — its delete is the brain's, not done yet"
+	case e.unasked != nil:
+		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_DRIFTED, fmt.Sprintf("it stopped, and nobody asked it here: if it is still stopped %s after, its on_poweroff (%s) is applied", confirmAfter, s.OnPoweroff)
 	case len(fixed) == 0:
 		resp.Drift = pluginpb.Drift_DRIFT_IN_SYNC
-	case why != "":
-		// stopped for its idleness or its owner's spent month: nothing was
-		// put back, and its own event says so
-		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_REPAIRED, why
 	default:
 		resp.Drift, resp.Detail = pluginpb.Drift_DRIFT_REPAIRED, fmt.Sprintf("put back: %v", fixed)
 		if hold != "" {
@@ -1675,7 +1802,7 @@ func observe(g driver.Guest) Observed {
 	o := Observed{EngineRef: g.EngineRef, Node: g.Node, Kind: g.Kind, Name: g.Name, Cores: g.Cores,
 		MemoryMB: g.MemoryMB, DiskGB: g.DiskGB, Running: g.Running, Addresses: g.Addresses, Address: g.Address, Wall: g.Wall,
 		CPULimit: g.CPULimit, Held: g.Holds,
-		CPU: g.CPU, Virtualization: g.Virtualization, CPUWeight: weight(g.CPUWeight)}
+		CPU: g.CPU, Virtualization: g.Virtualization, CPUWeight: weight(g.CPUWeight), Lock: g.Lock}
 	if g.Running && g.StartedAt != nil {
 		at := g.StartedAt.UTC().Truncate(time.Second)
 		o.StartedAt = &at

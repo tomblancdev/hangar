@@ -2091,7 +2091,14 @@ type ReconcileResponse struct {
 	Usage *Usage `protobuf:"bytes,8,opt,name=usage,proto3" json:"usage,omitempty"`
 	// What it consumed since the plugin last said. Read with the verdicts in
 	// sync, repaired and drifted.
-	Consumed      *Consumed `protobuf:"bytes,9,opt,name=consumed,proto3" json:"consumed,omitempty"`
+	Consumed *Consumed `protobuf:"bytes,9,opt,name=consumed,proto3" json:"consumed,omitempty"`
+	// Why it came to its end by a rule of its own — a machine whose own
+	// power-off means its delete, or whose time is up: the core deletes it as
+	// its owner's delete would, in the brain's name, once the verdict (and its
+	// spec, above) is written. The spec is what it is left as when the delete
+	// cannot be done — something still names it, or holds on to it: stopped,
+	// and said so. Empty = it goes on.
+	End           string `protobuf:"bytes,10,opt,name=end,proto3" json:"end,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2187,6 +2194,13 @@ func (x *ReconcileResponse) GetConsumed() *Consumed {
 		return x.Consumed
 	}
 	return nil
+}
+
+func (x *ReconcileResponse) GetEnd() string {
+	if x != nil {
+		return x.End
+	}
+	return ""
 }
 
 // Consumed is what a resource used up, per METER dimension, since the plugin
@@ -3157,7 +3171,7 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\tusability\x18\x05 \x01(\v2\x1b.hangar.plugin.v1.UsabilityR\tusability\x126\n" +
 	"\bconsumed\x18\x06 \x01(\v2\x1a.hangar.plugin.v1.ConsumedR\bconsumed\"J\n" +
 	"\x10ReconcileRequest\x126\n" +
-	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\"\x89\x03\n" +
+	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\"\x9b\x03\n" +
 	"\x11ReconcileResponse\x12-\n" +
 	"\x05drift\x18\x01 \x01(\x0e2\x17.hangar.plugin.v1.DriftR\x05drift\x12\x16\n" +
 	"\x06detail\x18\x02 \x01(\tR\x06detail\x12\x1a\n" +
@@ -3167,7 +3181,9 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x04room\x18\x06 \x01(\v2\x16.hangar.plugin.v1.RoomR\x04room\x129\n" +
 	"\tusability\x18\a \x01(\v2\x1b.hangar.plugin.v1.UsabilityR\tusability\x12-\n" +
 	"\x05usage\x18\b \x01(\v2\x17.hangar.plugin.v1.UsageR\x05usage\x126\n" +
-	"\bconsumed\x18\t \x01(\v2\x1a.hangar.plugin.v1.ConsumedR\bconsumed\"\x89\x01\n" +
+	"\bconsumed\x18\t \x01(\v2\x1a.hangar.plugin.v1.ConsumedR\bconsumed\x12\x10\n" +
+	"\x03end\x18\n" +
+	" \x01(\tR\x03end\"\x89\x01\n" +
 	"\bConsumed\x12A\n" +
 	"\aamounts\x18\x01 \x03(\v2'.hangar.plugin.v1.Consumed.AmountsEntryR\aamounts\x1a:\n" +
 	"\fAmountsEntry\x12\x10\n" +

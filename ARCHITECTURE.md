@@ -20,6 +20,7 @@ where this page and they disagree, they win.
 | The API (`/v1`), `/healthz`, `/metrics`, `/openapi.json` | **built** |
 | Zones' capacity: pools, classes, reservations, holds, the claim, waking; the Proxmox VE hook (`hangar-hook`) | **built** (§6) — proved on a throwaway Proxmox VE |
 | Power: an idle machine stopped at its `idle_after`, the hours machines run counted against a tier's month (a **meter**), keep awake | **built** (§6 power, §3, §4) — proved on a throwaway Proxmox VE |
+| A machine's end: what its own power-off means (`on_poweroff`: started again, left stopped, deleted), and when the brain ends it at the latest (`until`, `at_end`) — a delete the brain makes in its owner's name | **built** (§6 the end) |
 | The machines plugin (machines, key pairs); the Proxmox VE driver; references between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md)) |
 | The volumes plugin (volumes, parked on a shelf where the engine keeps no disk without a guest); attachments between resources | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
 | The images plugin (baked from a recipe, saved from a stopped machine, shared, retired); resources shared with others | **built** (§7, §5, §4) — proved on a throwaway Proxmox VE |
@@ -705,6 +706,60 @@ uses it, and a tier's room is only fair if running has a cost.
   again when the month is. A limit that only refused starts would never bind
   a machine that never stops.
 
+### A machine's end **(built)**
+
+A machine made for one run gives itself back by powering itself off; one
+kept between runs stops itself when its own judge says it is idle. Until
+`v0.7.0` the brain undid both at its next look (« put back: [power] »), and
+knew no time after which a machine is gone.
+
+- **`on_poweroff`** — what its own power-off means: **`restart`** (the
+  default: it is started again, as every machine was), **`stop`** (it stays
+  stopped: its spec says `running: false` from then on, its borrowed room
+  given back, `machine.stopped_itself`), **`delete`** (it is deleted, its
+  disk with it: `machine.ended`). EC2's `InstanceInitiatedShutdownBehavior`.
+  **Its own power-off is any stop nobody asked through the brain**: a stop,
+  an idle stop, a spent month and a hold are the brain's and say so first;
+  so is a stop or a reboot it asked that went wrong, at the look after it.
+  A guest its engine's work holds (a backup, a migration) is not ended
+  while it does; a look that saw it running only under that work does not
+  count as seen running; one the last look did not see running is started,
+  as ever. **`stop` and `delete` are applied only when it is found stopped
+  at two looks at least 30 seconds apart**: the first leaves it stopped,
+  its spec still saying it runs, and says so (a drift: « if it is still
+  stopped 30s after … »); an action its owner asks meanwhile does not make
+  the next look forget it. A guest stopped for a moment of its own (a
+  container rebooting itself) is running again by then, and nothing is
+  said of it after. A node's own stop cannot be told from it on Proxmox VE
+  ([docs/proxmox.md](docs/proxmox.md#a-machines-end)): a `delete` machine on
+  a node that reboots, still down 30 seconds after, is deleted — its run
+  was lost with the node — and its event says the stop could have been
+  either.
+- **`until`** — a time — and **`at_end`**: when the brain ends it at the
+  latest, and how: **`stop`** (the default) or **`delete`**, running or
+  not. Compute Engine's `terminationTime` and `instanceTerminationAction`.
+  At its birth or by `set_end`, **`for: 2h`** writes it as a time from now
+  (a minute to a year). It is cleared when it comes: started again, a
+  machine is not ended again; a start past an `until` not looked at yet is
+  refused. A zone asleep is not looked at: a machine whose `until` came
+  while its zone slept is stopped, or deleted, at its first look after it
+  wakes.
+- **`set_end`** changes any of them, in one call (`until: never` takes it
+  off); a spec file asks for it as a step — `until` only when the file
+  names one: what an asker wrote on a machine is not undone by a file that
+  says nothing of it, and an `until` that has passed asks nothing.
+- **The delete is the core's**, in the brain's name: the plugin says, with
+  its verdict, that the resource came to its end (`end` on the protocol's
+  `ReconcileResponse`), and the core deletes it as its owner's delete would
+  — an operation of its owner's, which they see in their list; its audit
+  line's actor is `hangar`, and an `end` line says why. **Until it is gone,
+  its spec says so** (`ending`) and every look hands its end over again:
+  **refused as a delete is** — with a volume attached to it, or a resource
+  standing on it — it is left stopped, the `end` line saying why once, and
+  deleted at the first look after the volume goes; a delete its engine
+  failed is tried again at the next look. Its owner starting it takes the
+  end back: the machine is theirs again.
+
 ## 7. Every plugin — capabilities and limits (the first three **built**)
 
 ### The first four
@@ -809,7 +864,7 @@ nodes.)*
 
 | plugin | resources | actions | limit dimensions (per tier) | driver needs |
 |---|---|---|---|---|
-| **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **`cpu`** (host), **`virtualization`**, **`cpu_weight`**, **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **`terminal`** (how its terminal greets, for its life: `open` — its user signed in, nothing asked — or `login`; a VM that names no key pair is born open), **tags**, `idle_after`, GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · set_idle_after · set_cpu_weight · keep_awake (for a time, or until let_sleep) · let_sleep · delete; **a stream, `terminal`** (its own screen and keyboard: its owner's alone) | count · vCPU · memory GB · **vCPU-hours a month** (a meter) · kinds allowed · classes allowed · **a VM's host processor** (`machines.cpu`) · **VMs inside a VM** (`machines.virtualization`) · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `cpu.*` for a processor and a weight, `guest.activity` for `idle_after`, `hook.pre_start` or core admission; where the zone keeps one (`net.firewall`) a machine is born behind its wall, at the address its zone gave it — both on its page, neither asked; where it cuts networks (`net.private`) a machine stands on the one it names (`network`), or on its owner's default |
+| **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **`cpu`** (host), **`virtualization`**, **`cpu_weight`**, **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **`terminal`** (how its terminal greets, for its life: `open` — its user signed in, nothing asked — or `login`; a VM that names no key pair is born open), **tags**, `idle_after`, **`on_poweroff`**, **`until`** + **`at_end`** (its end), GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · set_idle_after · set_cpu_weight · keep_awake (for a time, or until let_sleep) · let_sleep · set_end (`on_poweroff`, `until`, `at_end`: §6 the end) · delete; **a stream, `terminal`** (its own screen and keyboard: its owner's alone) | count · vCPU · memory GB · **vCPU-hours a month** (a meter) · kinds allowed · classes allowed · **a VM's host processor** (`machines.cpu`) · **VMs inside a VM** (`machines.virtualization`) · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `cpu.*` for a processor and a weight, `guest.activity` for `idle_after`, `hook.pre_start` or core admission; where the zone keeps one (`net.firewall`) a machine is born behind its wall, at the address its zone gave it — both on its page, neither asked; where it cuts networks (`net.private`) a machine stands on the one it names (`network`), or on its owner's default |
 | **volumes** | **`vol-…`**: size, content (block / filesystem), backup yes/no, the machine it is attached to and its path there, tags | create · attach · detach · **move** (to another machine of the same owner) · resize (grow) · set_backup · delete | count · total GB · **backed-up GB** | `volume.move_between_guests`, `fence.pool`; where the engine keeps no disk without a guest, an unattached volume parks on a stopped **« shelf » guest** of its owner |
 | **networks** | **`net-…`**: the key pairs that may jump into it (`key_pairs`), whom it is shared with (`shared_with`); observed: its range, its gateway, where its keys jump through (`jump`), whether its gateway is up | create · set_key_pairs · share · delete | `networks.count` · choice `networks.visibility` (private, shared, public) | `net.private`, `fence.pool` — Proxmox VE: a tag of the cloud's own bridge, a gateway container per network |
 | **images** | **`img-…`**: name, family, kind, size, whom it is shared with (`shared_with`: groups, `*` = everyone), retired, the recipe it came from (`from`) or the machine it was saved from; observed: `pending` → `available` \| `failed` (its words), `waiting` while the zone's room is held, its engine form per kind | **bake** (create from a `recipe`) · **save** (create from a stopped `machine`) · share · retire · rebake · delete | `images.count` · `images.size_gb` (one's own) · choices `images.source` (recipe, machine) and `images.visibility` (private, shared, public) | the images facet (`driver.Images`): a bake moved forward call by call, a save, a delete refused under linked clones — Proxmox VE: VM templates in the images pool, a builder VM per bake |

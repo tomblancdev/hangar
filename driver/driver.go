@@ -440,6 +440,12 @@ type Guest struct {
 	// StartedAt: since when a running guest runs, where the engine says; nil
 	// = stopped, or unknown. The hours it ran are counted from it.
 	StartedAt *time.Time `json:"started_at,omitempty"`
+	// Lock: what its engine is doing with it, that keeps every other hand
+	// off — a backup, a migration, a snapshot, a suspend ("backup",
+	// "migrate", "suspended", …, the engine's own word); "" = nothing. A
+	// guest stopped under a lock was stopped by its engine's work, never by
+	// itself.
+	Lock string `json:"lock,omitempty"`
 	// At: when this was read, by the clock the reading was made with.
 	At time.Time `json:"-"`
 }

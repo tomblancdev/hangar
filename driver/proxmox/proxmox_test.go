@@ -560,6 +560,32 @@ func TestAGuestsWeight(t *testing.T) {
 	}
 }
 
+// What its engine's own work holds a guest for is read from its config's
+// lock — a backup, a suspend —; none, nothing.
+func TestAGuestsLock(t *testing.T) {
+	a := newAPI()
+	a.res = []resource{
+		{VMID: 11001, Node: "node-a", Type: "qemu", Pool: "hangar", Tags: "hangar-id.m-000000000000000aa", Name: "vm"},
+		{VMID: 11002, Node: "node-a", Type: "lxc", Pool: "hangar", Tags: "hangar-id.m-000000000000000bb"},
+	}
+	cfg := map[string]map[string]any{
+		"qemu/11001": {"tags": "hangar-id.m-000000000000000aa", "cores": 2, "memory": "1024", "lock": "backup"},
+		"lxc/11002":  {"tags": "hangar-id.m-000000000000000bb", "cores": 1, "memory": 512, "hostname": "ct"},
+	}
+	for k := range cfg {
+		a.h["GET /nodes/node-a/"+k+"/config"] = func(w http.ResponseWriter, _ *http.Request) { data(w, cfg[k]) }
+		a.h["GET /nodes/node-a/"+k+"/status/current"] = func(w http.ResponseWriter, _ *http.Request) { data(w, map[string]any{"status": "stopped"}) }
+	}
+	d := open(t, a, nil)
+	ctx := context.Background()
+	if vm, err := d.Guest(ctx, "m-000000000000000aa"); err != nil || vm.Lock != "backup" {
+		t.Fatalf("a VM under a backup: %+v %v", vm, err)
+	}
+	if ct, err := d.Guest(ctx, "m-000000000000000bb"); err != nil || ct.Lock != "" {
+		t.Fatalf("a container under nothing: %+v %v", ct, err)
+	}
+}
+
 // A VM's system disk is made to give back what is deleted inside it, once:
 // a line that says so already is left alone, and its other options stay.
 func TestAVMsDiskGivesSpaceBack(t *testing.T) {

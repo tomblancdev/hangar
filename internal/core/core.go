@@ -60,6 +60,8 @@ type Core struct {
 
 	locks sync.Map // resource id -> *sync.Mutex: an operation and a reconcile never overlap
 
+	endSaid sync.Map // resource id -> why its end's delete was last refused: said once (end.go)
+
 	waitMu  sync.Mutex
 	waiters map[string]*waiter
 
@@ -1351,6 +1353,9 @@ func (c *Core) finish(op *registry.Operation, r *registry.Resource, out *outcome
 	c.metrics.Inc("hangar_operations_total", op.Kind, state)
 	e := audit.Event{Action: "operation", Actor: op.Owner, Resource: op.ResourceID, Operation: op.ID, Result: state, Detail: msg,
 		Fields: map[string]string{"kind": op.Kind}}
+	if ended(op) {
+		e.Actor, e.Fields["ended"] = "hangar", "true" // its owner's operation, the brain's doing (end.go)
+	}
 	if op.Action != "" {
 		e.Fields["action"] = op.Action
 	}
@@ -1800,5 +1805,9 @@ func (c *Core) reconcileLocked(ctx context.Context, r *registry.Resource) (strin
 		c.audit.Write(e)
 	}
 	c.events(r, resp.GetEvents())
+	// it came to its end by a rule of its own: deleted in the brain's name
+	if why := resp.GetEnd(); why != "" && resp.GetDrift() != pluginpb.Drift_DRIFT_MISSING {
+		c.end(ctx, r.ID, t, why)
+	}
 	return verdict, resp.GetDetail()
 }

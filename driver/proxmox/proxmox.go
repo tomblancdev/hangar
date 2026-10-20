@@ -529,6 +529,7 @@ func (d *Driver) read(ctx context.Context, r resource, id string) (driver.Guest,
 		Kind: r.kind(), Node: r.Node, Running: st.Status == "running", Tags: tagMap(str(cfg["tags"])),
 		Holds: holdsOf(str(cfg["tags"])), Cores: num(cfg["cores"]), MemoryMB: memoryMB(cfg["memory"]),
 		CPULimit: int(math.Ceil(fnum(cfg["cpulimit"]))), CPUWeight: driver.WeightOf(num(cfg["cpuunits"])),
+		Lock: str(cfg["lock"]),
 	}
 	if r.Type == "qemu" {
 		g.CPU, g.Virtualization = cpuOf(str(cfg["cpu"]))

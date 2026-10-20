@@ -209,3 +209,26 @@ func TestAGuestsProcessor(t *testing.T) {
 		t.Errorf("a share set where nothing is weighed: %v", err)
 	}
 }
+
+// A guest its engine's own work holds is neither started, stopped nor
+// deleted — but for a hibernated VM, whose start resumes it.
+func TestALockedGuest(t *testing.T) {
+	e := open(t, "", nil)
+	ctx := context.Background()
+	for _, id := range []string{"g-1", "g-2"} {
+		if _, err := e.CreateGuest(ctx, driver.GuestSpec{ID: id, Kind: "vm", Cores: 1, MemoryMB: 512, Image: "img", Stopped: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.Tamper("g-1", func(g *driver.Guest) { g.Lock = "backup" })
+	if _, err := e.SetPower(ctx, "g-1", true); !errors.Is(err, driver.ErrRefused) {
+		t.Fatalf("a start under a backup: %v", err)
+	}
+	if err := e.DeleteGuest(ctx, "g-1"); !errors.Is(err, driver.ErrRefused) {
+		t.Fatalf("a delete under a backup: %v", err)
+	}
+	e.Tamper("g-2", func(g *driver.Guest) { g.Lock = "suspended" })
+	if g, err := e.SetPower(ctx, "g-2", true); err != nil || !g.Running || g.Lock != "" {
+		t.Fatalf("a hibernated VM resumed: %+v %v", g, err)
+	}
+}

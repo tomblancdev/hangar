@@ -635,6 +635,45 @@ has on its pool — nothing is installed in a guest.
   logs or metrics by itself sends more, and its operator raises `idle.sent_bps`
   (the machines plugin's settings) to what an idle one of theirs reads.
 
+## A machine's end
+
+A machine's own power-off (`on_poweroff`) and its `until` are the machines
+plugin's; what the driver adds is what it reads of a stopped guest, with
+the `VM.Audit` the token already has.
+
+- **What its engine's own work holds**: a guest's `lock` in its config —
+  `backup`, `migrate`, `snapshot`, `suspended` (a hibernated VM), a
+  container's `mounted`, … A guest stopped under one was stopped by that
+  work, never by itself: no `on_poweroff` is applied to it, and no `until`
+  ends it, until the lock goes (a start the brain asks meanwhile is the
+  engine's to refuse, and is said as a drift). A look that found it running
+  under a lock does not count as seen running: a backup runs a stopped VM
+  paused. The night's backup does stop nothing in
+  snapshot mode, but it **starts a stopped VM paused** to read its disk
+  (read live: `vzdump` ran `qemu` for a stopped machine for 24 s, under
+  `lock: backup`), and a stop asked meanwhile is refused (« VM is locked
+  (backup) »).
+- **What it cannot read: who stopped it.** Read live on a node, a machine's
+  `systemctl poweroff`: its `qemu` process ends, `qmeventd` cleans up after
+  it, and **no task is written**; every stop a host asks — the brain's, a
+  hand's in the GUI or `qm`, a node's `stopall` on its way down — is a task
+  (`qmshutdown`, `qmstop`, `vzshutdown`, `vzstop`), owned by whoever asked.
+  But a token reads only its own tasks: everybody else's need `Sys.Audit`
+  on `/nodes/<node>` (`API2/Tasks.pm`), which the token is never given.
+  QEMU's own `SHUTDOWN` event says `guest: true` for a power-off the guest
+  carried out — and a host's `qm shutdown` is one too: an ACPI press, or
+  the guest agent's `guest-shutdown`, that the guest obeys
+  (`QemuServer.pm`, `_do_vm_stop`); it goes no further than `qm cleanup`
+  anyway. The hook cannot mark it either: `pre-stop` runs while the guest's
+  config is locked. **So any stop of a running machine that nobody asked
+  through the brain is its own** — a node's reboot included: a machine that
+  says `on_poweroff: delete` is deleted after one (its run was lost with the
+  node anyway), one that says `stop` stays stopped, one that says nothing is
+  started again, as ever. Its event says the stop could have been either.
+  Both are applied only when looks at least 30 seconds apart find the
+  guest stopped, never at the first: a container that reboots itself is
+  stopped for a moment, and a look that falls in it must not end it.
+
 ## Volumes
 
 Proxmox VE keeps **no disk without a guest**: a disk is a line of a guest's

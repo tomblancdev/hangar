@@ -26,6 +26,11 @@
 // when each guest was last busy (absent: quiet since it started), which is
 // all the fake keeps of a history of CPU and network.
 //
+// A guest's "lock" in the file is the engine's own work holding it (a
+// backup, a migration): it is neither started, stopped nor deleted until the
+// lock goes, as on Proxmox VE — but for "suspended", a hibernated VM, whose
+// start resumes it.
+//
 // A zone that carries net.firewall gives each guest an address at its birth
 // and puts it behind a wall ("address", "wall" in the file): taking the wall
 // off there is someone opening a guest behind the brain's back, and Wall
@@ -369,6 +374,9 @@ func (e *Engine) DeleteGuest(_ context.Context, id string) error {
 	if err := e.fail(); err != nil {
 		return err
 	}
+	if g, ok := e.state.Guests[id]; ok && g.Lock != "" {
+		return locked(g)
+	}
 	if held := e.volumesOn(id); len(held) > 0 {
 		return fmt.Errorf("%w: it holds %s: detach them first — they keep their data", driver.ErrRefused, strings.Join(held, ", "))
 	}
@@ -390,6 +398,12 @@ func (e *Engine) SetPower(_ context.Context, id string, on bool) (driver.Guest, 
 	g, ok := e.state.Guests[id]
 	if !ok {
 		return driver.Guest{}, driver.ErrNotFound
+	}
+	switch {
+	case on && !g.Running && g.Lock == "suspended":
+		g.Lock = "" // a hibernated VM's start is its resume
+	case g.Lock != "" && on != g.Running:
+		return driver.Guest{}, locked(g)
 	}
 	switch {
 	case on && !g.Running:
@@ -419,6 +433,12 @@ func (e *Engine) Reboot(_ context.Context, id string) (driver.Guest, error) {
 	}
 	e.booted(id)
 	return e.clone(g), e.save()
+}
+
+// locked is the engine's refusal while its own work holds a guest (a
+// "lock" in the file), in Proxmox VE's words.
+func locked(g *driver.Guest) error {
+	return fmt.Errorf("%w: it is locked (%s)", driver.ErrRefused, g.Lock)
 }
 
 // booted counts a guest's start. Called with e.mu held.

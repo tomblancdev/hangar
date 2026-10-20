@@ -424,6 +424,13 @@ message ReconcileResponse {
   // What it consumed since the plugin last said. Read with the verdicts in
   // sync, repaired and drifted.
   Consumed consumed = 9;
+  // Why it came to its end by a rule of its own — a machine whose own
+  // power-off means its delete, or whose time is up: the core deletes it as
+  // its owner's delete would, in the brain's name, once the verdict (and its
+  // spec, above) is written. The spec is what it is left as when the delete
+  // cannot be done — something still names it, or holds on to it: stopped,
+  // and said so. Empty = it goes on.
+  string end = 10;
 }
 
 // Consumed is what a resource used up, per METER dimension, since the plugin

@@ -45,7 +45,11 @@ hypervisor (it drives yours) and not an EC2 clone.
 > `idle_after: 30m` is stopped once its engine saw it quiet that long, the
 > hours machines run are counted against a tier's month — once per core —
 > and when the month is spent what still runs is shut down; `keep_awake`
-> holds the idle stop off, for a time or until told. **And a VM's processor**:
+> holds the idle stop off, for a time or until told. **And a machine's
+> end**: `on_poweroff` says what its own power-off means — started again,
+> left stopped, or deleted — and `until` (or `for: 2h` at its birth) when the
+> brain ends it at the latest, stopped or deleted (`at_end`): a machine made
+> for one run gives itself back by powering itself off. **And a VM's processor**:
 the zone's own model, or — `cpu: host` — its host's own, `virtualization:
 true` for VMs inside it, each a tier's to open; `cpu_weight` for a machine
 that yields its cores when others want them. **And a network of
