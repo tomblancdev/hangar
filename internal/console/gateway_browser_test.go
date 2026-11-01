@@ -72,7 +72,8 @@ func newGateway(t *testing.T, console string) *gateway {
 		c, _ := r.Cookie(gatewayCookie)
 		var kept chan struct{}
 		g.mu.Lock()
-		ok := c != nil && g.let[c.Value] && !(g.deaf != "" && strings.HasPrefix(r.URL.Path, g.deaf))
+		known := c != nil && g.let[c.Value]
+		ok := known && !(g.deaf != "" && strings.HasPrefix(r.URL.Path, g.deaf))
 		if ok {
 			if r.URL.Path == "/console/" {
 				g.pages++
@@ -93,7 +94,7 @@ func newGateway(t *testing.T, console string) *gateway {
 			defer func() { g.mu.Lock(); g.inflight--; g.mu.Unlock() }()
 		}
 		if !ok {
-			g.turnBack(w, r)
+			g.turnBack(w, r, !known)
 			return
 		}
 		if kept != nil {
@@ -124,15 +125,22 @@ func newGateway(t *testing.T, console string) *gateway {
 	return g
 }
 
-func (g *gateway) turnBack(w http.ResponseWriter, r *http.Request) {
+// turnBack answers a redirect to its sign-in, and — to a request that
+// carried no verdict it holds — a fresh cookie. One it is only deaf to keeps
+// the verdict it carried: the rest of the page still goes through.
+func (g *gateway) turnBack(w http.ResponseWriter, r *http.Request, fresh bool) {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
 	id := hex.EncodeToString(b)
 	g.mu.Lock()
-	g.began[id] = r.URL.RequestURI()
+	if fresh {
+		g.began[id] = r.URL.RequestURI()
+	}
 	g.turned = append(g.turned, r.URL.Path)
 	g.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: gatewayCookie, Value: id, Path: "/", MaxAge: 3601, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	if fresh {
+		http.SetCookie(w, &http.Cookie{Name: gatewayCookie, Value: id, Path: "/", MaxAge: 3601, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	}
 	back := g.URL + "/gateway/callback?state=" + id
 	http.Redirect(w, r, g.far.URL+"/authorize?back="+url.QueryEscape(back), http.StatusFound)
 }
@@ -236,7 +244,8 @@ func (g *gateway) cut() {
 }
 
 // deafTo: lets nothing through under a path, whatever the verdict — a front
-// that going through again does not cure.
+// that going through again does not cure. The verdict stands: what is not
+// under that path, the page's own files, it lets through.
 func (g *gateway) deafTo(path string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -388,15 +397,23 @@ func TestThePageBehindAGateway(t *testing.T) {
 	// again: a front that lets the page through and none of its calls
 	g.deafTo("/console/api/")
 	count()
+	before := len(g.turnedBack())
 	do(`location.reload()`)
 	p.Sees("asks who you are again")
 	time.Sleep(2 * time.Second)
 	if now, _ := g.seen(); now != pages+1 {
 		t.Fatalf("a page whose calls are turned back at once was loaded %d times", now-pages)
 	}
+	// the page's own files went through: what it turned back is its calls
+	for _, path := range g.turnedBack()[before:] {
+		if !strings.HasPrefix(path, "/console/api/") {
+			t.Fatalf("a front deaf to the page's calls alone turned back %s", path)
+		}
+	}
 	g.deafTo("")
 	p.Press("Try again")
 	p.Reads(stamp, "RUNNING")
+	p.Quiet()
 
 	// ---- nor does one that has worked for six seconds: it says so, and its
 	// key loads it anew

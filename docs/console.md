@@ -458,7 +458,9 @@ socket's opening — is answered a redirect to a sign-in on another origin and
 a fresh cookie; a page that follows it comes back through the gateway's own
 callback to the address it asked for; what is let through reaches the
 console under the same host, sockets too. The test can end every verdict,
-cut every socket it carries, turn a path back whatever the verdict, keep a
+cut every socket it carries, turn a path back whatever the verdict (the
+verdict stands: the rest of the page, its fonts too, still goes through —
+a browser may ask its files again at any load, Chrome 156 does), keep a
 call on its way, and end its time right behind one. The page's clock is the
 test's to move on (the minute is not waited sixty real seconds; the six
 seconds are). Read there: the place asked for kept through the gateway and
