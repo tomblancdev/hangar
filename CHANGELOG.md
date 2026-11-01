@@ -1,5 +1,62 @@
 # Changelog
 
+## v0.8.0 — 2026-11-01
+
+- **Le lanceur de Dagster — Dagster's runs, each on a machine.** A new
+  integration, [`integrations/dagster`](integrations/dagster/README.md): a
+  Python package, `dagster-hangar`, that is a Dagster run launcher (proved
+  on Dagster 1.12.3; nothing beyond Dagster — the brain's API by the
+  standard library, ssh by the client a platform's image holds). **A
+  `default_size` in its config (`2x4`) gives every run a machine; a run
+  tagged `hangar/size: 8x16` a bigger one; with no `HANGAR_URL` every run
+  runs in-process**, by Dagster's own launcher held inside it — one instance
+  file for a deployment with Le Hangar and one without. A run's machine is a
+  spot VM of its size, `cpu: host`, `resume: false`, `on_poweroff: delete`,
+  its `until` the run's `dagster/max_runtime` and ten minutes, the run's id
+  its client token; its first boot is handed a host key the launcher made,
+  and it is reached through its network's gateway, both keys pinned. Its
+  worker is `dagster api execute_run` in the run's image, its env relayed to
+  the machine's memory and read inside its container (handed to Docker, it
+  would be written into the container's config on the disk), its lines to
+  syslog in RFC 5424 with two of the wrapper's own (started; ended, with the
+  exit and the OOM flag); then the machine powers itself off, and the brain
+  deletes it. A worker that ends before its run starts fails the run then,
+  with its exit — not after `start_timeout`. **`launch_run` returns at
+  once**: a thread asks for the machine and **waits out a `409 room`** — the
+  brain's sentence once on the run's page, asked again every minute for up
+  to thirty minutes — while a **`403 limit` fails the run at once**. **Read
+  first:** a refusal writes nothing in the brain, so the same client token
+  asked again is a new ask, and an ask that reached the brain twice is one
+  machine. **Health** reads the brain's record: gone, held for a game (the
+  launcher deletes it: a held machine never powers itself off), stopped
+  without its run's end → `FAILED`; `RUNNING` in-process and when the brain
+  does not answer; what the launcher decided for a run is written on it
+  (`hangar/launched`). **Terminate** stops the worker by ssh (Dagster's own
+  cancel — a person's or monitoring's past `max_runtime`), or, with no
+  worker yet or no key in that process, ends the machine and says the run
+  canceled, once. **A machine the launcher ends is deleted until it is
+  gone**: one still being born is waited for, a delete that failed is asked
+  anew, and a create applied whose answer was lost is found by the run's id.
+  **`hangar/sockets: <name>`** lends a run the code servers' unix sockets,
+  carried by the launcher's own ssh (`ssh -R`), each checked to answer as a
+  gRPC server before the worker starts — a socket whose far end is gone
+  still accepts — and opened again at each health check.
+  **`python -m dagster_hangar bake`** makes the image a run's machine is
+  born from: Docker by Docker's own packages (its key by its digest), the
+  runs' images pulled (a registry login kept in memory), sshd lending
+  sockets to any user, what must differ between clones cleared, saved; the
+  family's older images deleted once nothing is born from them. **Its
+  tests** run against this repository's brain on the fake engine and
+  Dagster's own instance; its ssh half on a bench of two sshd's (a gateway
+  and a run's machine) in a throwaway container. A CI job of its own; **each
+  release now carries the wheel**
+  (`dagster_hangar-<version>-py3-none-any.whl`, its sha256 in the release's
+  notes) — a platform that installs `--require-hashes` names it by its
+  address and its hash.
+
+- `tools/no-environment.sh` declares `docker.com`: the bake reaches Docker's
+  package repository.
+
 ## v0.7.0 — 2026-10-20
 
 - **La fin d'une machine — a machine's end.** A machine made for one run
