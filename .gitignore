@@ -6,3 +6,8 @@
 *.db-wal
 *.db-shm
 .claude/worktrees/
+# the Dagster integration: what Python and a build leave behind
+__pycache__/
+*.egg-info/
+/integrations/dagster/dist/
+/integrations/dagster/build/

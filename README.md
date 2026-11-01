@@ -164,6 +164,12 @@ line per call on stdout, `"kind":"audit"`, with who, which credential, which
 resource, the result and, for a refusal, why · the console's own lines,
 `"kind":"console"`: a sign-in, a sign-out, a sign-in that ended.
 
+## Integrations
+
+- **Dagster** — [`integrations/dagster`](integrations/dagster/README.md): a
+  run launcher that gives each run a machine of its size, its worker there,
+  the machine deleted when it ends; each release carries its wheel.
+
 ## Development
 
 ```sh
@@ -173,6 +179,7 @@ sh tools/bench/bench.sh up # a throwaway Proxmox VE in a VM (podman + /dev/kvm),
 eval "$(sh tools/bench/bench.sh env)" && go test -p 1 ./driver/proxmox/ ./cmd/hangar/ -run Bench -v
 sh tools/image-test.sh     # the image, asked through its own checker — and the same image without its CA bundle (docker or podman)
 sh tools/no-environment.sh # this repo describes nowhere: RFC documentation reserves only
+(cd integrations/dagster && HANGAR_BIN=<a hangar binary> python -m pytest)   # the Dagster launcher, on this brain and the fake engine
 sh tools/protogen.sh       # regenerate the plugin protocol's Go code (tools pinned in tools/go.mod)
 ```
 

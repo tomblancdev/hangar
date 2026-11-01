@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dagster-hangar"
+dynamic = ["version"]
+description = "Dagster's runs, each on a machine of Le Hangar"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+# nothing beyond Dagster: the brain by the standard library, ssh by the
+# openssh-client the platform's image holds. The launcher reads Dagster's
+# internals (its launcher, its worker's arguments): a minor of Dagster is
+# proved before it is allowed.
+dependencies = ["dagster>=1.12.3,<1.13"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+Source = "https://github.com/tomblancdev/hangar"
+
+[tool.setuptools]
+packages = ["dagster_hangar"]
+
+[tool.setuptools.dynamic]
+version = { attr = "dagster_hangar.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -77,6 +77,64 @@ jobs:
       - uses: actions/checkout@v4
       - run: sh tools/image-test.sh
 
+  # The Dagster launcher (integrations/dagster): its tests against this very
+  # brain on the fake engine, in Dagster's own instance, at the Dagster it is
+  # proved on; its ssh half on a bench of two sshd's in a throwaway container
+  # (a gateway and a run's machine); then its wheel.
+  dagster:
+    needs: [no-environment]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/dagster
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: CGO_ENABLED=0 go build -trimpath -o /tmp/hangar ./cmd/hangar
+        working-directory: .
+      - run: pip install -e '.[test]' dagster==1.12.3
+      - run: python -m pytest -q
+        env:
+          HANGAR_BIN: /tmp/hangar
+      - name: the ssh half, on a bench
+        run: >-
+          docker run --rm -v "$PWD":/src -w /src -e DAGSTER_HANGAR_SSH_BENCH=1 python:3.12-slim
+          sh -c "apt-get -qq update && apt-get -qq install -y --no-install-recommends openssh-server openssh-client sudo
+          && pip install -q -e '.[test]' dagster==1.12.3 && python -m pytest -q tests/test_ssh_bench.py"
+      - run: pip wheel --no-deps -w dist .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: integrations/dagster/dist/dagster_hangar-*.whl
+
+  # A tag's release: the wheel built by the job above, attached to the
+  # tag's GitHub release — a platform names it by its address and its hash
+  # (an image that installs --require-hashes refuses a git dependency).
+  release:
+    needs: [no-environment, go, protocol, editor, terminal, image-test, dagster]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: wheel, path: dist }
+      - name: the release, its wheel and its notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          wheel=dist/dagster_hangar-${TAG#v}-py3-none-any.whl
+          test -f "$wheel" || { echo "the wheel is not the tag's version: $(ls dist)"; exit 1; }
+          awk -v t="## $TAG " 'index($0, t) == 1 {on = 1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "CHANGELOG.md says nothing of $TAG"; exit 1; }
+          printf '\n---\n\n`%s`\n\n    sha256:%s\n' "${wheel#dist/}" "$(sha256sum "$wheel" | cut -d" " -f1)" >> notes.md
+          gh release create "$TAG" "$wheel" --title "$(git log -1 --format=%s)" --notes-file notes.md --verify-tag
+
   image:
     needs: [no-environment, go, protocol, editor, terminal, image-test]
     if: github.event_name == 'push'
