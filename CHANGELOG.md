@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 — 2026-11-06
 
 - **Un portail refait d'un seul coup — a gateway is made again by one
   forced delete.** A remake was a stop, then a delete: the machines
