@@ -29,7 +29,7 @@ where this page and they disagree, they win.
 | The command line generated from the schemas: sign-in by the device flow, every type's commands, `apply` of a spec file; a change's plan (§2, §4) | **built** — proved on a throwaway Proxmox VE and a throwaway identity provider ([docs/cli.md](docs/cli.md)) |
 | The console generated from the schemas: signed in at the provider (the sign-in kept by the console's server, a cookie in the browser), every type a list, a form and its actions — inside the brain, or a process of its own in front of it (§2, §8) | **built** — proved in a real browser, on a throwaway Proxmox VE and a throwaway identity provider ([docs/console.md](docs/console.md)) |
 | A machine's terminal in the console; a rebuild in `apply` (a field set at birth, made again) | designed (§2, §7) |
-| Endpoints: the operator's published services, an owner's endpoint in a network of theirs, its gateway letting that one service through and refusing the rest of the operator's private side — carried in the gateway's own engine record (§7, §8, §9) | designed — its levers read on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md#endpoints--designed)) |
+| Endpoints: the operator's published services, an owner's endpoint in a network of theirs, its gateway letting that one service through and refusing the rest of the operator's private side — carried in the gateway's own engine record (§7, §8, §9); a reference that is its owner's own, and parts of a resource (§4) | **built** (§7, §4, §8) — proved on a throwaway Proxmox VE ([docs/proxmox.md](docs/proxmox.md#endpoints)) |
 | Rules inside a network (security groups), two networks joined, a network across two nodes; names, ports, snapshots, object storage, databases; the Incus and AWS drivers | designed (§7) |
 
 ---
@@ -325,6 +325,26 @@ them first » — because they would be left on something that is gone; the
 member itself goes freely, and it may name what someone shares with it (an
 attachment may not). **(built)**
 
+**Its owner's own.** A reference whose schema also carries `"x-hangar-own":
+true` names its owner's own resources alone, never one shared with them —
+refused in the words of one that does not exist (an endpoint names a
+network of its owner's: a network someone shares holds their machines, not
+their endpoints). With `x-hangar-member` it is both: its owner's own, and
+its target not deleted while it stands on it. An attachment is its owner's
+own already. **(built)**
+
+**Parts.** A member of a type of **the same plugin** is a part of what it
+stands on: what it is lives on the engine inside the other's record (an
+endpoint is a line of its network's gateway). So **the plugin is handed,
+with a resource, its parts** — `Resource.members`: those being made, and
+those that are, never one being deleted — at its create, its actions and its
+looks; and **a part's create and delete hold the resource it stands on**
+while they are asked, one at a time with its acts, its looks and its other
+parts', handed it with its parts as they are then (a delete: itself counted
+out). What the plugin writes on the engine is always the whole of them, by
+one writer — never the last of two that each read before the other wrote.
+**(built)**
+
 **A default.** A single reference whose schema carries `"x-hangar-default":
 "<name>"` names something by itself when a create leaves it out — where its
 type is made in that zone: **the owner's own resource of that type called
@@ -452,6 +472,7 @@ advertise the documented flags.
 | `fence.pool` (a credential limited to the product's guests) | yes (a pool + a role) | yes (a project) | yes (IAM + tags) | yes |
 | `net.firewall` (every guest born behind the engine's own firewall: nothing in but what the zone's operator lets, sending only as itself) | where the zone says `firewall: on` (a guest's firewall file, its card's flag) | yes (a network ACL, the card's filters) | the cloud's own (a security group; the network checks what an instance sends) | yes |
 | `net.private` (networks of the cloud's own: only its members on one, each given its address there, out through a gateway that lets nothing in) | where the zone says `net_bridge` (a tag of a bridge with no port; the gateway a small container the driver makes) | yes (a network of its own, its own addresses) | yes (a VPC's private subnet, a NAT gateway) | yes |
+| `net.endpoints` (a network's gateway lets through the endpoints its network holds of the operator's private side, and refuses the rest of it) | where the zone cuts networks on Proxmox VE 9.1 or later (a container's `env`) and its `net_archive` is named after a recipe that reads it (`hangar-gateway-2…` or later) | yes (`environment.*` keys) | yes (its own VPC endpoints) | yes |
 
 **The fake driver is built** and ships first: it lets the whole core and
 every plugin be proved with no hypervisor. Its zone's endpoint is empty (in
@@ -863,7 +884,7 @@ start can always have its way out — and a tier bounds how many
 two networks joined, a network that names no way out, a network across two
 nodes; and endpoints, below.)*
 
-**Endpoints — designed; their levers read on a bench.** A network reaches
+**Endpoints — built; proved on a bench.** A network reaches
 the web through its gateway; the operator's own side — their private
 addresses, the services the cloud's machines may use — it reaches through
 **its endpoints, and nothing else** (AWS's gateway endpoints and
@@ -873,14 +894,16 @@ pieces:
 
 - **A published service** is the operator's: a name, a line of
   description, and where it is — an address, a port, a protocol (`tcp`
-  unless said) — in the networks plugin's settings, per zone, as the images
-  plugin's recipes are:
+  unless said) — in the networks plugin's settings, per zone:
 
   ```yaml
-  services:
-    - {name: logs, description: "the log store's push door", to: "192.0.2.35:3101"}
-    - {name: syslog, to: "192.0.2.35:514/udp"}
-  private: [192.0.2.0/24]   # said, since its services are there; unsaid, the private ranges
+  settings:
+    zones:
+      lab:
+        services:
+          - {name: logs, description: "the log store's push door", to: "192.0.2.35:3101"}
+          - {name: syslog, to: "192.0.2.35:514/udp"}
+        private: [192.0.2.0/24]   # said, since its services are there; unsaid, the private ranges
   ```
 
   `private` is **the operator's side**: what a network of the zone reaches
@@ -893,8 +916,11 @@ pieces:
   one service — `hangar endpoint create --network lab --service logs`. Its
   spec is those two, set at its birth (a service changed is another
   endpoint); it names **its owner's own network** (a network someone shares
-  holds their machines, not their endpoints), in the same zone, and a
-  network that holds endpoints is not deleted (409, as members). Its page
+  holds their machines, not their endpoints: `x-hangar-own`, §4), in the
+  same zone, and a network that holds endpoints is not deleted (409, as
+  members). It is a **part** of its network (§4): the brain hands a
+  network its endpoints, and holds it while one is made or deleted, so its
+  gateway is always written the whole of them. Its page
   says what it reaches (`to`), what the service sees it as (`from`: the
   network's gateway on the lane — the source of everything the network
   sends) and whether its gateway runs with it yet (`applied`). Two
@@ -930,9 +956,10 @@ endpoints is written again and named (`repaired`), as its keys and its
 archive are. The field is checked under the right the networks plugin's
 role already holds (`VM.Config.Options`): **no privilege more**. The driver
 advertises **`net.endpoints`** where the node's Proxmox VE has the field
-and the zone's archive is of a recipe that reads it
-([docs/proxmox.md](docs/proxmox.md#endpoints--designed)); elsewhere a zone
-that names services is refused when opened. Other engines have the same
+and the zone's archive is of a recipe that reads it — **its file's name says
+so** (`hangar-gateway-2.tar.zst`, as the recipe advises naming it)
+([docs/proxmox.md](docs/proxmox.md#endpoints)); elsewhere a zone that names
+services is refused when opened, saying which of the two it lacks. Other engines have the same
 lever (Incus's `environment.*` keys); on AWS the driver makes AWS's own
 endpoints.
 
@@ -948,7 +975,7 @@ today's).
 |---|---|---|---|---|
 | **machines** | **`m-…`**: name, zone, **kind** (container / VM), **type** (AWS names — `t3.medium` = 2 vCPU / 4 G — or the operator's aliases, or free cores + memory), **image**, **class**, `cores_beside`, `floor` (guaranteed + spot), **`cpu`** (host), **`virtualization`**, **`cpu_weight`**, **user data** (cloud-init), **key pairs** (public keys; `kp-…`), **`terminal`** (how its terminal greets, for its life: `open` — its user signed in, nothing asked — or `login`; a VM that names no key pair is born open), **tags**, `idle_after`, **`on_poweroff`**, **`until`** + **`at_end`** (its end), GPU (none / shared / whole), `peers` group | create · start · stop · reboot · resize · set_idle_after · set_cpu_weight · keep_awake (for a time, or until let_sleep) · let_sleep · set_end (`on_poweroff`, `until`, `at_end`: §6 the end) · delete; **a stream, `terminal`** (its own screen and keyboard: its owner's alone) | count · vCPU · memory GB · **vCPU-hours a month** (a meter) · kinds allowed · classes allowed · **a VM's host processor** (`machines.cpu`) · **VMs inside a VM** (`machines.virtualization`) · zones allowed · GPU allowed | `kind.*`, `guest.tags`, `resize.live.*` for resize, `cpu.*` for a processor and a weight, `guest.activity` for `idle_after`, `hook.pre_start` or core admission; where the zone keeps one (`net.firewall`) a machine is born behind its wall, at the address its zone gave it — both on its page, neither asked; where it cuts networks (`net.private`) a machine stands on the one it names (`network`), or on its owner's default |
 | **volumes** | **`vol-…`**: size, content (block / filesystem), backup yes/no, the machine it is attached to and its path there, tags | create · attach · detach · **move** (to another machine of the same owner) · resize (grow) · set_backup · delete | count · total GB · **backed-up GB** | `volume.move_between_guests`, `fence.pool`; where the engine keeps no disk without a guest, an unattached volume parks on a stopped **« shelf » guest** of its owner |
-| **networks** | **`net-…`**: the key pairs that may jump into it (`key_pairs`), whom it is shared with (`shared_with`); observed: its range, its gateway, where its keys jump through (`jump`), whether its gateway is up. *Designed:* **`ep-…`**, an endpoint: one network of its owner's, one published service; observed `to`, `from`, `applied` | create · set_key_pairs · share · delete; an endpoint: create · delete | `networks.count` · choice `networks.visibility` (private, shared, public); *designed:* `networks.endpoints` · choice `networks.services` | `net.private`, `fence.pool` — Proxmox VE: a tag of the cloud's own bridge, a gateway container per network; *designed:* `net.endpoints` — the gateway's `env` (Proxmox VE 9.1+) |
+| **networks** | **`net-…`**: the key pairs that may jump into it (`key_pairs`), whom it is shared with (`shared_with`); observed: its range, its gateway, where its keys jump through (`jump`), whether its gateway is up. **`ep-…`**, an endpoint: one network of its owner's, one published service; observed `to`, `from`, `applied` | create · set_key_pairs · share · delete; an endpoint: create · delete | `networks.count` · choice `networks.visibility` (private, shared, public); `networks.endpoints` · choice `networks.services` | `net.private`, `fence.pool` — Proxmox VE: a tag of the cloud's own bridge, a gateway container per network; `net.endpoints` — the gateway's `env` (Proxmox VE 9.1+, recipe 2) |
 | **images** | **`img-…`**: name, family, kind, size, whom it is shared with (`shared_with`: groups, `*` = everyone), retired, the recipe it came from (`from`) or the machine it was saved from; observed: `pending` → `available` \| `failed` (its words), `waiting` while the zone's room is held, its engine form per kind | **bake** (create from a `recipe`) · **save** (create from a stopped `machine`) · share · retire · rebake · delete | `images.count` · `images.size_gb` (one's own) · choices `images.source` (recipe, machine) and `images.visibility` (private, shared, public) | the images facet (`driver.Images`): a bake moved forward call by call, a save, a delete refused under linked clones — Proxmox VE: VM templates in the images pool, a builder VM per bake |
 
 **Recipes** (for `bake`), in the plugin's settings: a base on the engine per
@@ -1000,7 +1027,7 @@ the audit says so.
 | **1. The door** | OIDC sign-in (the operator's provider and its MFA); API tokens scoped (read / write) and expiring, never able to make tokens; the brain behind the operator's gateway (it speaks plain HTTP; TLS is the gateway's). **In a browser:** the provider's tokens stay with the console's server, in memory; the page holds a cookie no script reads (`HttpOnly`, `SameSite=Strict`, `Secure` behind TLS), what changes something carries a second token in a header and is refused from another site's page, and the page loads nothing from elsewhere and runs no inline code. **On a public door:** the console as a process of its own, holding no plugin's key, the brain behind it | **built** — each guard broken on purpose and caught by a test |
 | **2. The core and its plugins** | limits per tier; every call audited; **each plugin its own process, started with an empty environment, with its own credential and nothing else**; mutual TLS on its socket; a program pinned by its SHA-256; the API never returns an engine credential | **built** — the empty environment and the one-credential rule are proved by tests that run a probe plugin and read what it received |
 | **3. The engine fence** | each driver's credential fenced to the product's own guests (`fence.pool`): on Proxmox a pool and a role — it cannot touch any other guest, and sees only the power of those a zone's reservations name | **built** for Proxmox: the driver reads the token's own permissions and advertises `fence.pool` only when nothing outside its pools is reachable but `VM.Audit` on a watched guest (root's token, the control, is refused with 416 reasons); the machines plugin requires it, so an unfenced zone is not one it acts on. The hook on the node needs no hypervisor credential at all: it is the node's own root, and holds only a `room` token toward the brain. **A terminal is one privilege more in that role, and the operator's to give** (`VM.Console`, on the pool alone): whoever takes the brain can then type in every running machine whose terminal was born open — as that key already stops, resizes and deletes them, and wrote their first boot. A zone whose role lacks it offers no terminal, and nothing else changes |
-| **4. The network** | a zone's network is the operator's: the product assumes a lane where machines reach only what the operator allows; **where the zone keeps a wall (`net.firewall`) each machine is alone on it** — born behind the engine's firewall, nothing in but what the operator's own groups let, sending only as the address it was given | **built** for Proxmox, as the zone's own switch ([docs/proxmox.md](docs/proxmox.md#addresses-and-the-wall)): proved on a bench — a neighbour pinging from before a machine's birth never answered, a machine sending as the gateway dropped on its own card. **And networks of one's own (`net.private`)**: a machine stands on its owner's private network and nowhere else — two networks never saw each other on the bench, one saw itself; a machine went out to the web through its gateway and the lane saw the gateway's address only; nothing came in through it, even from a node given a route; its owner's key jumped through to the network and to nothing else (the lane, the other network, the gateway itself, the web: each refused), got no shell, and no other key passed ([docs/proxmox.md](docs/proxmox.md#networks)). **Into the operator's own side, by endpoints** (designed, §7): where a zone publishes services, a network reaches its endpoints and the zone's resolvers there and nothing else, refused at its gateway — read on a bench with a draft of the gateway's recipe: the endpoint reached, another port of the same address and the node's ssh refused and counted, the resolver and the web answering; a gateway handed a line it cannot read forwarded nothing ([docs/proxmox.md](docs/proxmox.md#endpoints--designed)) |
+| **4. The network** | a zone's network is the operator's: the product assumes a lane where machines reach only what the operator allows; **where the zone keeps a wall (`net.firewall`) each machine is alone on it** — born behind the engine's firewall, nothing in but what the operator's own groups let, sending only as the address it was given | **built** for Proxmox, as the zone's own switch ([docs/proxmox.md](docs/proxmox.md#addresses-and-the-wall)): proved on a bench — a neighbour pinging from before a machine's birth never answered, a machine sending as the gateway dropped on its own card. **And networks of one's own (`net.private`)**: a machine stands on its owner's private network and nowhere else — two networks never saw each other on the bench, one saw itself; a machine went out to the web through its gateway and the lane saw the gateway's address only; nothing came in through it, even from a node given a route; its owner's key jumped through to the network and to nothing else (the lane, the other network, the gateway itself, the web: each refused), got no shell, and no other key passed ([docs/proxmox.md](docs/proxmox.md#networks)). **Into the operator's own side, by endpoints** (**built**, §7): where a zone publishes services, a network reaches its endpoints and the zone's resolvers there and nothing else, refused at its gateway — proved on a bench with recipe 2: the endpoint reached, another port of the same address and the node's ssh refused and counted, the resolver and the web answering; a change written to a running gateway and taken at its restart; a gateway handed a line it cannot read forwarded nothing, and the next look wrote it again; its owner's jump as before ([docs/proxmox.md](docs/proxmox.md#endpoints)) |
 | **5. The machine** | untrusted users get **VMs** (their own kernel); containers are for trusted operators. **Into a machine: its owner, and nobody through the cloud but them** — its terminal is refused to an operator and to anyone it is shared with, in the API; what passes is never kept. Root on the engine's node can open any guest's console: that is the operator's own machine, and it is said | a tier's `kind` choice limit enforces the first; **built** for the terminal — proved on a bench in a real browser: another person and an operator refused, the audit holding the opening and the closing and nothing typed |
 
 **What it cannot promise:** a hypervisor flaw lets a VM reach its host — so
@@ -1060,11 +1087,13 @@ of the engines'.
 | A machine that names no network is put on its owner's default, made by the brain | nobody has to learn the word network to be alone by default (AWS's default VPC); refusing instead would be two steps for everyone |
 | What has members is not deleted (a reference's `x-hangar-member`); a member goes freely | a network deleted under its machines would leave them on a wire the next network is given |
 | `hangar check` — and a start — hold each zone's options against its driver's own reading, the engine not reached; an option a driver does not know is refused | a file that could never open a zone came back « sound »; and a word mistyped is a lever left off with nobody told |
-| *(Designed.)* A network reaches the operator's own side through **endpoints** the brain admits — a service the operator publishes, an endpoint an owner asks for — never by joining a people's VPN, nor by a row the operator writes per network | the clouds' two roads: people by a VPN, machines by one service at a time (PrivateLink, Private Service Connect, Private Link); the exception becomes a request within a tier, audited, and the operator's row stops following each network's address |
-| *(Designed.)* An endpoint lets its network reach **the service's own address**, as AWS's gateway endpoints do for its own services — not an address of the network's own (PrivateLink's interface endpoint), which is left for an owner's service published to another owner | what the operator publishes is their own, already named: its names, its certificates and its passwords keep working unchanged in the machines; an address inside each network would need each name to point there first (a resolver per network) and spend the network's ten reserved addresses |
-| *(Designed.)* An endpoint is a type of the **networks** plugin, not a plugin of its own | the gateway is the networks plugin's to write: a plugin of its own would need a second key on the same guests (each plugin its own key and nothing else); AWS files a VPC endpoint under the VPC too |
-| *(Designed.)* A gateway carries its endpoints **in its engine's record of it** (Proxmox VE's container `env`), read at each start; a change is written again and the gateway restarted | it keeps nothing, as before: what it is, is its archive and what its engine wrote; the networks plugin's role already holds the right, so no privilege more. Set aside: the gateway asking the brain at boot, as a metadata service (a door into the brain from the lane where every network's traffic comes out, and no gateway starting without the brain); the services baked into the archive (every publish a new archive and every gateway made again) |
-| *(Designed.)* A zone that publishes services keeps its private side behind endpoints; a zone that publishes none is as it always was; a gateway forwards nothing until its rules stand | the router's one row per service opens it to every gateway, so the gateway must refuse what no endpoint names; an operator who publishes nothing loses nothing; a gateway that could not read its endpoints fails closed |
+| A network reaches the operator's own side through **endpoints** the brain admits — a service the operator publishes, an endpoint an owner asks for — never by joining a people's VPN, nor by a row the operator writes per network | the clouds' two roads: people by a VPN, machines by one service at a time (PrivateLink, Private Service Connect, Private Link); the exception becomes a request within a tier, audited, and the operator's row stops following each network's address |
+| An endpoint lets its network reach **the service's own address**, as AWS's gateway endpoints do for its own services — not an address of the network's own (PrivateLink's interface endpoint), which is left for an owner's service published to another owner | what the operator publishes is their own, already named: its names, its certificates and its passwords keep working unchanged in the machines; an address inside each network would need each name to point there first (a resolver per network) and spend the network's ten reserved addresses |
+| An endpoint is a type of the **networks** plugin, not a plugin of its own | the gateway is the networks plugin's to write: a plugin of its own would need a second key on the same guests (each plugin its own key and nothing else); AWS files a VPC endpoint under the VPC too |
+| A gateway carries its endpoints **in its engine's record of it** (Proxmox VE's container `env`), read at each start; a change is written again and the gateway restarted | it keeps nothing, as before: what it is, is its archive and what its engine wrote; the networks plugin's role already holds the right, so no privilege more. Set aside: the gateway asking the brain at boot, as a metadata service (a door into the brain from the lane where every network's traffic comes out, and no gateway starting without the brain); the services baked into the archive (every publish a new archive and every gateway made again) |
+| A zone that publishes services keeps its private side behind endpoints; a zone that publishes none is as it always was; a gateway forwards nothing until its rules stand | the router's one row per service opens it to every gateway, so the gateway must refuse what no endpoint names; an operator who publishes nothing loses nothing; a gateway that could not read its endpoints fails closed |
+| A zone's archive says it reads endpoints **by its file's name** (`hangar-gateway-<recipe>…`, 2 or later), and its node by the version its API gives | the recipe already advises naming its archive after its version, and the brain cannot read inside an archive through the API; a name that says no recipe is refused where services are published, never guessed |
+| An endpoint's network is named by a reference marked **`x-hangar-own`** beside `x-hangar-member` — and a member of the same plugin is a **part**: its plugin is handed a resource with its parts, and a part's create and delete hold what it stands on | a member may name what is shared, an attachment holds both ends: neither is « my own, and holds its delete » alone. Set aside: the plugin keeping each network's endpoints itself (it keeps nothing), or adding a line at a time to what the engine holds (a line nobody holds would stay; two creates at once would each write what it read) |
 
 **Set aside:** an EC2 API clone (nothing maintained speaks it for the engines
 this targets — OpenStack's EC2 layer, CloudStack's `ec2stack`, Eucalyptus and

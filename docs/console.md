@@ -291,7 +291,7 @@ property** is a field. Its control comes from the schema alone:
 
 | the property | its control |
 |---|---|
-| `x-hangar-ref: <type>` (a string) | a list of what may be named: yours and what is shared with you in the zone, what is not usable shown and locked — and **`@<schedule>` — the newest**, for what a schedule makes; with `x-hangar-attached`, yours only |
+| `x-hangar-ref: <type>` (a string) | a list of what may be named: yours and what is shared with you in the zone, what is not usable shown and locked — and **`@<schedule>` — the newest**, for what a schedule makes; with `x-hangar-attached` or `x-hangar-own`, yours only |
 | an array whose items carry `x-hangar-ref` | a box per resource |
 | `x-hangar-share: true` | a box per group you are in, and *everyone* — on a type's field, and on an action's param that sets it (the images plugin's `share`) |
 | `enum` | chips when it has a default and few values, a list otherwise |

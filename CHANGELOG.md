@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- **Les points de service — endpoints: a network reaches the operator's own
+  side through the services the zone publishes, one endpoint at a time**
+  (ARCHITECTURE §7 « Endpoints », AWS's gateway endpoints). The operator
+  publishes services per zone in the networks plugin's settings —
+  `zones.<zone>.services` (a name, a line of description, `to`:
+  `address:port`, `/udp` for a datagram service) and `private`, their side
+  (unsaid: RFC 1918, RFC 6598 and link-local); a service outside it is
+  refused when the zone opens (« every network would reach it »), and a zone
+  that publishes services where its driver cannot carry endpoints is refused
+  there, saying why. **A zone that publishes nothing is as it was.** A new
+  type of the networks plugin, **`endpoint` (`ep-…`)**: one network of its
+  owner's own and one service, both set at its birth; its page says what it
+  reaches (`to`), what the service sees it as (`from`, its network's
+  gateway on the lane) and whether its gateway runs with it (`applied`);
+  bounded by `networks.endpoints` and the choice `networks.services` (a tier
+  that names neither makes none, and needs no change). A network that holds
+  one is not deleted. **The gateway enforces it**: recipe 2 of
+  `tools/gateway/build.sh` — three sets in its forward chain (its
+  endpoints and the zone's resolvers on port 53 let through, the rest of
+  the private side refused and counted) and a unit, `hangar-endpoints`, that
+  fills them at each start from its container's `env` (Proxmox VE 9.1+),
+  **forwarding off until it has**: a word it cannot read leaves its network
+  with no way out, never an open one. The Proxmox driver advertises
+  **`net.endpoints`** on 9.1 or later where `net_archive` is named after
+  recipe 2 or later (`hangar-gateway-2.tar.zst`); it writes the env at a
+  gateway's birth and again at a change, reads both what is written and
+  what a running gateway runs with (`/pending`), and starts a running
+  gateway again while they differ — its network's way out cut for seconds;
+  a look writes back a record that differs (`repaired`). No privilege more:
+  `env` falls to `VM.Config.Options`, which the networks role holds. **Two
+  marks of the core**: `"x-hangar-own": true` — a reference that names its
+  owner's own alone, never what is shared with them (with
+  `x-hangar-member`, it also holds its target's delete) —, and **parts**: a
+  member of a type of the same plugin is handed with what it stands on
+  (`Resource.members`), and its create and delete hold that resource while
+  they are asked, so a gateway is always written the whole of its
+  endpoints, by one writer. The protocol gains `Resource.members` and
+  `DeleteRequest.refs`. The console lists only your own networks for an
+  endpoint; the command line has `hangar endpoint` from the schema.
+  **Upgrade**: build the archive of recipe 2 on each node and name it in
+  `net_archive` (every gateway is made again at the next look, born with
+  its endpoints); then publish services. Bench tests:
+  `TestBenchAnEndpoint`, and `TestBenchANetworkThroughTheAPI` with one
+  endpoint.
+
 - **Le compte de la naissance — a run's launch says its wait apart from its
   machine's birth.** The engine event « launched on m-… (2x4): born N s,
   answering M s » counted from before the first ask, so a run that waited

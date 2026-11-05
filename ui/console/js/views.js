@@ -322,8 +322,10 @@ async function refsFor(ctx, fields, zoneName) {
     }
     out[type] = [...[...schedules].sort().map((s) => ({value: '@' + s, own: false, label: `@${s} — the newest ${s}`})), ...opts];
   }));
-  // what a thing is plugged into is one's own: nobody plugs into someone else's
-  for (const f of fields) if (f.ref && f.attached) out[f.ref] = (out[f.ref] || []).filter((o) => o.own);
+  // what a thing is plugged into is one's own: nobody plugs into someone else's;
+  // nor names what someone shares where its field says its owner's own (an
+  // endpoint's network)
+  for (const f of fields) if (f.ref && (f.attached || f.own)) out[f.ref] = (out[f.ref] || []).filter((o) => o.own);
   return out;
 }
 

@@ -435,8 +435,11 @@ the bench) and ran 40 s after it was asked.
 [`tools/gateway/build.sh`](../tools/gateway/build.sh) makes it from
 Proxmox's own Debian 13 container archive, as root on a node (15 s): nothing
 is fetched and nothing is run inside — it is unpacked, a handful of files
-are written (the `jump` user, `sshd_config`, `nftables.conf`, forwarding on,
-what a gateway has no use for off), and it is packed again.
+are written (the `jump` user, `sshd_config`, `nftables.conf`, the unit that
+reads its endpoints and only then turns forwarding on, what a gateway has no
+use for off), and it is packed again. **Recipe 2** is the first that reads
+endpoints ([below](#endpoints)): a zone that publishes services needs its
+archive.
 
 ```sh
 sh tools/gateway/build.sh /var/lib/vz/template/cache/debian-13-standard_13.6-1_amd64.tar.zst \
@@ -466,7 +469,7 @@ the gateway, and opened through it neither the lane's node, nor the other
 gateway, nor a machine of the other network, nor the gateway itself, nor the
 web.
 
-### Endpoints — designed
+### Endpoints
 
 What a network may reach of the operator's private side (ARCHITECTURE §7,
 « Endpoints ») is carried **in the gateway's own config**: a container's
@@ -482,13 +485,29 @@ HANGAR_PRIVATE=192.0.2.0/24                                 # the operator's sid
 ```
 
 A zone that publishes no service writes none, and its gateways are as they
-were. The gateway's archive (a recipe that reads them — the next one) gains
-three sets in its forward chain — its endpoints, accepted; the resolvers on
-port 53, accepted; the private side, refused and counted — ahead of its
-network's way out, and a unit that fills them from `/proc/1/environ` after
-`nftables` starts; **forwarding stays off until it has**. A line written to
-a running gateway waits in its pending config until its restart (the
-networks plugin then restarts it); a stopped one takes it at its next start.
+were. The gateway's archive (**recipe 2**) has three sets in its forward
+chain — its endpoints, accepted; the resolvers on port 53, accepted; the
+private side, refused and counted — ahead of its network's way out, and a
+unit, `hangar-endpoints`, that fills them from `/proc/1/environ` after
+`nftables` starts; **forwarding stays off until it has**, and a word it
+cannot read (each is matched whole: a protocol, a dotted address, a port, a
+range) stops it there — its network with no way out, its journal saying
+which word. A line written to a running gateway waits in its pending config
+until its restart; the driver reads both — what is written
+(`…/pending`'s `pending`) and what it runs with (its `value`) — writes what
+differs, and starts a running gateway again while they differ; a stopped
+one takes it at its next start.
+
+**Where the driver carries them** (`net.endpoints`): a zone that cuts
+networks, on a Proxmox VE of 9.1 or later (its API's `/version`), whose
+`net_archive` is named after recipe 2 or later — `hangar-gateway-2.tar.zst`,
+as `build.sh --help` advises. Elsewhere the networks plugin refuses a zone
+that publishes services, in words: « it publishes logs (settings), and its
+gateways' archive local:vztmpl/hangar-gateway-1.tar.zst is not named after a
+recipe that reads endpoints ». A new archive name makes every gateway again
+at the brain's next look, as before — born with its endpoints.
+
+**The design's reads**, before the build:
 
 **Read on a bench** (Proxmox VE 9.2.25, 2026-11-05: a Proxmox VE made of a
 machine of a zone; a draft of the recipe — the rules and the unit above,
@@ -969,7 +988,8 @@ zones:
       net_vmids: 11200-11201       #   their gateways' ids: a network's number is its gateway's less the first
       net_pool: hangar-nets        #   the gateways' own pool
       net_address: 192.0.2.200     #   the first gateway's address on the lane; the n-th's is that + n
-      net_archive: local:vztmpl/hangar-gateway-1.tar.zst   # what a gateway is born from (tools/gateway/build.sh)
+      net_archive: local:vztmpl/hangar-gateway-2.tar.zst   # what a gateway is born from (tools/gateway/build.sh):
+                                   #   named after its recipe — 2 or later carries endpoints
       ca_file: /etc/hangar/pve-root-ca.pem   # or fingerprint: <sha256 of the API's certificate>
     room:
       memory_gb: 62
@@ -997,6 +1017,13 @@ plugins:
     zones: [lab]
     credentials:
       lab: {file: /run/secrets/pve-networks-token} # its own: the gateways, and the machines read
+    settings:
+      zones:
+        lab:                       # what a network may reach of the operator's side: by an endpoint
+          services:
+            - {name: logs, description: "the log store's push door", to: "192.0.2.35:3101"}
+            - {name: syslog, to: "192.0.2.35:514/udp"}
+          private: [192.0.2.0/24]  # the operator's side (unsaid: the private ranges)
   - name: images
     builtin: images
     zones: [lab]

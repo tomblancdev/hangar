@@ -31,6 +31,7 @@ export function fieldsOf(schema) {
       desc: p.description || '',
       ref: p['x-hangar-ref'] || items['x-hangar-ref'] || '',
       attached: p['x-hangar-attached'] === true,
+      own: p['x-hangar-own'] === true,
       share: p['x-hangar-share'] === true,
       required: required.includes(name),
       min: p.minimum,
