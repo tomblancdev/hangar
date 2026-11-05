@@ -52,7 +52,8 @@ lines of its own to the syslog address (started; ended, with the exit and
 the OOM flag), and powers the machine off whatever the end (`--init` gives
 the worker a PID 1 that forwards `docker stop`'s SIGTERM and reaps its
 steps). An engine event says « launched on m-… (2x4): born N s, answering
-M s ». **A worker that ends before its run starts** (an image that does not
+M s », counted from the ask that got the machine — an ask that waited says
+it apart first: « waited W s for room, born N s … ». **A worker that ends before its run starts** (an image that does not
 load its code, say) **fails the run then**, with its exit, instead of
 leaving it STARTING until `start_timeout`: health is asked only of a started
 run. The env reaches the worker's command, not an image's `ENTRYPOINT`. The run's status is

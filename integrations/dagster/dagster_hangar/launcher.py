@@ -345,12 +345,14 @@ class HangarRunLauncher(RunLauncher, ConfigurableClass):
             sh = self._shell(s)
             private, public = sh.host_key()
             spec = self._spec(run, s, size, private, public)
-            t0 = time.monotonic()
+            first = time.monotonic()
             asked = True
             got = self._create(brain, run, s, size, spec, wake)
             if got is None:
                 return
-            res, op = got
+            # its birth is counted from the ask that got it: a room's wait is
+            # said apart, never as a slow birth
+            res, op, t0, waited = got
             machine = res["id"]
             self._instance.add_run_tags(run_id, {MACHINE_TAG: machine})
             if self._gone(run_id):
@@ -373,7 +375,8 @@ class HangarRunLauncher(RunLauncher, ConfigurableClass):
             self._start(run, sh, target, s, image, env, sockets)
             started = True
             lent = f", {len(sockets)} sockets lent" if sockets else ""
-            self._event(run_id, f"launched on {machine} ({size}): born {born:.0f} s, answering {answering:.0f} s{lent}")
+            wait = f"waited {t0 - first:.0f} s for {waited}, " if waited else ""
+            self._event(run_id, f"launched on {machine} ({size}): {wait}born {born:.0f} s, answering {answering:.0f} s{lent}")
             self._watch_start(run_id, sh, target, brain, machine)
         except Exception as e:  # anything it could not do fails the run, its machine with it
             if started:
@@ -457,26 +460,30 @@ class HangarRunLauncher(RunLauncher, ConfigurableClass):
         return spec
 
     def _create(self, brain: Brain, run: DagsterRun, s: Settings, size: Size, spec: dict[str, Any],
-                wake: threading.Event) -> tuple[dict[str, Any], dict[str, Any]] | None:
+                wake: threading.Event) -> tuple[dict[str, Any], dict[str, Any], float, str] | None:
         """Asks for the machine, waiting out a room held or a brain that does
         not answer up to room_patience; None: the run went meanwhile. The run's
         id is its client token — a refusal keeps nothing of it, so asked again
         it is a new ask, and an ask that reached the brain twice is one
-        machine."""
+        machine. Returned with the moment the ask that got it left, and what
+        it waited for before ("": nothing)."""
         deadline = time.monotonic() + s.room_patience
         said = ""
+        waited: list[str] = []
         job = run.job_name or ""
         while True:
             if self._gone(run.run_id):
                 return None
+            sent = time.monotonic()
             try:
-                return brain.create(
+                res, op = brain.create(
                     "machine", s.zone, spec,
                     name=f"run-{run.run_id[:8]}",
                     description=f"Dagster run {run.run_id} · {job}"[:256],
                     tags={RUN_ID_TAG: run.run_id, JOB_TAG: job[:256]},
                     client_token=run.run_id,
                 )
+                return res, op, sent, " and ".join(waited)
             except Problem as p:
                 # a room held, a reference that moved while it asked, a brain
                 # that is not itself (a plugin starting again): asked again
@@ -485,6 +492,9 @@ class HangarRunLauncher(RunLauncher, ConfigurableClass):
                 kind, why = p.kind or str(p.status), p.detail
             except Unreachable as e:
                 kind, why = "unreachable", f"Le Hangar does not answer: {e}"
+            what = {"room": "room", "busy": "a reference that moved"}.get(kind, "the brain")
+            if what not in waited:
+                waited.append(what)
             if time.monotonic() >= deadline:
                 raise LaunchFailed(f"no machine ({size}) after {s.room_patience:.0f} s: {why}")
             if said != kind:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import tarfile
 import textwrap
 import time
@@ -129,7 +130,7 @@ def test_every_run_gets_a_machine_of_the_default_size(hangar, lake, shell, key_f
         assert run.run_id in argv[i + 4]
         assert "run.env" not in files
         launched = [m for m in messages(instance, run.run_id) if m.startswith("launched on")]
-        assert launched and f"launched on {machine} (2x4)" in launched[0]
+        assert launched and f"launched on {machine} (2x4): born " in launched[0], launched  # no wait: none said
 
 
 def test_a_tag_names_a_bigger_machine(hangar, lake, shell, key_file):
@@ -230,6 +231,25 @@ def test_a_room_held_is_waited_out(hangar, lake, shell, key_file):
         assert run.tags[MACHINE_TAG] and shell.started()
 
 
+def test_the_rooms_wait_is_said_apart_from_the_birth(hangar, lake, shell, key_file):
+    """A refused ask, then a granted one: the launch says the wait, and its
+    birth counted from the ask that got the room — never the wait as a slow
+    birth."""
+    hangar.held(True)
+    with dagster_instance(config(hangar, lake, key_file), shell) as instance:
+        run = make_run(instance)
+        instance.launch_run(run.run_id, None)
+        wait_for("the wait said", lambda: [m for m in messages(instance, run.run_id) if m.startswith("waiting for its machine")])
+        time.sleep(4)
+        hangar.held(False)
+        wait_for("the thread ended", lambda: run.run_id not in instance.run_launcher._threads, timeout=30)
+        launched = [m for m in messages(instance, run.run_id) if m.startswith("launched on")]
+        said = re.search(r"\(2x4\): waited (\d+) s for room, born (\d+) s, answering (\d+) s$", launched[0] if launched else "")
+        assert said, messages(instance, run.run_id)
+        waited, born, answering = map(int, said.groups())
+        assert waited >= 4 and born <= answering < waited, launched
+
+
 def test_a_brain_answers_5xx_is_asked_again(hangar, lake, shell, key_file, monkeypatch):
     real, calls = Brain.create, []
 
@@ -245,6 +265,8 @@ def test_a_brain_answers_5xx_is_asked_again(hangar, lake, shell, key_file, monke
         assert run.tags[MACHINE_TAG] and shell.started(), messages(instance, run.run_id)
         waits = [m for m in messages(instance, run.run_id) if m.startswith("waiting for its machine")]
         assert len(waits) == 1 and "plugin machines is down" in waits[0], waits
+        launched = [m for m in messages(instance, run.run_id) if m.startswith("launched on")]
+        assert launched and re.search(r": waited \d+ s for the brain, born ", launched[0]), launched
 
 
 def test_a_room_held_past_its_patience_fails_the_run(hangar, lake, shell, key_file):

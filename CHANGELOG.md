@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Le compte de la naissance — a run's launch says its wait apart from its
+  machine's birth.** The engine event « launched on m-… (2x4): born N s,
+  answering M s » counted from before the first ask, so a run that waited
+  out a `409 room` read as a slow birth (« born 134 s » for a machine made
+  10 s after the ask that got the room). Both are now counted from the ask
+  that got the machine, and an ask that waited says it first, by what it
+  waited for: « waited 120 s for room, born 12 s, answering 17 s » (« for
+  the brain » when it did not answer or answered 5xx, « for a reference
+  that moved » for a `409 busy`); with no wait, nothing more is said.
+
 ## v0.8.0 — 2026-11-01
 
 - **Le lanceur de Dagster — Dagster's runs, each on a machine.** A new
