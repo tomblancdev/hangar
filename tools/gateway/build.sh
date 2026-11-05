@@ -32,7 +32,7 @@
 #     cannot set).
 set -eu
 
-version=1
+version=2-draft
 
 case "${1:-}" in
 -h | --help | help | "")
@@ -125,9 +125,17 @@ table inet gateway {
 		iifname "eth0" tcp dport 22 accept comment "the jump: who may knock is the zone's wall's to say"
 		counter drop comment "refused: in"
 	}
+	# filled at each start from the gateway's own config (hangar-endpoints.service):
+	# what its network may reach of the zone's private side, and that side itself
+	set endpoints { type ipv4_addr . inet_proto . inet_service; }
+	set resolvers { type ipv4_addr; }
+	set private { type ipv4_addr; flags interval; }
 	chain forward {
 		type filter hook forward priority filter; policy drop;
 		ct state established,related accept
+		iifname "eth1" oifname "eth0" ip daddr . meta l4proto . th dport @endpoints counter accept comment "its endpoints"
+		iifname "eth1" oifname "eth0" ip daddr @resolvers meta l4proto { tcp, udp } th dport 53 accept comment "the zone's resolvers"
+		iifname "eth1" oifname "eth0" ip daddr @private counter drop comment "refused: the private side, no endpoint"
 		iifname "eth1" oifname "eth0" accept comment "its network, out"
 		counter drop comment "refused: through"
 	}
@@ -150,7 +158,50 @@ chmod 755 "$work/etc/nftables.conf"
 mkdir -p "$work/etc/systemd/system/sysinit.target.wants"
 ln -sf /usr/lib/systemd/system/nftables.service "$work/etc/systemd/system/sysinit.target.wants/nftables.service"
 
-printf 'net.ipv4.ip_forward = 1\nnet.ipv6.conf.all.disable_ipv6 = 1\n' >"$work/etc/sysctl.d/90-hangar-gateway.conf"
+# forwarding stays OFF until the endpoints' rules stand (hangar-endpoints turns it on)
+printf 'net.ipv4.ip_forward = 0\nnet.ipv6.conf.all.disable_ipv6 = 1\n' >"$work/etc/sysctl.d/90-hangar-gateway.conf"
+
+# ---- its endpoints: read from its own config, at each start ---------------
+# Proxmox VE (9.1+) hands a container's `env` to its first process; the brain's
+# networks plugin writes there what this network may reach. Nothing is kept.
+mkdir -p "$work/usr/local/sbin"
+cat >"$work/usr/local/sbin/hangar-endpoints" <<'EOS'
+#!/bin/sh
+# the gateway's endpoints, from its first process's environment -> its rules
+set -eu
+envf=/proc/1/environ
+get() { tr '\0' '\n' <"$envf" | sed -n "s/^$1=//p" | tail -1; }
+eps=$(get HANGAR_ENDPOINTS); res=$(get HANGAR_RESOLVERS); priv=$(get HANGAR_PRIVATE)
+{
+	echo "flush set inet gateway endpoints"
+	echo "flush set inet gateway resolvers"
+	echo "flush set inet gateway private"
+	for e in $eps; do                      # proto:address:port
+		proto=${e%%:*}; rest=${e#*:}; addr=${rest%:*}; port=${rest##*:}
+		echo "add element inet gateway endpoints { $addr . $proto . $port }"
+	done
+	for r in $res; do echo "add element inet gateway resolvers { $r }"; done
+	for p in $priv; do echo "add element inet gateway private { $p }"; done
+} | nft -f -
+sysctl -q -w net.ipv4.ip_forward=1
+echo "hangar-endpoints: endpoints [$eps] resolvers [$res] private [$priv]"
+EOS
+chmod 755 "$work/usr/local/sbin/hangar-endpoints"
+cat >"$work/etc/systemd/system/hangar-endpoints.service" <<'EOS'
+[Unit]
+Description=the gateway's endpoints, from its own config
+Requires=nftables.service
+After=nftables.service
+Before=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/hangar-endpoints
+[Install]
+WantedBy=multi-user.target
+EOS
+mkdir -p "$work/etc/systemd/system/multi-user.target.wants"
+ln -sf /etc/systemd/system/hangar-endpoints.service "$work/etc/systemd/system/multi-user.target.wants/hangar-endpoints.service"
 
 # ---- off: what a gateway has no use for -------------------------------------
 for unit in postfix.service postfix@.service cron.service e2scrub_reap.service e2scrub_all.timer \
