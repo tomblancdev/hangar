@@ -880,7 +880,7 @@ pieces:
   services:
     - {name: logs, description: "the log store's push door", to: "192.0.2.35:3101"}
     - {name: syslog, to: "192.0.2.35:514/udp"}
-  private: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10]   # the default, said
+  private: [192.0.2.0/24]   # said, since its services are there; unsaid, the private ranges
   ```
 
   `private` is **the operator's side**: what a network of the zone reaches

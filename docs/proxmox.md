@@ -478,7 +478,7 @@ gateway's birth and again when its network's endpoints change:
 ```text
 HANGAR_ENDPOINTS=tcp:192.0.2.35:3101 udp:192.0.2.35:514    # protocol:address:port, its network's endpoints
 HANGAR_RESOLVERS=192.0.2.1                                  # the zone's nameserver: port 53 let through
-HANGAR_PRIVATE=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10   # the operator's side
+HANGAR_PRIVATE=192.0.2.0/24                                 # the operator's side (the zone's private)
 ```
 
 A zone that publishes no service writes none, and its gateways are as they
@@ -507,7 +507,7 @@ listeners at the lane's node. Also read in 9.2.21's source, `PVE/LXC.pm`):
 | a second endpoint written to the running gateway | pending until its restart, and nothing changed meanwhile (`:3102` still refused) |
 | the restart, through the same token, a connection to the endpoint every 0.2 s | **the network's way out cut 7.4 s**; then both endpoints reached, the ssh still refused |
 | the field removed (a zone that publishes nothing) | everything the lane lets out reached, as with recipe 1 |
-| a line the unit cannot read (`tcp:999.1.1.1:80`) | the unit failed, forwarding stayed off: the web refused — closed, never open |
+| a line the unit cannot read (`tcp:999.1.1.1:80`) | the unit failed, forwarding stayed off: the web refused — closed, never open | <!-- no-environment: ok — the line the bench read, an address of nobody's -->
 | a gateway's create, then its start | 13.6 s, 5.5 s; at rest it holds 19 MB |
 
 Not read again on that bench: the jump, whose sshd and input and output
