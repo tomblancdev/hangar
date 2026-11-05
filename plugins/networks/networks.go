@@ -37,6 +37,11 @@
 // Limits: networks.count, and the choice networks.visibility (private,
 // shared, public).
 //
+// A second type, endpoint (ep-…): one network of its owner's may reach one
+// service the zone's operator publishes on their own side (endpoints.go) —
+// networks.endpoints, and the choice networks.services. It requires
+// net.endpoints.
+//
 // It requires fence.pool and net.private.
 package networks
 
@@ -142,10 +147,14 @@ type Plugin struct {
 
 	mu    sync.RWMutex
 	zones map[string]driver.Driver
+	// published: each zone's services and private side, as its settings say
+	published map[string]published
 }
 
 // New returns a plugin with no zone configured.
-func New() *Plugin { return &Plugin{zones: map[string]driver.Driver{}} }
+func New() *Plugin {
+	return &Plugin{zones: map[string]driver.Driver{}, published: map[string]published{}}
+}
 
 // Driver returns the driver opened for a zone (tests reach the engine).
 func (p *Plugin) Driver(zone string) driver.Driver {
@@ -168,27 +177,50 @@ func (p *Plugin) Describe(context.Context, *pluginpb.DescribeRequest) (*pluginpb
 				{Name: "share", Description: "Say whom it is shared with: groups you are in, * = everyone, [] = no one but you. They put machines on it; only you change or delete it.",
 					ParamsSchema: []byte(shareSchema), ChangesUsage: true},
 			},
+		}, {
+			Name: "endpoint", IdPrefix: "ep", Title: "Endpoint",
+			Description: "A network of yours may reach one service the zone's operator publishes on their own side, and nothing else of it: its gateway lets that one through. Made or deleted, its network's way out is cut for seconds while its gateway starts again.",
+			Schema:      []byte(endpointSchema),
+			Requires:    []string{driver.NetEndpoints},
 		}},
 		Dimensions: []*pluginpb.Dimension{
 			{Name: "networks.count", Kind: pluginpb.DimensionKind_DIMENSION_KIND_QUANTITY, Description: "How many networks."},
 			{Name: "networks.visibility", Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "Whom they are shared with: private, shared (groups), public (everyone)."},
+			{Name: "networks.endpoints", Kind: pluginpb.DimensionKind_DIMENSION_KIND_QUANTITY, Description: "How many endpoints: a network reaching one service of the operator's."},
+			{Name: "networks.services", Kind: pluginpb.DimensionKind_DIMENSION_KIND_CHOICE, Description: "Which of the operator's services endpoints may reach, by name."},
 		},
 		Requires: []string{driver.FencePool, driver.NetPrivate},
 		Credential: &pluginpb.Credential{Required: false,
 			Description: "Per zone, the engine's credential fenced to the product's own guests, allowed the networks' gateways and nothing of the machines but to read them (Proxmox: an API token, user@realm!name=secret — the least it needs is in docs/proxmox.md). None for the fake engine."},
-		Events: []string{"network.created", "network.deleted", "network.key_pairs_set", "network.shared", "network.repaired"},
+		Events: []string{"network.created", "network.deleted", "network.key_pairs_set", "network.shared", "network.repaired",
+			"endpoint.created", "endpoint.deleted"},
 	}, nil
 }
 
 func (p *Plugin) Configure(ctx context.Context, req *pluginpb.ConfigureRequest) (*pluginpb.ConfigureResponse, error) {
+	var set Settings
+	if err := sdk.Decode(req.GetSettings(), &set); err != nil {
+		return nil, err
+	}
+	for name := range set.Zones {
+		if !slices.ContainsFunc(req.GetZones(), func(z *pluginpb.ZoneConfig) bool { return z.GetName() == name }) {
+			return nil, sdk.Refuse("settings: zones: %s: the plugin is not enabled there", name)
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, d := range p.zones {
 		_ = d.Close()
 	}
 	p.zones = map[string]driver.Driver{}
+	p.published = map[string]published{}
 	resp := &pluginpb.ConfigureResponse{}
 	for _, z := range req.GetZones() {
+		pub, err := readZone(set.Zones[z.GetName()])
+		if err != nil {
+			resp.Zones = append(resp.Zones, &pluginpb.ZoneReport{Name: z.GetName(), Error: "settings: " + err.Error()})
+			continue
+		}
 		d, err := driver.Open(ctx, z.GetDriver(), driver.Params{
 			Zone: z.GetName(), Endpoint: z.GetEndpoint(), Options: z.GetOptions(), Credential: z.GetCredential(), Watch: z.GetWatch(),
 		})
@@ -206,7 +238,14 @@ func (p *Plugin) Configure(ctx context.Context, req *pluginpb.ConfigureRequest) 
 			resp.Zones = append(resp.Zones, &pluginpb.ZoneReport{Name: z.GetName(), Error: "not fenced: " + f.FenceReport()})
 			continue
 		}
+		if pub.publishes() && !slices.Contains(d.Capabilities(), driver.NetEndpoints) {
+			_ = d.Close()
+			resp.Zones = append(resp.Zones, &pluginpb.ZoneReport{Name: z.GetName(),
+				Error: fmt.Sprintf("it publishes %s (settings), and %s", strings.Join(pub.names(), ", "), whyNoEndpoints(d))})
+			continue
+		}
 		p.zones[z.GetName()] = d
+		p.published[z.GetName()] = pub
 		resp.Zones = append(resp.Zones, &pluginpb.ZoneReport{Name: z.GetName(), Capabilities: d.Capabilities()})
 	}
 	return resp, nil
@@ -323,6 +362,9 @@ func next(cur Spec, action string, raw []byte, refs []*pluginpb.Resource) (Spec,
 }
 
 func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.PlanResponse, error) {
+	if req.GetType() == "endpoint" {
+		return p.planEndpoint(req)
+	}
 	if req.GetType() != "network" {
 		return nil, sdk.Refuse("no type %q here", req.GetType())
 	}
@@ -357,6 +399,9 @@ func (p *Plugin) Plan(_ context.Context, req *pluginpb.PlanRequest) (*pluginpb.P
 // through set_key_pairs, whom it is shared with through share. Nothing of a
 // network is set at its birth but what its engine gave it.
 func (p *Plugin) PlanChange(_ context.Context, req *pluginpb.PlanChangeRequest) (*pluginpb.PlanChangeResponse, error) {
+	if req.GetCurrent().GetType() == "endpoint" {
+		return planEndpointChange(req)
+	}
 	if req.GetCurrent().GetType() != "network" {
 		return nil, sdk.Refuse("no type %q here", req.GetCurrent().GetType())
 	}
@@ -421,17 +466,23 @@ func (p *Plugin) network(r *pluginpb.Resource) (driver.Networks, Spec, error) {
 	return n, s, nil
 }
 
-func specOf(r *pluginpb.Resource, s Spec) driver.NetworkSpec {
-	return driver.NetworkSpec{ID: r.GetId(), Label: sdk.Label(r, "network"), JumpKeys: s.Keys}
+// specOf is what a network's gateway is brought to: its keys, and what its
+// endpoints let through (handed with it, Resource.members).
+func (p *Plugin) specOf(r *pluginpb.Resource, s Spec) driver.NetworkSpec {
+	return driver.NetworkSpec{ID: r.GetId(), Label: sdk.Label(r, "network"), JumpKeys: s.Keys,
+		Endpoints: p.endpointsFor(r.GetZone(), r.GetMembers())}
 }
 
 func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*pluginpb.CreateResponse, error) {
 	r := req.GetResource()
+	if r.GetType() == "endpoint" {
+		return p.createEndpoint(ctx, req)
+	}
 	n, s, err := p.network(r)
 	if err != nil {
 		return nil, err
 	}
-	got, err := n.CreateNetwork(ctx, specOf(r, s))
+	got, err := n.CreateNetwork(ctx, p.specOf(r, s))
 	if err != nil {
 		return nil, engineErr(err)
 	}
@@ -441,6 +492,9 @@ func (p *Plugin) Create(ctx context.Context, req *pluginpb.CreateRequest) (*plug
 
 func (p *Plugin) Delete(ctx context.Context, req *pluginpb.DeleteRequest) (*pluginpb.DeleteResponse, error) {
 	r := req.GetResource()
+	if r.GetType() == "endpoint" {
+		return p.deleteEndpoint(ctx, req)
+	}
 	n, _, err := p.network(r)
 	if err != nil {
 		return nil, err
@@ -460,6 +514,9 @@ func wasAt(r *pluginpb.Resource) string {
 
 func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.ActResponse, error) {
 	r := req.GetResource()
+	if r.GetType() == "endpoint" {
+		return nil, sdk.Refuse("an endpoint has no action %q: it is made, and deleted", req.GetAction())
+	}
 	// every action is planned: the spec the core hands over is already the
 	// one the action asked for — the engine is brought to it, whether this is
 	// the first run or one resumed after the brain stopped half-way
@@ -476,7 +533,7 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 	default:
 		return nil, sdk.Refuse("no action %q on a network", req.GetAction())
 	}
-	got, _, err := n.TendNetwork(ctx, specOf(r, s), wasAt(r))
+	got, _, err := n.TendNetwork(ctx, p.specOf(r, s), wasAt(r))
 	if err != nil {
 		return nil, engineErr(err)
 	}
@@ -485,11 +542,14 @@ func (p *Plugin) Act(ctx context.Context, req *pluginpb.ActRequest) (*pluginpb.A
 
 func (p *Plugin) Reconcile(ctx context.Context, req *pluginpb.ReconcileRequest) (*pluginpb.ReconcileResponse, error) {
 	r := req.GetResource()
+	if r.GetType() == "endpoint" {
+		return p.reconcileEndpoint(ctx, req)
+	}
 	n, s, err := p.network(r)
 	if err != nil {
 		return nil, err
 	}
-	got, fixed, err := n.TendNetwork(ctx, specOf(r, s), wasAt(r))
+	got, fixed, err := n.TendNetwork(ctx, p.specOf(r, s), wasAt(r))
 	if errors.Is(err, driver.ErrNotFound) {
 		return &pluginpb.ReconcileResponse{Drift: pluginpb.Drift_DRIFT_MISSING, Detail: "the engine has no such network"}, nil
 	}

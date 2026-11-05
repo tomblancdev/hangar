@@ -143,10 +143,11 @@ type Driver struct {
 	listLag  time.Duration // pvestatd's pass: how late /cluster/resources may list a new guest
 	answerIn time.Duration // how long a node is given to answer a survey's question
 	// how often an open console looks at its guest's power; 0 = consoleLook
-	consoleLook time.Duration
-	watch       []string
-	caps        []driver.Capability
-	fenceErr    string // why fence.pool is not advertised, when it is not
+	consoleLook  time.Duration
+	watch        []string
+	caps         []driver.Capability
+	fenceErr     string // why fence.pool is not advertised, when it is not
+	endpointsErr string // why net.endpoints is not, where the zone cuts networks (endpoints.go)
 
 	// the walls written a moment ago, by VMID: a start waits for Proxmox to
 	// have them on the wire (net.go)
@@ -275,6 +276,9 @@ func Open(ctx context.Context, p driver.Params) (driver.Driver, error) {
 	}
 	if d.nets.on() {
 		d.caps = append(d.caps, driver.NetPrivate)
+		if d.endpointsErr = d.endpointsWhy(ver.Version); d.endpointsErr == "" {
+			d.caps = append(d.caps, driver.NetEndpoints)
+		}
 	}
 	why, perms, err := d.fence(ctx)
 	if err != nil {

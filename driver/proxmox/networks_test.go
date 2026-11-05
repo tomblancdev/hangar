@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -248,6 +249,9 @@ func newCluster(a *api) *node {
 			n.mu.Unlock()
 			data(w, map[string]any{"status": st, "mem": 20 << 20, "uptime": 7})
 			return true
+		case what == "pending" && r.Method == http.MethodGet:
+			data(w, []any{}) // no env: what a gateway of recipe 1 has
+			return true
 		case what == "status/start":
 			return act("start", true)
 		case what == "status/stop", what == "status/shutdown":
@@ -293,8 +297,8 @@ func TestANetworkIsItsGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := driver.Network{ID: "net-a", EngineRef: "node-a/lxc/11200", Node: "node-a", Label: "lab · network of alice",
-		Range: "203.0.113.0/27", Gateway: "203.0.113.1", Jump: "jump@198.51.100.200", Wall: driver.WallExact, Keys: 1}
-	if got != want {
+		Range: "203.0.113.0/27", Gateway: "203.0.113.1", Jump: "jump@198.51.100.200", Wall: driver.WallExact, Keys: 1, Lane: "198.51.100.200"}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("made as\n%+v, want\n%+v", got, want)
 	}
 	form := n.forms[11200]
@@ -326,7 +330,7 @@ func TestANetworkIsItsGateway(t *testing.T) {
 	// asked again — a create resumed — it is the same one, and nothing is written
 	g.wrote()
 	again, err := d.CreateNetwork(ctx, spec)
-	if err != nil || again != want || len(g.wrote()) != 0 || len(n.did()) != 0 {
+	if err != nil || !reflect.DeepEqual(again, want) || len(g.wrote()) != 0 || len(n.did()) != 0 {
 		t.Fatalf("a second create: %+v %v", again, err)
 	}
 	// the next network takes the next number, and everything follows from it
@@ -337,7 +341,7 @@ func TestANetworkIsItsGateway(t *testing.T) {
 	if n.forms[11201]["net1"] != "name=eth1,bridge=hgnets,tag=101,firewall=1,ip=203.0.113.33/27" || n.forms[11201]["ssh-public-keys"] != "" {
 		t.Fatalf("its gateway: %v", n.forms[11201])
 	}
-	if read, err := d.Network(ctx, "net-b"); err != nil || read != b {
+	if read, err := d.Network(ctx, "net-b"); err != nil || !reflect.DeepEqual(read, b) {
 		t.Fatalf("read back as %+v %v", read, err)
 	}
 	if _, err := d.Network(ctx, "net-none"); !errors.Is(err, driver.ErrNotFound) {

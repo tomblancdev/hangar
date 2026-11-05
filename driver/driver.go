@@ -46,13 +46,14 @@ const (
 	FencePool               Capability = "fence.pool"
 	NetFirewall             Capability = "net.firewall"
 	NetPrivate              Capability = "net.private"
+	NetEndpoints            Capability = "net.endpoints"
 )
 
 // Known lists every flag, in the order the documentation gives them.
 var Known = []Capability{
 	KindContainer, KindVM, ResizeLiveMemoryDown, ResizeLiveCPUCap, CPUHost, CPUNested, CPUWeight,
 	VolumeMoveBetweenGuests, GuestSuspendToDisk, GuestTags, GuestActivity, GuestConsole, HookPreStart,
-	GPUShared, GPUPassthrough, FencePool, NetFirewall, NetPrivate,
+	GPUShared, GPUPassthrough, FencePool, NetFirewall, NetPrivate, NetEndpoints,
 }
 
 // IsKnown reports whether c is one of the documented flags.
@@ -586,6 +587,21 @@ type NetworkSpec struct {
 	// JumpKeys are the public keys, in OpenSSH's one-line form, that may jump
 	// through its gateway to its guests.
 	JumpKeys []string
+	// Endpoints: what its guests may reach of the zone's private side
+	// (net.endpoints); nil — its zone publishes nothing: its gateway lets out
+	// whatever the zone's lane lets out, as before.
+	Endpoints *Endpoints
+}
+
+// Endpoints are what a network's gateway lets through to its zone's private
+// side: its endpoints, and the zone's resolvers (port 53, the engine's own);
+// the rest of that side it refuses.
+type Endpoints struct {
+	// To: "tcp:192.0.2.35:3101" — protocol, address, port — sorted, no
+	// repeats.
+	To []string `json:"to"`
+	// Private: the zone's private side, ranges ("192.0.2.0/24"), sorted.
+	Private []string `json:"private"`
 }
 
 // Network is a network as the engine reports it.
@@ -607,6 +623,13 @@ type Network struct {
 	Running bool `json:"running"`
 	// Keys: how many keys its gateway was born with.
 	Keys int `json:"keys"`
+	// Lane: its gateway's address on the zone's lane — what the lane sees
+	// everything its network sends as.
+	Lane string `json:"lane,omitempty"`
+	// Endpoints: those its gateway runs with (net.endpoints) — written to it
+	// and taken at its last start ("tcp:192.0.2.35:3101"); a line written to a
+	// running gateway is not among them until it starts again.
+	Endpoints []string `json:"endpoints,omitempty"`
 }
 
 // ---- The images facet -------------------------------------------------------

@@ -395,7 +395,7 @@ func (c *Core) latest(ctx context.Context, owner string, groups []string, zone s
 	}
 	for i := len(outs) - 1; i >= 0; i-- {
 		r := outs[i]
-		mine := r.Owner == owner || !ref.Attached && sharedWith(r, groups)
+		mine := r.Owner == owner || !ref.Mine() && sharedWith(r, groups)
 		if r.State == registry.Ready && r.Unusable == "" && mine {
 			return r.ID, ""
 		}

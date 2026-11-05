@@ -474,6 +474,12 @@ func (d *Driver) createGateway(ctx context.Context, vmid int, s driver.NetworkSp
 	if len(s.JumpKeys) > 0 {
 		p.Set("ssh-public-keys", strings.Join(s.JumpKeys, "\n"))
 	}
+	if env := d.envOf(s.Endpoints); env != nil {
+		if !slices.Contains(d.caps, driver.NetEndpoints) {
+			return fmt.Errorf("%w: zone %s's gateways carry no endpoints: %s", driver.ErrRefused, d.zone, d.endpointsErr)
+		}
+		p.Set("env", envLine(env)) // what it lets through of the zone's private side (endpoints.go)
+	}
 	return d.c.run(ctx, http.MethodPost, "/nodes/"+url.PathEscape(d.node)+"/lxc", p)
 }
 
@@ -573,6 +579,9 @@ func (d *Driver) CreateNetwork(ctx context.Context, s driver.NetworkSpec) (drive
 	if _, err := d.gatewayReady(ctx, r, s); err != nil {
 		return driver.Network{}, d.engine(err)
 	}
+	if _, err := d.endpointsReady(ctx, r, s); err != nil {
+		return driver.Network{}, d.engine(err)
+	}
 	return d.readNetwork(ctx, r, s.ID)
 }
 
@@ -602,7 +611,10 @@ func (d *Driver) readNetwork(ctx context.Context, r resource, id string) (driver
 		ID: id, EngineRef: fmt.Sprintf("%s/%s/%d", r.Node, r.Type, r.VMID), Node: r.Node, Running: on,
 		Label: nameIn(strings.Split(str(cfg["description"]), "\n"), id),
 		Range: d.nets.rangeOf(i).String(), Gateway: d.nets.gateway(i).String(), Jump: JumpUser + "@" + d.nets.lane(i).String(),
-		Wall: d.walled(ctx, r, cfg),
+		Wall: d.walled(ctx, r, cfg), Lane: d.nets.lane(i).String(),
+	}
+	if n.Endpoints, err = d.runsWith(ctx, r); err != nil {
+		return driver.Network{}, d.engine(err)
 	}
 	if _, keys, ok := bornOf(str(cfg["description"]), id); ok {
 		n.Keys, _ = strconv.Atoi(strings.SplitN(keys, ":", 2)[0])
@@ -664,6 +676,11 @@ func (d *Driver) TendNetwork(ctx context.Context, s driver.NetworkSpec, was stri
 		}
 	}
 	put, err := d.gatewayReady(ctx, r, s)
+	fixed = append(fixed, put...)
+	if err != nil {
+		return driver.Network{}, fixed, d.engine(err)
+	}
+	put, err = d.endpointsReady(ctx, r, s)
 	fixed = append(fixed, put...)
 	if err != nil {
 		return driver.Network{}, fixed, d.engine(err)

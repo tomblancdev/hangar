@@ -1224,7 +1224,12 @@ func (c *Core) execute(op *registry.Operation, prev *registry.Resource) {
 		// delete is idempotent, so ask it to clear whatever there is
 		if client, cerr := p.Client(ctx); cerr == nil {
 			cctx, cancel := context.WithTimeout(ctx, c.CallTimeout)
-			if _, derr := client.Delete(cctx, &pluginpb.DeleteRequest{Resource: toProto(r)}); derr != nil {
+			unlock, refs, derr := c.holdWhole(ctx, r, nil, true)
+			if derr == nil {
+				_, derr = client.Delete(cctx, &pluginpb.DeleteRequest{Resource: toProto(r), Refs: refs})
+				unlock()
+			}
+			if derr != nil {
 				c.log.Warn("clearing after a failed create failed too", "resource", r.ID, "err", derr)
 			}
 			cancel()
@@ -1263,17 +1268,35 @@ func (c *Core) call(ctx context.Context, p *plugins.Plugin, op *registry.Operati
 		if err != nil {
 			return outcome{}, err
 		}
-		resp, err := client.Create(cctx, &pluginpb.CreateRequest{Resource: c.proto(ctx, r), Refs: rs})
+		unlock, rs, err := c.holdWhole(ctx, r, rs, false)
+		if err != nil {
+			return outcome{}, err
+		}
+		defer unlock()
+		me, err := c.whole(ctx, r)
+		if err != nil {
+			return outcome{}, err
+		}
+		resp, err := client.Create(cctx, &pluginpb.CreateRequest{Resource: me, Refs: rs})
 		return outcome{observed: resp.GetObserved(), events: resp.GetEvents(), usability: resp.GetUsability()}, err
 	case registry.OpDelete:
-		resp, err := client.Delete(cctx, &pluginpb.DeleteRequest{Resource: toProto(r)})
+		unlock, rs, err := c.holdWhole(ctx, r, nil, true)
+		if err != nil {
+			return outcome{}, err
+		}
+		defer unlock()
+		resp, err := client.Delete(cctx, &pluginpb.DeleteRequest{Resource: toProto(r), Refs: rs})
 		return outcome{events: resp.GetEvents(), consumed: resp.GetConsumed()}, err
 	default:
 		rs, err := c.loadRefs(ctx, refs, op.Params)
 		if err != nil {
 			return outcome{}, err
 		}
-		resp, err := client.Act(cctx, &pluginpb.ActRequest{Resource: c.proto(ctx, r), Action: op.Action, Params: op.Params, Refs: rs})
+		me, err := c.whole(ctx, r)
+		if err != nil {
+			return outcome{}, err
+		}
+		resp, err := client.Act(cctx, &pluginpb.ActRequest{Resource: me, Action: op.Action, Params: op.Params, Refs: rs})
 		return outcome{spec: resp.GetSpec(), observed: resp.GetObserved(), result: resp.GetResult(), events: resp.GetEvents(),
 			usability: resp.GetUsability(), consumed: resp.GetConsumed()}, err
 	}
@@ -1455,7 +1478,7 @@ func (c *Core) references(ctx context.Context, owner string, groups []string, zo
 			if err != nil && !errors.Is(err, registry.ErrNotFound) {
 				return nil, problem(500, KindInternal, "the registry cannot read %s", id)
 			}
-			mine := r != nil && (r.Owner == owner || !ref.Attached && sharedWith(r, groups))
+			mine := r != nil && (r.Owner == owner || !ref.Mine() && sharedWith(r, groups))
 			switch {
 			case r == nil || !mine || r.Type != ref.Type || r.State == registry.Deleted:
 				bad = append(bad, plugins.Violation{Field: field, Reason: fmt.Sprintf("you have no %s %s", ref.Type, id)})
@@ -1649,6 +1672,91 @@ func (c *Core) loadRefs(ctx context.Context, refs []plugins.Ref, doc json.RawMes
 	return out, nil
 }
 
+// whole is a resource as a create, an action or a look hands it to its
+// plugin: with its parts (Resource.members), if its type has any.
+func (c *Core) whole(ctx context.Context, r *registry.Resource) (*pluginpb.Resource, error) {
+	p := c.proto(ctx, r)
+	parts, err := c.partsOf(ctx, r, "")
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "the registry cannot read what %s holds: %v", r.ID, err)
+	}
+	p.Members = parts
+	return p, nil
+}
+
+// partsOf are the resources that are parts of r (host.Parts) — being made,
+// or made — as the registry holds them; but: one counted out (a part being
+// deleted, or cleared after its create failed).
+func (c *Core) partsOf(ctx context.Context, r *registry.Resource, but string) ([]*pluginpb.Resource, error) {
+	parts := c.host.Parts(c.host.Type(r.Type))
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	froms, err := c.store.Referrers(ctx, r.ID)
+	if err != nil {
+		return nil, err
+	}
+	var out []*pluginpb.Resource
+	for _, f := range froms {
+		switch f.State {
+		case registry.Creating, registry.Ready, registry.Updating:
+		default:
+			continue
+		}
+		if f.ID == but || !slices.ContainsFunc(parts, func(p plugins.PartRef) bool { return p.Type == f.Type && p.Ref.Field == f.Kind }) {
+			continue
+		}
+		m, err := c.store.Resource(ctx, f.ID)
+		if errors.Is(err, registry.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, toProto(m))
+	}
+	return out, nil
+}
+
+// holdWhole: for a part of another resource of its plugin's (an endpoint of
+// its network), its create or delete holds that resource while it is asked —
+// one at a time with its acts, its looks and its other parts' — and hands it
+// to the plugin with its parts, as they are now, among the references (refs:
+// those already loaded, or none) — r itself counted out when it is leaving
+// (its delete, or a failed create cleared). For anything else it holds
+// nothing, and refs are as they came.
+func (c *Core) holdWhole(ctx context.Context, r *registry.Resource, refs []*pluginpb.Resource, leaving bool) (func(), []*pluginpb.Resource, error) {
+	ref := c.host.PartOf(c.host.Type(r.Type))
+	if ref == nil {
+		return func() {}, refs, nil
+	}
+	ids := refIDs(*ref, r.Spec)
+	if len(ids) != 1 {
+		return func() {}, refs, nil
+	}
+	mu := c.lock(ids[0])
+	mu.Lock()
+	to, err := c.store.Resource(ctx, ids[0])
+	if err != nil && !errors.Is(err, registry.ErrNotFound) {
+		mu.Unlock()
+		return nil, nil, status.Errorf(codes.Unavailable, "the registry cannot read %s: %v", ids[0], err)
+	}
+	if to == nil {
+		return mu.Unlock, refs, nil
+	}
+	but := ""
+	if leaving {
+		but = r.ID
+	}
+	whole := c.proto(ctx, to) // as its own calls hand it: what it is called on the engine is the same line
+	if whole.Members, err = c.partsOf(ctx, to, but); err != nil {
+		mu.Unlock()
+		return nil, nil, status.Errorf(codes.Unavailable, "the registry cannot read what %s holds: %v", to.ID, err)
+	}
+	out := slices.DeleteFunc(slices.Clone(refs), func(p *pluginpb.Resource) bool { return p.GetId() == to.ID })
+	return mu.Unlock, append(out, whole), nil
+}
+
 func toProto(r *registry.Resource) *pluginpb.Resource {
 	return &pluginpb.Resource{Id: r.ID, Type: r.Type, Zone: r.Zone, Owner: r.Owner, Spec: r.Spec, Observed: r.Observed, Tags: r.Tags,
 		Name: r.Name, Description: r.Description, Hold: r.Hold, Room: &pluginpb.Room{GuaranteedMb: r.Room.GuaranteedMB, SpotMb: r.Room.SpotMB, Running: r.Room.Running}}
@@ -1733,7 +1841,11 @@ func (c *Core) reconcileLocked(ctx context.Context, r *registry.Resource) (strin
 	}
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	resp, err := client.Reconcile(cctx, &pluginpb.ReconcileRequest{Resource: c.proto(ctx, r)})
+	me, err := c.whole(ctx, r)
+	if err != nil {
+		return "skipped", status.Convert(err).Message() // the next round looks again
+	}
+	resp, err := client.Reconcile(cctx, &pluginpb.ReconcileRequest{Resource: me})
 	if err != nil {
 		c.log.Warn("reconcile: the plugin could not answer", "resource", r.ID, "err", err)
 		return "skipped", status.Convert(err).Message()

@@ -74,6 +74,8 @@ tiers:
       machines.class: [spot]
       networks.count: 1
       networks.visibility: [private]
+      networks.endpoints: 1
+      networks.services: [door]
 zones:
   - name: bench
     driver: proxmox
@@ -118,6 +120,12 @@ plugins:
     zones: [bench]
     credentials:
       bench: {file: %s}
+    settings:
+      zones:
+        bench:
+          services:
+            - {name: door, description: "a door at the bench's node", to: "198.51.100.1:3101"}
+          private: [198.51.100.0/24]   # the bench's lane: its node, its resolver, its doors
 reconcile: {every: 5s}
 `, dir, url, os.Getenv("HANGAR_BENCH_CA_FILE"), gateway, os.Getenv("HANGAR_BENCH_MACHINES_NETS_TOKEN_FILE"), archive, os.Getenv("HANGAR_BENCH_NETWORKS_TOKEN_FILE"))
 	if err := os.WriteFile(cfg, []byte(text), 0o600); err != nil {
@@ -132,7 +140,7 @@ reconcile: {every: 5s}
 		}
 		return out.String(), nil
 	}
-	if out, err := run(cfg, "check"); err != nil || !strings.Contains(out, "network") || !strings.Contains(out, "net.private") {
+	if out, err := run(cfg, "check"); err != nil || !strings.Contains(out, "network") || !strings.Contains(out, "net.private") || !strings.Contains(out, "net.endpoints") {
 		t.Fatalf("check: %v\n%s", err, out)
 	} else {
 		t.Logf("hangar check:\n%s", out)
@@ -340,6 +348,36 @@ reconcile: {every: 5s}
 	if code, r := call("DELETE", "/v1/resources/"+netID, nil); code != 409 || at(r, "kind") != "members" || !strings.Contains(at(r, "detail"), "(default) still holds first") {
 		t.Fatalf("her network deleted under her machine: %d %v", code, r)
 	}
+	// the operator's side: her network was born refusing it; an endpoint of
+	// hers lets one door through, and only that one
+	if out, err := benchSSH("for p in 3101 3102; do (cd /tmp && setsid python3 -m http.server $p --bind 198.51.100.1 >/dev/null 2>&1 &); done; sleep 1; true"); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	t.Cleanup(func() { _, _ = benchSSH("pkill -f 'http.server 310[12]' ; true") })
+	mv := at(machine, "observed", "engine_ref")
+	mv = mv[strings.LastIndex(mv, "/")+1:]
+	reaches := func(port string) bool {
+		_, err := benchSSH("pct exec " + mv + " -- bash -c 'timeout 3 bash -c \"exec 3<>/dev/tcp/198.51.100.1/" + port + "\"'")
+		return err == nil
+	}
+	if reaches("3101") {
+		t.Fatal("a network of no endpoint reached the operator's side")
+	}
+	began = time.Now()
+	code, acc = call("POST", "/v1/resources", map[string]any{"type": "endpoint", "zone": "bench", "name": "door", "spec": map[string]any{"network": "default", "service": "door"}})
+	await("her endpoint", code, acc)
+	t.Logf("an endpoint was made in %s (its running gateway written, started again)", time.Since(began).Round(100*time.Millisecond))
+	ep := at(acc, "resource", "id")
+	if e := get(ep); at(e, "status") != "applied" || at(e, "observed", "to") != "198.51.100.1:3101/tcp" || "jump@"+at(e, "observed", "from") != jumpAt {
+		t.Fatalf("her endpoint reads %v", e)
+	}
+	eventually("her machine reaches the door", time.Minute, func() bool { return reaches("3101") })
+	if reaches("3102") {
+		t.Fatal("another door of the same address reached")
+	}
+	gone("her endpoint", ep)
+	eventually("the door shut again", time.Minute, func() bool { return !reaches("3101") })
+
 	// her machine stopped, its gateway rests — a node with nothing running can sleep
 	code, acc = call("POST", "/v1/resources/"+m+"/actions/stop", nil)
 	await("the stop", code, acc)

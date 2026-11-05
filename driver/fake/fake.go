@@ -122,6 +122,10 @@ type state struct {
 	ActivityFails bool `json:"activity_fails,omitempty"`
 	// Networks, by the core's id.
 	Networks map[string]*fakeNetwork `json:"networks,omitempty"`
+	// NetworkWrites, a test's lever: how the next writes of a network's
+	// gateway go, in order — "slow:<ms>" waits that long before it acts (a
+	// write that takes time), "refused-after" acts, then answers a refusal.
+	NetworkWrites []string `json:"network_writes,omitempty"`
 	// Boots: how many times each guest was started or rebooted — a guest
 	// that runs anew is another process, and a console open on the one
 	// before is open on nothing (console.go).

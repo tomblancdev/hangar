@@ -405,8 +405,16 @@ type Referrer struct {
 
 // Referrers lists the resources that refer to one, under which field, with
 // their type and state.
-func (t *Tx) Referrers(to string) ([]Referrer, error) {
-	rows, err := t.q.QueryContext(t.ctx, `SELECT r.id, l.kind, r.type, r.state FROM relations l JOIN resources r ON r.id = l.from_id
+func (t *Tx) Referrers(to string) ([]Referrer, error) { return referrersOf(t.ctx, t.q, to) }
+
+// Referrers lists the resources that refer to one, under which field, with
+// their type and state.
+func (s *Store) Referrers(ctx context.Context, to string) ([]Referrer, error) {
+	return referrersOf(ctx, s.db, to)
+}
+
+func referrersOf(ctx context.Context, q querier, to string) ([]Referrer, error) {
+	rows, err := q.QueryContext(ctx, `SELECT r.id, l.kind, r.type, r.state FROM relations l JOIN resources r ON r.id = l.from_id
 		WHERE l.to_id = ? ORDER BY r.id, l.kind`, to)
 	if err != nil {
 		return nil, err

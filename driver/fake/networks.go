@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tomblancdev/hangar/driver"
 )
@@ -15,7 +16,10 @@ import (
 // gateway that runs while a guest of the network does, and the keys it was
 // born with. A gateway is made again when its keys change — "made" counts how
 // many times — and where one is gone ("networks" edited by hand) it is made
-// again at its number.
+// again at its number. What it lets through of the zone's private side
+// (net.endpoints) is its "env", as written; "endpoints" those it runs with —
+// a running gateway is started again at a write ("restarted" counts them),
+// a stopped one takes it as it is written.
 
 // networkRoomMB is what a fake network's gateway holds.
 const networkRoomMB = 64
@@ -30,6 +34,10 @@ type fakeNetwork struct {
 	JumpKeys []string `json:"jump_keys,omitempty"`
 	// Made: how many times its gateway was made (1: at its birth).
 	Made int `json:"made"`
+	// Env: what was written of its endpoints (net.endpoints); nil: none.
+	Env *driver.Endpoints `json:"env,omitempty"`
+	// Restarted: how many times a write started it again.
+	Restarted int `json:"restarted,omitempty"`
 }
 
 func (e *Engine) NetworkRoomMB() int {
@@ -45,13 +53,38 @@ func (e *Engine) born(n *fakeNetwork, s driver.NetworkSpec) {
 	n.ID, n.EngineRef, n.Node, n.Label = s.ID, "fake-net-"+strconv.Itoa(n.Number), "fake", s.Label
 	n.Range = fmt.Sprintf("192.0.2.%d/27", n.Number*32)
 	n.Gateway = fmt.Sprintf("192.0.2.%d", n.Number*32+1)
-	n.Jump = fmt.Sprintf("jump@203.0.113.%d", 200+n.Number)
+	n.Lane = fmt.Sprintf("203.0.113.%d", 200+n.Number)
+	n.Jump = "jump@" + n.Lane
 	n.JumpKeys, n.Keys = slices.Clone(s.JumpKeys), len(s.JumpKeys)
 	n.Made++
 	if e.has(driver.NetFirewall) {
 		n.Wall = driver.WallExact
 	}
 	n.Running = e.memberRuns(s.ID, "")
+	n.Env = cloneEndpoints(s.Endpoints)
+	n.Network.Endpoints = applied(n.Env)
+}
+
+// applied are the endpoints a gateway takes from what is written: its lines.
+func applied(env *driver.Endpoints) []string {
+	if env == nil {
+		return nil
+	}
+	return slices.Clone(env.To)
+}
+
+func cloneEndpoints(e *driver.Endpoints) *driver.Endpoints {
+	if e == nil {
+		return nil
+	}
+	return &driver.Endpoints{To: slices.Clone(e.To), Private: slices.Clone(e.Private)}
+}
+
+func sameEndpoints(a, b *driver.Endpoints) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return slices.Equal(a.To, b.To) && slices.Equal(a.Private, b.Private)
 }
 
 // members are the guests on a network, sorted. Called with e.mu held.
@@ -148,7 +181,37 @@ func (e *Engine) Network(_ context.Context, id string) (driver.Network, error) {
 	return n.Network, nil
 }
 
-func (e *Engine) TendNetwork(_ context.Context, s driver.NetworkSpec, was string) (driver.Network, []string, error) {
+func (e *Engine) TendNetwork(ctx context.Context, s driver.NetworkSpec, was string) (driver.Network, []string, error) {
+	lever := e.nextNetworkWrite()
+	if ms, ok := strings.CutPrefix(lever, "slow:"); ok {
+		n, _ := strconv.Atoi(ms)
+		select {
+		case <-time.After(time.Duration(n) * time.Millisecond):
+		case <-ctx.Done():
+			return driver.Network{}, nil, ctx.Err()
+		}
+	}
+	got, fixed, err := e.tendNetwork(s, was)
+	if err == nil && lever == "refused-after" {
+		err = fmt.Errorf("%w: the engine wrote it, then refused (a test's lever)", driver.ErrRefused)
+	}
+	return got, fixed, err
+}
+
+// nextNetworkWrite takes the first of the file's network_writes.
+func (e *Engine) nextNetworkWrite() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.load() != nil || len(e.state.NetworkWrites) == 0 {
+		return ""
+	}
+	lever := e.state.NetworkWrites[0]
+	e.state.NetworkWrites = e.state.NetworkWrites[1:]
+	_ = e.save()
+	return lever
+}
+
+func (e *Engine) tendNetwork(s driver.NetworkSpec, was string) (driver.Network, []string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err := e.fail(); err != nil {
@@ -172,6 +235,23 @@ func (e *Engine) TendNetwork(_ context.Context, s driver.NetworkSpec, was string
 	case !sameKeys(n.JumpKeys, s.JumpKeys):
 		e.born(n, s)
 		fixed = append(fixed, "gateway (made again: its keys changed)")
+	}
+	if !e.has(driver.NetEndpoints) && s.Endpoints != nil {
+		return driver.Network{}, fixed, fmt.Errorf("%w: this zone's gateways carry no endpoints", driver.ErrRefused)
+	}
+	if !sameEndpoints(n.Env, s.Endpoints) {
+		n.Env = cloneEndpoints(s.Endpoints)
+		fixed = append(fixed, "endpoints")
+	}
+	if !slices.Equal(n.Network.Endpoints, applied(n.Env)) {
+		// written, and not taken: started again
+		n.Network.Endpoints = applied(n.Env)
+		if n.Running {
+			n.Restarted++
+		}
+		if !slices.Contains(fixed, "endpoints") {
+			fixed = append(fixed, "endpoints (started again)")
+		}
 	}
 	if e.has(driver.NetFirewall) && n.Wall != driver.WallExact {
 		n.Wall = driver.WallExact
@@ -242,6 +322,18 @@ func (e *Engine) ForgetNetwork(id string) {
 	_ = e.load()
 	delete(e.state.Networks, id)
 	_ = e.save()
+}
+
+// NetworkEnv says what is written of a network's endpoints, and how many
+// times a write started its gateway again.
+func (e *Engine) NetworkEnv(id string) (*driver.Endpoints, int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_ = e.load()
+	if n, ok := e.state.Networks[id]; ok {
+		return cloneEndpoints(n.Env), n.Restarted
+	}
+	return nil, 0
 }
 
 // NetworkMade says how many times a network's gateway was made, and the keys

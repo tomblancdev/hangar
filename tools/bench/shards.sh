@@ -135,6 +135,7 @@ proxmox TestBenchAVMsVolume 136
 proxmox TestBenchAVMsConsole 130
 hangar TestBenchATerminalInThePage 150
 proxmox TestBenchTwoNetworksAndAJump 281
+proxmox TestBenchAnEndpoint 190
 hangar TestBenchAnImageThroughTheAPI 115
 hangar TestBenchANetworkThroughTheAPI 87
 proxmox TestBenchAVMsProcessor 81

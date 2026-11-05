@@ -241,6 +241,15 @@ message Resource {
   string name = 11;
   string description = 12;
   string owner_name = 13;
+  // The resources of this plugin's own types that are parts of it — a
+  // reference of theirs marked "x-hangar-member" names it (a network's
+  // endpoints) — being made or made, never one being deleted, as the
+  // registry holds them: handed with the resource a create, an action or a
+  // look is about, and with the reference a part's own create and delete
+  // name (which the core holds meanwhile, one at a time with the resource's
+  // own calls). A part's own members are not filled in. Empty for a type
+  // that has no parts.
+  repeated Resource members = 14;
 }
 
 message PlanRequest {
@@ -357,6 +366,10 @@ message Usability {
 
 message DeleteRequest {
   Resource resource = 1;
+  // For a part of another resource of this plugin's (its reference marked
+  // "x-hangar-member"): what it names, with its members — itself no longer
+  // among them. Empty for any other.
+  repeated Resource refs = 2;
 }
 
 message DeleteResponse {

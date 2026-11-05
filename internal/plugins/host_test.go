@@ -273,9 +273,20 @@ func TestReferencesAreReadFromTheSchema(t *testing.T) {
 		"a default that names nothing":      `{"properties": {"name": {"type": "string", "x-hangar-default": "default"}}}`,
 		"a default for a list":              `{"properties": {"keys": {"type": "array", "x-hangar-default": "default", "items": {"type": "string", "x-hangar-ref": "keypair"}}}}`,
 		"a default nothing could be called": `{"properties": {"n": {"type": "string", "x-hangar-ref": "network", "x-hangar-default": "My Network"}}}`,
+		"own on what names nothing":         `{"properties": {"name": {"type": "string", "x-hangar-own": true}}}`,
+		"own on an attachment":              `{"properties": {"m": {"type": "string", "x-hangar-ref": "machine", "x-hangar-attached": true, "x-hangar-own": true}}}`,
 	} {
 		if _, err := refsOf([]byte(schema)); err == nil {
 			t.Errorf("%s was accepted", name)
 		}
+	}
+	// own: the owner's own, never one shared with them — and with member, it
+	// holds its target's delete too
+	refs, err = refsOf([]byte(`{"properties": {"network": {"type": "string", "x-hangar-ref": "network", "x-hangar-member": true, "x-hangar-own": true}}}`))
+	if err != nil || len(refs) != 1 || refs[0] != (Ref{Field: "network", Type: "network", Member: true, Own: true}) || !refs[0].Mine() {
+		t.Fatalf("read %+v %v", refs, err)
+	}
+	if (Ref{Member: true}).Mine() || !(Ref{Attached: true}).Mine() {
+		t.Fatal("a member may name what is shared; an attachment may not")
 	}
 }
