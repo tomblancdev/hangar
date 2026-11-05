@@ -977,9 +977,18 @@ type Resource struct {
 	// never a spec's. A plugin writes them where a person reads the engine's
 	// own screen (a guest's notes), and keeps them true in Reconcile; it finds
 	// a resource by its id, never by its name.
-	Name          string `protobuf:"bytes,11,opt,name=name,proto3" json:"name,omitempty"`
-	Description   string `protobuf:"bytes,12,opt,name=description,proto3" json:"description,omitempty"`
-	OwnerName     string `protobuf:"bytes,13,opt,name=owner_name,json=ownerName,proto3" json:"owner_name,omitempty"`
+	Name        string `protobuf:"bytes,11,opt,name=name,proto3" json:"name,omitempty"`
+	Description string `protobuf:"bytes,12,opt,name=description,proto3" json:"description,omitempty"`
+	OwnerName   string `protobuf:"bytes,13,opt,name=owner_name,json=ownerName,proto3" json:"owner_name,omitempty"`
+	// The resources of this plugin's own types that are parts of it — a
+	// reference of theirs marked "x-hangar-member" names it (a network's
+	// endpoints) — being made or made, never one being deleted, as the
+	// registry holds them: handed with the resource a create, an action or a
+	// look is about, and with the reference a part's own create and delete
+	// name (which the core holds meanwhile, one at a time with the resource's
+	// own calls). A part's own members are not filled in. Empty for a type
+	// that has no parts.
+	Members       []*Resource `protobuf:"bytes,14,rep,name=members,proto3" json:"members,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1103,6 +1112,13 @@ func (x *Resource) GetOwnerName() string {
 		return x.OwnerName
 	}
 	return ""
+}
+
+func (x *Resource) GetMembers() []*Resource {
+	if x != nil {
+		return x.Members
+	}
+	return nil
 }
 
 type PlanRequest struct {
@@ -1772,8 +1788,12 @@ func (x *Usability) GetPending() bool {
 }
 
 type DeleteRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Resource      *Resource              `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Resource *Resource              `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	// For a part of another resource of this plugin's (its reference marked
+	// "x-hangar-member"): what it names, with its members — itself no longer
+	// among them. Empty for any other.
+	Refs          []*Resource `protobuf:"bytes,2,rep,name=refs,proto3" json:"refs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1811,6 +1831,13 @@ func (*DeleteRequest) Descriptor() ([]byte, []int) {
 func (x *DeleteRequest) GetResource() *Resource {
 	if x != nil {
 		return x.Resource
+	}
+	return nil
+}
+
+func (x *DeleteRequest) GetRefs() []*Resource {
+	if x != nil {
+		return x.Refs
 	}
 	return nil
 }
@@ -3083,7 +3110,7 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"ZoneReport\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\"\n" +
 	"\fcapabilities\x18\x02 \x03(\tR\fcapabilities\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\xa6\x03\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\xdc\x03\n" +
 	"\bResource\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
@@ -3099,7 +3126,8 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x04name\x18\v \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\f \x01(\tR\vdescription\x12\x1d\n" +
 	"\n" +
-	"owner_name\x18\r \x01(\tR\townerName\x1a7\n" +
+	"owner_name\x18\r \x01(\tR\townerName\x124\n" +
+	"\amembers\x18\x0e \x03(\v2\x1a.hangar.plugin.v1.ResourceR\amembers\x1a7\n" +
 	"\tTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdf\x01\n" +
@@ -3151,9 +3179,10 @@ const file_hangar_plugin_v1_plugin_proto_rawDesc = "" +
 	"\tusability\x18\x03 \x01(\v2\x1b.hangar.plugin.v1.UsabilityR\tusability\"A\n" +
 	"\tUsability\x12\x1a\n" +
 	"\bunusable\x18\x01 \x01(\tR\bunusable\x12\x18\n" +
-	"\apending\x18\x02 \x01(\bR\apending\"G\n" +
+	"\apending\x18\x02 \x01(\bR\apending\"w\n" +
 	"\rDeleteRequest\x126\n" +
-	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\"y\n" +
+	"\bresource\x18\x01 \x01(\v2\x1a.hangar.plugin.v1.ResourceR\bresource\x12.\n" +
+	"\x04refs\x18\x02 \x03(\v2\x1a.hangar.plugin.v1.ResourceR\x04refs\"y\n" +
 	"\x0eDeleteResponse\x12/\n" +
 	"\x06events\x18\x01 \x03(\v2\x17.hangar.plugin.v1.EventR\x06events\x126\n" +
 	"\bconsumed\x18\x02 \x01(\v2\x1a.hangar.plugin.v1.ConsumedR\bconsumed\"\xa4\x01\n" +
@@ -3348,72 +3377,74 @@ var file_hangar_plugin_v1_plugin_proto_depIdxs = []int32{
 	12, // 8: hangar.plugin.v1.ConfigureResponse.zones:type_name -> hangar.plugin.v1.ZoneReport
 	44, // 9: hangar.plugin.v1.Resource.tags:type_name -> hangar.plugin.v1.Resource.TagsEntry
 	16, // 10: hangar.plugin.v1.Resource.room:type_name -> hangar.plugin.v1.Room
-	13, // 11: hangar.plugin.v1.PlanRequest.current:type_name -> hangar.plugin.v1.Resource
-	13, // 12: hangar.plugin.v1.PlanRequest.refs:type_name -> hangar.plugin.v1.Resource
-	45, // 13: hangar.plugin.v1.PlanResponse.usage:type_name -> hangar.plugin.v1.PlanResponse.UsageEntry
-	46, // 14: hangar.plugin.v1.PlanResponse.choices:type_name -> hangar.plugin.v1.PlanResponse.ChoicesEntry
-	20, // 15: hangar.plugin.v1.PlanResponse.refusals:type_name -> hangar.plugin.v1.Refusal
-	16, // 16: hangar.plugin.v1.PlanResponse.room:type_name -> hangar.plugin.v1.Room
-	13, // 17: hangar.plugin.v1.PlanChangeRequest.current:type_name -> hangar.plugin.v1.Resource
-	13, // 18: hangar.plugin.v1.PlanChangeRequest.refs:type_name -> hangar.plugin.v1.Resource
-	19, // 19: hangar.plugin.v1.PlanChangeResponse.steps:type_name -> hangar.plugin.v1.Step
-	20, // 20: hangar.plugin.v1.PlanChangeResponse.fixed:type_name -> hangar.plugin.v1.Refusal
-	13, // 21: hangar.plugin.v1.CreateRequest.resource:type_name -> hangar.plugin.v1.Resource
-	13, // 22: hangar.plugin.v1.CreateRequest.refs:type_name -> hangar.plugin.v1.Resource
-	42, // 23: hangar.plugin.v1.CreateResponse.events:type_name -> hangar.plugin.v1.Event
-	23, // 24: hangar.plugin.v1.CreateResponse.usability:type_name -> hangar.plugin.v1.Usability
-	13, // 25: hangar.plugin.v1.DeleteRequest.resource:type_name -> hangar.plugin.v1.Resource
-	42, // 26: hangar.plugin.v1.DeleteResponse.events:type_name -> hangar.plugin.v1.Event
-	30, // 27: hangar.plugin.v1.DeleteResponse.consumed:type_name -> hangar.plugin.v1.Consumed
-	13, // 28: hangar.plugin.v1.ActRequest.resource:type_name -> hangar.plugin.v1.Resource
-	13, // 29: hangar.plugin.v1.ActRequest.refs:type_name -> hangar.plugin.v1.Resource
-	42, // 30: hangar.plugin.v1.ActResponse.events:type_name -> hangar.plugin.v1.Event
-	23, // 31: hangar.plugin.v1.ActResponse.usability:type_name -> hangar.plugin.v1.Usability
-	30, // 32: hangar.plugin.v1.ActResponse.consumed:type_name -> hangar.plugin.v1.Consumed
-	13, // 33: hangar.plugin.v1.ReconcileRequest.resource:type_name -> hangar.plugin.v1.Resource
-	1,  // 34: hangar.plugin.v1.ReconcileResponse.drift:type_name -> hangar.plugin.v1.Drift
-	42, // 35: hangar.plugin.v1.ReconcileResponse.events:type_name -> hangar.plugin.v1.Event
-	16, // 36: hangar.plugin.v1.ReconcileResponse.room:type_name -> hangar.plugin.v1.Room
-	23, // 37: hangar.plugin.v1.ReconcileResponse.usability:type_name -> hangar.plugin.v1.Usability
-	31, // 38: hangar.plugin.v1.ReconcileResponse.usage:type_name -> hangar.plugin.v1.Usage
-	30, // 39: hangar.plugin.v1.ReconcileResponse.consumed:type_name -> hangar.plugin.v1.Consumed
-	47, // 40: hangar.plugin.v1.Consumed.amounts:type_name -> hangar.plugin.v1.Consumed.AmountsEntry
-	48, // 41: hangar.plugin.v1.Usage.amounts:type_name -> hangar.plugin.v1.Usage.AmountsEntry
-	33, // 42: hangar.plugin.v1.OpenRequest.open:type_name -> hangar.plugin.v1.StreamOpen
-	34, // 43: hangar.plugin.v1.OpenRequest.size:type_name -> hangar.plugin.v1.StreamSize
-	13, // 44: hangar.plugin.v1.StreamOpen.resource:type_name -> hangar.plugin.v1.Resource
-	34, // 45: hangar.plugin.v1.StreamOpen.size:type_name -> hangar.plugin.v1.StreamSize
-	36, // 46: hangar.plugin.v1.OpenResponse.opened:type_name -> hangar.plugin.v1.StreamOpened
-	37, // 47: hangar.plugin.v1.OpenResponse.closed:type_name -> hangar.plugin.v1.StreamClosed
-	39, // 48: hangar.plugin.v1.SurveyRequest.conditions:type_name -> hangar.plugin.v1.Condition
-	41, // 49: hangar.plugin.v1.SurveyResponse.conditions:type_name -> hangar.plugin.v1.ConditionState
-	49, // 50: hangar.plugin.v1.SurveyResponse.holds:type_name -> hangar.plugin.v1.SurveyResponse.HoldsEntry
-	50, // 51: hangar.plugin.v1.Event.fields:type_name -> hangar.plugin.v1.Event.FieldsEntry
-	2,  // 52: hangar.plugin.v1.PluginService.Describe:input_type -> hangar.plugin.v1.DescribeRequest
-	9,  // 53: hangar.plugin.v1.PluginService.Configure:input_type -> hangar.plugin.v1.ConfigureRequest
-	14, // 54: hangar.plugin.v1.PluginService.Plan:input_type -> hangar.plugin.v1.PlanRequest
-	17, // 55: hangar.plugin.v1.PluginService.PlanChange:input_type -> hangar.plugin.v1.PlanChangeRequest
-	21, // 56: hangar.plugin.v1.PluginService.Create:input_type -> hangar.plugin.v1.CreateRequest
-	24, // 57: hangar.plugin.v1.PluginService.Delete:input_type -> hangar.plugin.v1.DeleteRequest
-	26, // 58: hangar.plugin.v1.PluginService.Act:input_type -> hangar.plugin.v1.ActRequest
-	28, // 59: hangar.plugin.v1.PluginService.Reconcile:input_type -> hangar.plugin.v1.ReconcileRequest
-	38, // 60: hangar.plugin.v1.PluginService.Survey:input_type -> hangar.plugin.v1.SurveyRequest
-	32, // 61: hangar.plugin.v1.PluginService.Open:input_type -> hangar.plugin.v1.OpenRequest
-	3,  // 62: hangar.plugin.v1.PluginService.Describe:output_type -> hangar.plugin.v1.DescribeResponse
-	11, // 63: hangar.plugin.v1.PluginService.Configure:output_type -> hangar.plugin.v1.ConfigureResponse
-	15, // 64: hangar.plugin.v1.PluginService.Plan:output_type -> hangar.plugin.v1.PlanResponse
-	18, // 65: hangar.plugin.v1.PluginService.PlanChange:output_type -> hangar.plugin.v1.PlanChangeResponse
-	22, // 66: hangar.plugin.v1.PluginService.Create:output_type -> hangar.plugin.v1.CreateResponse
-	25, // 67: hangar.plugin.v1.PluginService.Delete:output_type -> hangar.plugin.v1.DeleteResponse
-	27, // 68: hangar.plugin.v1.PluginService.Act:output_type -> hangar.plugin.v1.ActResponse
-	29, // 69: hangar.plugin.v1.PluginService.Reconcile:output_type -> hangar.plugin.v1.ReconcileResponse
-	40, // 70: hangar.plugin.v1.PluginService.Survey:output_type -> hangar.plugin.v1.SurveyResponse
-	35, // 71: hangar.plugin.v1.PluginService.Open:output_type -> hangar.plugin.v1.OpenResponse
-	62, // [62:72] is the sub-list for method output_type
-	52, // [52:62] is the sub-list for method input_type
-	52, // [52:52] is the sub-list for extension type_name
-	52, // [52:52] is the sub-list for extension extendee
-	0,  // [0:52] is the sub-list for field type_name
+	13, // 11: hangar.plugin.v1.Resource.members:type_name -> hangar.plugin.v1.Resource
+	13, // 12: hangar.plugin.v1.PlanRequest.current:type_name -> hangar.plugin.v1.Resource
+	13, // 13: hangar.plugin.v1.PlanRequest.refs:type_name -> hangar.plugin.v1.Resource
+	45, // 14: hangar.plugin.v1.PlanResponse.usage:type_name -> hangar.plugin.v1.PlanResponse.UsageEntry
+	46, // 15: hangar.plugin.v1.PlanResponse.choices:type_name -> hangar.plugin.v1.PlanResponse.ChoicesEntry
+	20, // 16: hangar.plugin.v1.PlanResponse.refusals:type_name -> hangar.plugin.v1.Refusal
+	16, // 17: hangar.plugin.v1.PlanResponse.room:type_name -> hangar.plugin.v1.Room
+	13, // 18: hangar.plugin.v1.PlanChangeRequest.current:type_name -> hangar.plugin.v1.Resource
+	13, // 19: hangar.plugin.v1.PlanChangeRequest.refs:type_name -> hangar.plugin.v1.Resource
+	19, // 20: hangar.plugin.v1.PlanChangeResponse.steps:type_name -> hangar.plugin.v1.Step
+	20, // 21: hangar.plugin.v1.PlanChangeResponse.fixed:type_name -> hangar.plugin.v1.Refusal
+	13, // 22: hangar.plugin.v1.CreateRequest.resource:type_name -> hangar.plugin.v1.Resource
+	13, // 23: hangar.plugin.v1.CreateRequest.refs:type_name -> hangar.plugin.v1.Resource
+	42, // 24: hangar.plugin.v1.CreateResponse.events:type_name -> hangar.plugin.v1.Event
+	23, // 25: hangar.plugin.v1.CreateResponse.usability:type_name -> hangar.plugin.v1.Usability
+	13, // 26: hangar.plugin.v1.DeleteRequest.resource:type_name -> hangar.plugin.v1.Resource
+	13, // 27: hangar.plugin.v1.DeleteRequest.refs:type_name -> hangar.plugin.v1.Resource
+	42, // 28: hangar.plugin.v1.DeleteResponse.events:type_name -> hangar.plugin.v1.Event
+	30, // 29: hangar.plugin.v1.DeleteResponse.consumed:type_name -> hangar.plugin.v1.Consumed
+	13, // 30: hangar.plugin.v1.ActRequest.resource:type_name -> hangar.plugin.v1.Resource
+	13, // 31: hangar.plugin.v1.ActRequest.refs:type_name -> hangar.plugin.v1.Resource
+	42, // 32: hangar.plugin.v1.ActResponse.events:type_name -> hangar.plugin.v1.Event
+	23, // 33: hangar.plugin.v1.ActResponse.usability:type_name -> hangar.plugin.v1.Usability
+	30, // 34: hangar.plugin.v1.ActResponse.consumed:type_name -> hangar.plugin.v1.Consumed
+	13, // 35: hangar.plugin.v1.ReconcileRequest.resource:type_name -> hangar.plugin.v1.Resource
+	1,  // 36: hangar.plugin.v1.ReconcileResponse.drift:type_name -> hangar.plugin.v1.Drift
+	42, // 37: hangar.plugin.v1.ReconcileResponse.events:type_name -> hangar.plugin.v1.Event
+	16, // 38: hangar.plugin.v1.ReconcileResponse.room:type_name -> hangar.plugin.v1.Room
+	23, // 39: hangar.plugin.v1.ReconcileResponse.usability:type_name -> hangar.plugin.v1.Usability
+	31, // 40: hangar.plugin.v1.ReconcileResponse.usage:type_name -> hangar.plugin.v1.Usage
+	30, // 41: hangar.plugin.v1.ReconcileResponse.consumed:type_name -> hangar.plugin.v1.Consumed
+	47, // 42: hangar.plugin.v1.Consumed.amounts:type_name -> hangar.plugin.v1.Consumed.AmountsEntry
+	48, // 43: hangar.plugin.v1.Usage.amounts:type_name -> hangar.plugin.v1.Usage.AmountsEntry
+	33, // 44: hangar.plugin.v1.OpenRequest.open:type_name -> hangar.plugin.v1.StreamOpen
+	34, // 45: hangar.plugin.v1.OpenRequest.size:type_name -> hangar.plugin.v1.StreamSize
+	13, // 46: hangar.plugin.v1.StreamOpen.resource:type_name -> hangar.plugin.v1.Resource
+	34, // 47: hangar.plugin.v1.StreamOpen.size:type_name -> hangar.plugin.v1.StreamSize
+	36, // 48: hangar.plugin.v1.OpenResponse.opened:type_name -> hangar.plugin.v1.StreamOpened
+	37, // 49: hangar.plugin.v1.OpenResponse.closed:type_name -> hangar.plugin.v1.StreamClosed
+	39, // 50: hangar.plugin.v1.SurveyRequest.conditions:type_name -> hangar.plugin.v1.Condition
+	41, // 51: hangar.plugin.v1.SurveyResponse.conditions:type_name -> hangar.plugin.v1.ConditionState
+	49, // 52: hangar.plugin.v1.SurveyResponse.holds:type_name -> hangar.plugin.v1.SurveyResponse.HoldsEntry
+	50, // 53: hangar.plugin.v1.Event.fields:type_name -> hangar.plugin.v1.Event.FieldsEntry
+	2,  // 54: hangar.plugin.v1.PluginService.Describe:input_type -> hangar.plugin.v1.DescribeRequest
+	9,  // 55: hangar.plugin.v1.PluginService.Configure:input_type -> hangar.plugin.v1.ConfigureRequest
+	14, // 56: hangar.plugin.v1.PluginService.Plan:input_type -> hangar.plugin.v1.PlanRequest
+	17, // 57: hangar.plugin.v1.PluginService.PlanChange:input_type -> hangar.plugin.v1.PlanChangeRequest
+	21, // 58: hangar.plugin.v1.PluginService.Create:input_type -> hangar.plugin.v1.CreateRequest
+	24, // 59: hangar.plugin.v1.PluginService.Delete:input_type -> hangar.plugin.v1.DeleteRequest
+	26, // 60: hangar.plugin.v1.PluginService.Act:input_type -> hangar.plugin.v1.ActRequest
+	28, // 61: hangar.plugin.v1.PluginService.Reconcile:input_type -> hangar.plugin.v1.ReconcileRequest
+	38, // 62: hangar.plugin.v1.PluginService.Survey:input_type -> hangar.plugin.v1.SurveyRequest
+	32, // 63: hangar.plugin.v1.PluginService.Open:input_type -> hangar.plugin.v1.OpenRequest
+	3,  // 64: hangar.plugin.v1.PluginService.Describe:output_type -> hangar.plugin.v1.DescribeResponse
+	11, // 65: hangar.plugin.v1.PluginService.Configure:output_type -> hangar.plugin.v1.ConfigureResponse
+	15, // 66: hangar.plugin.v1.PluginService.Plan:output_type -> hangar.plugin.v1.PlanResponse
+	18, // 67: hangar.plugin.v1.PluginService.PlanChange:output_type -> hangar.plugin.v1.PlanChangeResponse
+	22, // 68: hangar.plugin.v1.PluginService.Create:output_type -> hangar.plugin.v1.CreateResponse
+	25, // 69: hangar.plugin.v1.PluginService.Delete:output_type -> hangar.plugin.v1.DeleteResponse
+	27, // 70: hangar.plugin.v1.PluginService.Act:output_type -> hangar.plugin.v1.ActResponse
+	29, // 71: hangar.plugin.v1.PluginService.Reconcile:output_type -> hangar.plugin.v1.ReconcileResponse
+	40, // 72: hangar.plugin.v1.PluginService.Survey:output_type -> hangar.plugin.v1.SurveyResponse
+	35, // 73: hangar.plugin.v1.PluginService.Open:output_type -> hangar.plugin.v1.OpenResponse
+	64, // [64:74] is the sub-list for method output_type
+	54, // [54:64] is the sub-list for method input_type
+	54, // [54:54] is the sub-list for extension type_name
+	54, // [54:54] is the sub-list for extension extendee
+	0,  // [0:54] is the sub-list for field type_name
 }
 
 func init() { file_hangar_plugin_v1_plugin_proto_init() }

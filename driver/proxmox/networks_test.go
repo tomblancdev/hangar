@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -236,6 +237,11 @@ func newCluster(a *api) *node {
 		switch {
 		case what == "" && r.Method == http.MethodDelete:
 			n.mu.Lock()
+			if n.on[vmid] && r.URL.Query().Get("force") != "1" { // as Proxmox refuses it
+				n.mu.Unlock()
+				http.Error(w, `{"message":"unable to destroy CT `+id+` - container is running"}`, http.StatusInternalServerError)
+				return true
+			}
 			delete(n.guests, vmid)
 			delete(n.on, vmid)
 			n.acts = append(n.acts, "delete "+id)
@@ -247,6 +253,9 @@ func newCluster(a *api) *node {
 			st := map[bool]string{true: "running", false: "stopped"}[n.on[vmid]]
 			n.mu.Unlock()
 			data(w, map[string]any{"status": st, "mem": 20 << 20, "uptime": 7})
+			return true
+		case what == "pending" && r.Method == http.MethodGet:
+			data(w, []any{}) // no env: what a gateway of recipe 1 has
 			return true
 		case what == "status/start":
 			return act("start", true)
@@ -293,8 +302,8 @@ func TestANetworkIsItsGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := driver.Network{ID: "net-a", EngineRef: "node-a/lxc/11200", Node: "node-a", Label: "lab · network of alice",
-		Range: "203.0.113.0/27", Gateway: "203.0.113.1", Jump: "jump@198.51.100.200", Wall: driver.WallExact, Keys: 1}
-	if got != want {
+		Range: "203.0.113.0/27", Gateway: "203.0.113.1", Jump: "jump@198.51.100.200", Wall: driver.WallExact, Keys: 1, Lane: "198.51.100.200"}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("made as\n%+v, want\n%+v", got, want)
 	}
 	form := n.forms[11200]
@@ -326,7 +335,7 @@ func TestANetworkIsItsGateway(t *testing.T) {
 	// asked again — a create resumed — it is the same one, and nothing is written
 	g.wrote()
 	again, err := d.CreateNetwork(ctx, spec)
-	if err != nil || again != want || len(g.wrote()) != 0 || len(n.did()) != 0 {
+	if err != nil || !reflect.DeepEqual(again, want) || len(g.wrote()) != 0 || len(n.did()) != 0 {
 		t.Fatalf("a second create: %+v %v", again, err)
 	}
 	// the next network takes the next number, and everything follows from it
@@ -337,7 +346,7 @@ func TestANetworkIsItsGateway(t *testing.T) {
 	if n.forms[11201]["net1"] != "name=eth1,bridge=hgnets,tag=101,firewall=1,ip=203.0.113.33/27" || n.forms[11201]["ssh-public-keys"] != "" {
 		t.Fatalf("its gateway: %v", n.forms[11201])
 	}
-	if read, err := d.Network(ctx, "net-b"); err != nil || read != b {
+	if read, err := d.Network(ctx, "net-b"); err != nil || !reflect.DeepEqual(read, b) {
 		t.Fatalf("read back as %+v %v", read, err)
 	}
 	if _, err := d.Network(ctx, "net-none"); !errors.Is(err, driver.ErrNotFound) {
@@ -514,7 +523,7 @@ func TestAGatewayIsMadeAgainNeverPatched(t *testing.T) {
 	if err != nil || !slices.Equal(fixed, []string{"gateway (made again: its keys changed)", "wall (options, address, rules)", "name"}) {
 		t.Fatalf("its keys changed: %v %v", fixed, err)
 	}
-	if acts := n.did(); !slices.Equal(acts, []string{"stop 11200", "delete 11200", "create 11200", "start 11200"}) {
+	if acts := n.did(); !slices.Equal(acts, []string{"delete 11200", "create 11200", "start 11200"}) {
 		t.Fatalf("made again: %v", acts)
 	}
 	if got.EngineRef != made.EngineRef || got.Range != made.Range || got.Keys != 2 || !got.Running || got.Wall != driver.WallExact ||

@@ -474,6 +474,12 @@ func (d *Driver) createGateway(ctx context.Context, vmid int, s driver.NetworkSp
 	if len(s.JumpKeys) > 0 {
 		p.Set("ssh-public-keys", strings.Join(s.JumpKeys, "\n"))
 	}
+	if env := d.envOf(s.Endpoints); env != nil {
+		if !slices.Contains(d.caps, driver.NetEndpoints) {
+			return fmt.Errorf("%w: zone %s's gateways carry no endpoints: %s", driver.ErrRefused, d.zone, d.endpointsErr)
+		}
+		p.Set("env", envLine(env)) // what it lets through of the zone's private side (endpoints.go)
+	}
 	return d.c.run(ctx, http.MethodPost, "/nodes/"+url.PathEscape(d.node)+"/lxc", p)
 }
 
@@ -573,6 +579,9 @@ func (d *Driver) CreateNetwork(ctx context.Context, s driver.NetworkSpec) (drive
 	if _, err := d.gatewayReady(ctx, r, s); err != nil {
 		return driver.Network{}, d.engine(err)
 	}
+	if _, err := d.endpointsReady(ctx, r, s); err != nil {
+		return driver.Network{}, d.engine(err)
+	}
 	return d.readNetwork(ctx, r, s.ID)
 }
 
@@ -602,7 +611,10 @@ func (d *Driver) readNetwork(ctx context.Context, r resource, id string) (driver
 		ID: id, EngineRef: fmt.Sprintf("%s/%s/%d", r.Node, r.Type, r.VMID), Node: r.Node, Running: on,
 		Label: nameIn(strings.Split(str(cfg["description"]), "\n"), id),
 		Range: d.nets.rangeOf(i).String(), Gateway: d.nets.gateway(i).String(), Jump: JumpUser + "@" + d.nets.lane(i).String(),
-		Wall: d.walled(ctx, r, cfg),
+		Wall: d.walled(ctx, r, cfg), Lane: d.nets.lane(i).String(),
+	}
+	if n.Endpoints, err = d.runsWith(ctx, r); err != nil {
+		return driver.Network{}, d.engine(err)
 	}
 	if _, keys, ok := bornOf(str(cfg["description"]), id); ok {
 		n.Keys, _ = strconv.Atoi(strings.SplitN(keys, ":", 2)[0])
@@ -668,6 +680,11 @@ func (d *Driver) TendNetwork(ctx context.Context, s driver.NetworkSpec, was stri
 	if err != nil {
 		return driver.Network{}, fixed, d.engine(err)
 	}
+	put, err = d.endpointsReady(ctx, r, s)
+	fixed = append(fixed, put...)
+	if err != nil {
+		return driver.Network{}, fixed, d.engine(err)
+	}
 	// a gateway made again goes back to work: its guests may be running
 	if len(fixed) > 0 && strings.HasPrefix(fixed[0], "gateway") {
 		if members, err := d.membersOf(ctx, r.VMID-d.nets.lo); err == nil {
@@ -685,16 +702,27 @@ func (d *Driver) TendNetwork(ctx context.Context, s driver.NetworkSpec, was stri
 	return n, fixed, err
 }
 
-// remake deletes a gateway and makes it again at the same id.
+// remake deletes a gateway and makes it again at the same id: ONE forced
+// delete — stopped and destroyed under the guest's own lock, so that nothing
+// starts it between the two. (The machines plugin's look starts a gateway it
+// finds stopped under a running machine, and did, on a bench: a stop by the
+// networks token at 22:31:39, a start by the machines token two seconds
+// later, then « unable to destroy CT … - container is running ».) A start in
+// flight holds that lock; a delete that still meets one is asked again.
 func (d *Driver) remake(ctx context.Context, r resource, s driver.NetworkSpec) error {
-	if on, err := d.running(ctx, r); err != nil {
-		return err
-	} else if on {
-		if err := d.c.run(ctx, http.MethodPost, r.path()+"/status/stop", nil); err != nil {
-			return err
+	var err error
+	for try := 0; try < 3; try++ {
+		err = d.c.run(ctx, http.MethodDelete, r.path(), url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}, "force": {"1"}})
+		if err == nil || !strings.Contains(err.Error(), "lock") && !strings.Contains(err.Error(), "running") {
+			break
+		}
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
-	if err := d.c.run(ctx, http.MethodDelete, r.path(), url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}}); err != nil {
+	if err != nil {
 		return err
 	}
 	return d.createGateway(ctx, r.VMID, s)

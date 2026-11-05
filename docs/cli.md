@@ -143,6 +143,14 @@ hangar <type> --help                         its fields and actions, from its sc
   hangar network set-key-pairs default --key-pairs laptop   # a default network names no key pair until you do
   ssh -J "$(hangar network get default -o json | jq -r .observed.jump)" debian@203.0.113.22
   ```
+- **Into the operator's own side, by an endpoint** — where the zone
+  publishes services: one service, for one network of yours; the refusal of
+  a name it does not publish lists those it does —
+
+  ```sh
+  hangar endpoint create --name lab-logs --network lab --service logs
+  hangar endpoint get lab-logs       # to: 192.0.2.35:3101/tcp · from: its gateway on the lane · applied
+  ```
 - **The zone**: `--zone`, else `$HANGAR_ZONE`, else the only zone the type is
   offered in.
 - **Waiting**: a create, delete or action waits for its operation and says

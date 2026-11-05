@@ -27,12 +27,24 @@
 #   - sshd: one user, `jump`, let in by the keys the gateway was born with,
 #     given no shell, no terminal, no session of any kind — forwarding only,
 #     outward only;
-#   - forwarding on; and off, everything a container archive runs that a
-#     gateway has no use for (mail, cron, the package timers, a clock it
-#     cannot set).
+#   - its endpoints (recipe 2): what its network may reach of the zone's
+#     private side, read at each start from its own config — Proxmox VE's
+#     `env` (9.1 and later), handed to its first process —
+#
+#       HANGAR_ENDPOINTS=tcp:192.0.2.35:3101 udp:192.0.2.35:514   let through
+#       HANGAR_RESOLVERS=192.0.2.1                                port 53 let through
+#       HANGAR_PRIVATE=192.0.2.0/24                               the rest refused, counted
+#
+#     by a unit (hangar-endpoints) that fills three sets of its rules after
+#     nftables starts; FORWARDING STAYS OFF UNTIL IT HAS — a word it cannot
+#     read leaves its network with no way out, never with an open one. With
+#     none of them (a zone that publishes nothing) it lets out whatever the
+#     lane lets out, as recipe 1 did;
+#   - and off, everything a container archive runs that a gateway has no
+#     use for (mail, cron, the package timers, a clock it cannot set).
 set -eu
 
-version=1
+version=2
 
 case "${1:-}" in
 -h | --help | help | "")
@@ -125,9 +137,17 @@ table inet gateway {
 		iifname "eth0" tcp dport 22 accept comment "the jump: who may knock is the zone's wall's to say"
 		counter drop comment "refused: in"
 	}
+	# filled at each start from the gateway's own config (hangar-endpoints):
+	# what its network may reach of the zone's private side, and that side
+	set endpoints { type ipv4_addr . inet_proto . inet_service; }
+	set resolvers { type ipv4_addr; }
+	set private { type ipv4_addr; flags interval; auto-merge; }
 	chain forward {
 		type filter hook forward priority filter; policy drop;
 		ct state established,related accept
+		iifname "eth1" oifname "eth0" ip daddr . meta l4proto . th dport @endpoints counter accept comment "its endpoints"
+		iifname "eth1" oifname "eth0" ip daddr @resolvers meta l4proto { tcp, udp } th dport 53 counter accept comment "the zone's resolvers"
+		iifname "eth1" oifname "eth0" ip daddr @private counter drop comment "refused: the private side, no endpoint"
 		iifname "eth1" oifname "eth0" accept comment "its network, out"
 		counter drop comment "refused: through"
 	}
@@ -150,7 +170,70 @@ chmod 755 "$work/etc/nftables.conf"
 mkdir -p "$work/etc/systemd/system/sysinit.target.wants"
 ln -sf /usr/lib/systemd/system/nftables.service "$work/etc/systemd/system/sysinit.target.wants/nftables.service"
 
-printf 'net.ipv4.ip_forward = 1\nnet.ipv6.conf.all.disable_ipv6 = 1\n' >"$work/etc/sysctl.d/90-hangar-gateway.conf"
+# forwarding OFF at boot: hangar-endpoints turns it on once its rules stand
+printf 'net.ipv4.ip_forward = 0\nnet.ipv6.conf.all.disable_ipv6 = 1\n' >"$work/etc/sysctl.d/90-hangar-gateway.conf"
+
+# ---- its endpoints: read from its own config, at each start ----------------
+mkdir -p "$work/usr/local/sbin"
+cat >"$work/usr/local/sbin/hangar-endpoints" <<'EOS'
+#!/bin/sh
+# hangar-endpoints — a hangar gateway's endpoints (tools/gateway/build.sh,
+# recipe 2): its first process's environment, which Proxmox VE writes from
+# the container's `env`, into its rules' sets; then forwarding on. A word it
+# cannot read stops it there: forwarding stays off.
+set -euf
+say() { echo "hangar-endpoints: $*"; }
+no() { say "$1: forwarding stays off" >&2; exit 1; } # its words reach the journal, never the rules
+env1=$(tr '\0' '\n' </proc/1/environ) || no "its first process's environment cannot be read"
+get() { printf '%s\n' "$env1" | sed -n "s/^$1=//p" | tail -n 1; }
+octet='([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])'
+addr="$octet(\.$octet){3}"
+is() { printf '%s\n' "$2" | grep -Eqx "$1"; }
+eps=$(get HANGAR_ENDPOINTS)
+res=$(get HANGAR_RESOLVERS)
+priv=$(get HANGAR_PRIVATE)
+rules=$(mktemp)
+{
+	echo "flush set inet gateway endpoints"
+	echo "flush set inet gateway resolvers"
+	echo "flush set inet gateway private"
+	for e in $eps; do # protocol:address:port
+		is "(tcp|udp):$addr:[0-9]{1,5}" "$e" || no "an endpoint it cannot read ($e)"
+		proto=${e%%:*} rest=${e#*:}
+		port=${rest##*:}
+		[ "$port" -ge 1 ] && [ "$port" -le 65535 ] || no "an endpoint it cannot read ($e)"
+		echo "add element inet gateway endpoints { ${rest%:*} . $proto . $port }"
+	done
+	for r in $res; do
+		is "$addr" "$r" || no "a resolver it cannot read ($r)"
+		echo "add element inet gateway resolvers { $r }"
+	done
+	for p in $priv; do
+		is "$addr(/([0-9]|[12][0-9]|3[0-2]))?" "$p" || no "a range of the private side it cannot read ($p)"
+		echo "add element inet gateway private { $p }"
+	done
+} >"$rules"
+nft -f "$rules" || no "its rules refused these sets"
+rm -f "$rules"
+sysctl -q -w net.ipv4.ip_forward=1
+say "endpoints [$eps] resolvers [$res] private [$priv]: forwarding on"
+EOS
+chmod 755 "$work/usr/local/sbin/hangar-endpoints"
+cat >"$work/etc/systemd/system/hangar-endpoints.service" <<'EOS'
+[Unit]
+Description=a hangar gateway's endpoints, from its own config
+Requires=nftables.service
+After=nftables.service systemd-sysctl.service
+Before=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/hangar-endpoints
+[Install]
+WantedBy=multi-user.target
+EOS
+mkdir -p "$work/etc/systemd/system/multi-user.target.wants"
+ln -sf /etc/systemd/system/hangar-endpoints.service "$work/etc/systemd/system/multi-user.target.wants/hangar-endpoints.service"
 
 # ---- off: what a gateway has no use for -------------------------------------
 for unit in postfix.service postfix@.service cron.service e2scrub_reap.service e2scrub_all.timer \

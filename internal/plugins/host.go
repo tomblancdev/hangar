@@ -131,6 +131,18 @@ type Type struct {
 // members — the member itself goes freely. Unlike an attachment it may name
 // what someone shares.
 //
+// One marked "x-hangar-own": true names its owner's own resources alone,
+// never one shared with them (an endpoint names a network of its owner's: a
+// network someone shares holds their machines, not their endpoints). With
+// "x-hangar-member" it is the owner's own AND holds its target's delete.
+//
+// A member of a type of the SAME plugin is a part of what it stands on (an
+// endpoint is a line of its network's gateway): the plugin is handed, with
+// that resource, the members it holds (Resource.members), and a member's
+// create and delete hold the resource it stands on while they are asked —
+// one at a time with that resource's own acts and looks — handed it, with
+// its members, among their references.
+//
 // One marked "x-hangar-default": "<name>" — a single reference — names
 // something by itself when a create leaves it out, where its type is made:
 // the owner's resource of that type called <name>, made first if they have
@@ -141,8 +153,14 @@ type Ref struct {
 	Many     bool   `json:"many"`
 	Attached bool   `json:"attached,omitempty"`
 	Member   bool   `json:"member,omitempty"`
+	Own      bool   `json:"own,omitempty"`
 	Default  string `json:"default,omitempty"`
 }
+
+// Mine says whether a reference may name a resource of owner's that is
+// shared with them rather than theirs: an attachment, and one marked own,
+// may not.
+func (r Ref) Mine() bool { return r.Attached || r.Own }
 
 // SharedWith reads the groups a spec opens its resource to ("*" =
 // everyone), sorted, without repeats; none for a type that is not shared.
@@ -298,6 +316,7 @@ func refsOf(raw []byte) ([]Ref, error) {
 			Ref      string `json:"x-hangar-ref"`
 			Attached bool   `json:"x-hangar-attached"`
 			Member   bool   `json:"x-hangar-member"`
+			Own      bool   `json:"x-hangar-own"`
 			Default  string `json:"x-hangar-default"`
 			Items    *struct {
 				Ref string `json:"x-hangar-ref"`
@@ -318,14 +337,18 @@ func refsOf(raw []byte) ([]Ref, error) {
 			return nil, fmt.Errorf("field %s: x-hangar-member marks a reference, and it names none", field)
 		case p.Member && p.Attached:
 			return nil, fmt.Errorf("field %s: x-hangar-attached (it lives inside what it names) or x-hangar-member (it stands on it), not both", field)
+		case p.Own && p.Ref == "" && (p.Items == nil || p.Items.Ref == ""):
+			return nil, fmt.Errorf("field %s: x-hangar-own marks a reference, and it names none", field)
+		case p.Own && p.Attached:
+			return nil, fmt.Errorf("field %s: x-hangar-own on an attachment, which names its owner's own already", field)
 		case p.Default != "" && p.Ref == "":
 			return nil, fmt.Errorf("field %s: x-hangar-default marks a reference to one resource, and it names none", field)
 		case p.Default != "" && !defaultName.MatchString(p.Default):
 			return nil, fmt.Errorf("field %s: x-hangar-default %q: a name — a-z, 0-9 and -", field, p.Default)
 		case p.Ref != "":
-			out = append(out, Ref{Field: field, Type: p.Ref, Attached: p.Attached, Member: p.Member, Default: p.Default})
+			out = append(out, Ref{Field: field, Type: p.Ref, Attached: p.Attached, Member: p.Member, Own: p.Own, Default: p.Default})
 		case p.Items != nil && p.Items.Ref != "":
-			out = append(out, Ref{Field: field, Type: p.Items.Ref, Many: true, Attached: p.Attached, Member: p.Member})
+			out = append(out, Ref{Field: field, Type: p.Items.Ref, Many: true, Attached: p.Attached, Member: p.Member, Own: p.Own})
 		}
 	}
 	slices.SortFunc(out, func(a, b Ref) int { return strings.Compare(a.Field, b.Field) })
@@ -695,6 +718,48 @@ func (h *Host) Types() []*Type {
 
 // Type returns a type by name.
 func (h *Host) Type(name string) *Type { return h.types[name] }
+
+// Parts are the references, of types of t's own plugin, that make a resource
+// a member of one of t (an endpoint's network): what such a member is, is a
+// part of what it stands on. None for most types.
+func (h *Host) Parts(t *Type) []PartRef {
+	if t == nil {
+		return nil
+	}
+	var out []PartRef
+	for _, o := range h.Types() {
+		if o.Plugin != t.Plugin {
+			continue
+		}
+		for _, r := range o.Refs {
+			if r.Member && r.Type == t.Name {
+				out = append(out, PartRef{Type: o.Name, Ref: r})
+			}
+		}
+	}
+	return out
+}
+
+// PartOf is the reference by which a resource of t is a part of another of
+// its plugin's (an endpoint's network); nil: it is no part of anything.
+func (h *Host) PartOf(t *Type) *Ref {
+	if t == nil {
+		return nil
+	}
+	for i := range t.Refs {
+		r := &t.Refs[i]
+		if o := h.types[r.Type]; r.Member && !r.Many && o != nil && o.Plugin == t.Plugin {
+			return r
+		}
+	}
+	return nil
+}
+
+// PartRef is one type's reference that makes its resources parts of another.
+type PartRef struct {
+	Type string
+	Ref  Ref
+}
 
 // TypeOf returns the type an id belongs to, by its prefix.
 func (h *Host) TypeOf(id string) *Type { return h.prefix[ids.Prefix(id)] }
