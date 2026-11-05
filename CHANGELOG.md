@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.1 — 2026-11-06
+
+- **The release's own wheel at its version.** v0.9.0's tag published its
+  image, and its release job refused the wheel — `dagster-hangar` still
+  said 0.8.0 (« the wheel is not the tag's version »): no GitHub release, no
+  wheel. v0.9.1 is v0.9.0 with `dagster_hangar.__version__` at the tag's;
+  nothing else moved. Pin this one.
+
 ## v0.9.0 — 2026-11-06
 
 - **Un portail refait d'un seul coup — a gateway is made again by one
