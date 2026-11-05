@@ -532,6 +532,25 @@ listeners at the lane's node. Also read in 9.2.21's source, `PVE/LXC.pm`):
 Not read again on that bench: the jump, whose sshd and input and output
 chains the draft leaves as recipe 1 has them (its tests run at the build).
 
+**Proved with recipe 2** (`TestBenchAnEndpoint`, Proxmox VE 9.2, 2026-11-05,
+through the networks plugin's fenced token; a machine on the network, two
+doors at the lane's node, one published): a network carrying an endpoint
+made in 30.7 s, Proxmox keeping the three lines as
+`lxc.environment.runtime`, the gateway's first process holding them; the
+endpoint reached, the other door and the node's ssh refused with packets on
+« refused: the private side », the resolver and the web answering; a
+second endpoint written to the running gateway and taken at its restart —
+6.6 s for the driver's write and restart, **the network's way out cut
+6.6 s**, then both doors reached and the ssh still refused; a look at a
+gateway that stands wrote nothing; its owner's key still jumped to the
+machine, and not to the operator's side; a line the unit cannot read
+(`tcp:999.1.1.1:80`), written and the gateway restarted: the unit failed, <!-- no-environment: ok — the line the bench handed it, an address of nobody's -->
+forwarding stayed 0, the web refused — and the next look wrote the record
+again, the way out back; the field removed, everything the lane lets out
+reached, as recipe 1. `TestBenchTwoNetworksAndAJump` ran on the same
+archive with no endpoint written (the jump, the walls, the remake), and
+`TestBenchANetworkThroughTheAPI` with one endpoint through the brain.
+
 ## A machine's terminal
 
 A machine's terminal (`guest.console`; the machines plugin's stream

@@ -702,7 +702,11 @@ func (d *Driver) TendNetwork(ctx context.Context, s driver.NetworkSpec, was stri
 	return n, fixed, err
 }
 
-// remake deletes a gateway and makes it again at the same id.
+// remake deletes a gateway and makes it again at the same id. It keeps
+// nothing, so it is destroyed even if it runs again meanwhile: the machines
+// plugin's look starts a gateway it finds stopped under a running machine,
+// and did, on a bench, between the stop and the delete (« unable to destroy
+// CT … - container is running »).
 func (d *Driver) remake(ctx context.Context, r resource, s driver.NetworkSpec) error {
 	if on, err := d.running(ctx, r); err != nil {
 		return err
@@ -711,7 +715,7 @@ func (d *Driver) remake(ctx context.Context, r resource, s driver.NetworkSpec) e
 			return err
 		}
 	}
-	if err := d.c.run(ctx, http.MethodDelete, r.path(), url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}}); err != nil {
+	if err := d.c.run(ctx, http.MethodDelete, r.path(), url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}, "force": {"1"}}); err != nil {
 		return err
 	}
 	return d.createGateway(ctx, r.VMID, s)
