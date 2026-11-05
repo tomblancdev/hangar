@@ -51,7 +51,7 @@ func TestBenchAnEndpoint(t *testing.T) {
 	resolves := func(v string) bool { _, err := in(v, "timeout 5 getent hosts deb.debian.org"); return err == nil }
 
 	// the operator's side: two doors at the lane's node, one published
-	b.must(t, "for p in 3101 3102; do (cd /tmp && setsid python3 -m http.server $p --bind 198.51.100.1 </dev/null >/dev/null 2>&1 &); done; sleep 1; true")
+	b.must(t, "cd /tmp && for p in 3101 3102; do setsid -f python3 -m http.server $p --bind 198.51.100.1 </dev/null >/dev/null 2>&1; done; sleep 1; true")
 	t.Cleanup(func() { _, _ = b.ssh(t, "pkill -f 'http.server 310[12]' ; true") })
 	side := []string{"198.51.100.0/24"} // the bench's lane: its node, its resolver, its doors
 	one := &driver.Endpoints{To: []string{"tcp:198.51.100.1:3101"}, Private: side}
@@ -103,7 +103,7 @@ func TestBenchAnEndpoint(t *testing.T) {
 	// a change: a second endpoint, written to it while it runs — started
 	// again, a connection to the first tried every 0.2 s across it
 	loop := time.Now()
-	b.must(t, "setsid pct exec "+v+" -- bash -c 'end=$((SECONDS+45)); while [ $SECONDS -lt $end ]; do if timeout 0.5 bash -c \"exec 3<>/dev/tcp/198.51.100.1/3101\" 2>/dev/null; then echo \"$(date +%s.%N) ok\"; else echo \"$(date +%s.%N) cut\"; fi; sleep 0.2; done' </dev/null >/root/ep-cut.log 2>&1 & sleep 2; true")
+	b.must(t, "setsid -f pct exec "+v+" -- bash -c 'end=$((SECONDS+45)); while [ $SECONDS -lt $end ]; do if timeout 0.5 bash -c \"exec 3<>/dev/tcp/198.51.100.1/3101\" 2>/dev/null; then echo \"$(date +%s.%N) ok\"; else echo \"$(date +%s.%N) cut\"; fi; sleep 0.2; done' </dev/null >/root/ep-cut.log 2>&1; sleep 2; true")
 	two := &driver.Endpoints{To: []string{"tcp:198.51.100.1:3101", "tcp:198.51.100.1:3102"}, Private: side}
 	began = time.Now()
 	got, fixed, err := nd.TendNetwork(ctx, driver.NetworkSpec{ID: id, Label: "bench endpoints", JumpKeys: []string{ownerPub}, Endpoints: two}, n.EngineRef)
