@@ -702,20 +702,27 @@ func (d *Driver) TendNetwork(ctx context.Context, s driver.NetworkSpec, was stri
 	return n, fixed, err
 }
 
-// remake deletes a gateway and makes it again at the same id. It keeps
-// nothing, so it is destroyed even if it runs again meanwhile: the machines
-// plugin's look starts a gateway it finds stopped under a running machine,
-// and did, on a bench, between the stop and the delete (« unable to destroy
-// CT … - container is running »).
+// remake deletes a gateway and makes it again at the same id: ONE forced
+// delete — stopped and destroyed under the guest's own lock, so that nothing
+// starts it between the two. (The machines plugin's look starts a gateway it
+// finds stopped under a running machine, and did, on a bench: a stop by the
+// networks token at 22:31:39, a start by the machines token two seconds
+// later, then « unable to destroy CT … - container is running ».) A start in
+// flight holds that lock; a delete that still meets one is asked again.
 func (d *Driver) remake(ctx context.Context, r resource, s driver.NetworkSpec) error {
-	if on, err := d.running(ctx, r); err != nil {
-		return err
-	} else if on {
-		if err := d.c.run(ctx, http.MethodPost, r.path()+"/status/stop", nil); err != nil {
-			return err
+	var err error
+	for try := 0; try < 3; try++ {
+		err = d.c.run(ctx, http.MethodDelete, r.path(), url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}, "force": {"1"}})
+		if err == nil || !strings.Contains(err.Error(), "lock") && !strings.Contains(err.Error(), "running") {
+			break
+		}
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
-	if err := d.c.run(ctx, http.MethodDelete, r.path(), url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}, "force": {"1"}}); err != nil {
+	if err != nil {
 		return err
 	}
 	return d.createGateway(ctx, r.VMID, s)

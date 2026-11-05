@@ -237,6 +237,11 @@ func newCluster(a *api) *node {
 		switch {
 		case what == "" && r.Method == http.MethodDelete:
 			n.mu.Lock()
+			if n.on[vmid] && r.URL.Query().Get("force") != "1" { // as Proxmox refuses it
+				n.mu.Unlock()
+				http.Error(w, `{"message":"unable to destroy CT `+id+` - container is running"}`, http.StatusInternalServerError)
+				return true
+			}
 			delete(n.guests, vmid)
 			delete(n.on, vmid)
 			n.acts = append(n.acts, "delete "+id)
@@ -518,7 +523,7 @@ func TestAGatewayIsMadeAgainNeverPatched(t *testing.T) {
 	if err != nil || !slices.Equal(fixed, []string{"gateway (made again: its keys changed)", "wall (options, address, rules)", "name"}) {
 		t.Fatalf("its keys changed: %v %v", fixed, err)
 	}
-	if acts := n.did(); !slices.Equal(acts, []string{"stop 11200", "delete 11200", "create 11200", "start 11200"}) {
+	if acts := n.did(); !slices.Equal(acts, []string{"delete 11200", "create 11200", "start 11200"}) {
 		t.Fatalf("made again: %v", acts)
 	}
 	if got.EngineRef != made.EngineRef || got.Range != made.Range || got.Keys != 2 || !got.Running || got.Wall != driver.WallExact ||
