@@ -466,6 +466,53 @@ the gateway, and opened through it neither the lane's node, nor the other
 gateway, nor a machine of the other network, nor the gateway itself, nor the
 web.
 
+### Endpoints — designed
+
+What a network may reach of the operator's private side (ARCHITECTURE §7,
+« Endpoints ») is carried **in the gateway's own config**: a container's
+**`env`** (Proxmox VE 9.1 and later), which Proxmox keeps as
+`lxc.environment.runtime` lines and hands to the container's first process
+at every start. Three lines, written by the networks plugin at the
+gateway's birth and again when its network's endpoints change:
+
+```text
+HANGAR_ENDPOINTS=tcp:192.0.2.35:3101 udp:192.0.2.35:514    # protocol:address:port, its network's endpoints
+HANGAR_RESOLVERS=192.0.2.1                                  # the zone's nameserver: port 53 let through
+HANGAR_PRIVATE=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10   # the operator's side
+```
+
+A zone that publishes no service writes none, and its gateways are as they
+were. The gateway's archive (a recipe that reads them — the next one) gains
+three sets in its forward chain — its endpoints, accepted; the resolvers on
+port 53, accepted; the private side, refused and counted — ahead of its
+network's way out, and a unit that fills them from `/proc/1/environ` after
+`nftables` starts; **forwarding stays off until it has**. A line written to
+a running gateway waits in its pending config until its restart (the
+networks plugin then restarts it); a stopped one takes it at its next start.
+
+**Read on a bench** (Proxmox VE 9.2.25, 2026-11-05: a Proxmox VE made of a
+machine of a zone; a draft of the recipe — the rules and the unit above,
+written over recipe 1; the gateway made and driven through the networks
+plugin's own fenced token as `setup.sh` lays it; a machine on its network,
+listeners at the lane's node. Also read in 9.2.21's source, `PVE/LXC.pm`):
+
+| read | what it gave |
+|---|---|
+| `env` on a container's create, through the networks plugin's token | accepted: `env` falls to `VM.Config.Options` in `check_ct_modify_config_perm`, which the role holds — no privilege more |
+| the same field written by the machines plugin's token of a zone with networks (a gateway's power, nothing of its config) | refused: « Permission check failed (/vms/201, … VM.Config.Options) » |
+| a line holding a newline | refused by the field's own pattern (« value does not match the regex pattern ») |
+| what the config keeps | one `lxc.environment.runtime:` line per variable; the API reads it back NUL-separated |
+| inside the gateway, its first process's environment | the three lines, beside LXC's own `container=lxc` |
+| from the machine, with one endpoint (the node's `:3101`) | the endpoint reached; the node's `:3102` and its ssh refused (6 packets on the counter « refused: the private side »); the zone's resolver answered; the web reached |
+| a second endpoint written to the running gateway | pending until its restart, and nothing changed meanwhile (`:3102` still refused) |
+| the restart, through the same token, a connection to the endpoint every 0.2 s | **the network's way out cut 7.4 s**; then both endpoints reached, the ssh still refused |
+| the field removed (a zone that publishes nothing) | everything the lane lets out reached, as with recipe 1 |
+| a line the unit cannot read (`tcp:999.1.1.1:80`) | the unit failed, forwarding stayed off: the web refused — closed, never open |
+| a gateway's create, then its start | 13.6 s, 5.5 s; at rest it holds 19 MB |
+
+Not read again on that bench: the jump, whose sshd and input and output
+chains the draft leaves as recipe 1 has them (its tests run at the build).
+
 ## A machine's terminal
 
 A machine's terminal (`guest.console`; the machines plugin's stream
