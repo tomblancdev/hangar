@@ -350,7 +350,7 @@ reconcile: {every: 5s}
 	}
 	// the operator's side: her network was born refusing it; an endpoint of
 	// hers lets one door through, and only that one
-	if out, err := benchSSH("for p in 3101 3102; do (cd /tmp && setsid python3 -m http.server $p --bind 198.51.100.1 >/dev/null 2>&1 &); done; sleep 1; true"); err != nil {
+	if out, err := benchSSH("for p in 3101 3102; do (cd /tmp && setsid python3 -m http.server $p --bind 198.51.100.1 </dev/null >/dev/null 2>&1 &); done; sleep 1; true"); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
 	t.Cleanup(func() { _, _ = benchSSH("pkill -f 'http.server 310[12]' ; true") })
