@@ -114,6 +114,69 @@ func TestAPITokens(t *testing.T) {
 	}
 }
 
+// An action scope is type.action, bound or not to one id; it adds nothing,
+// and beside write or room it is refused.
+func TestActionScopes(t *testing.T) {
+	s := store(t)
+	ctx := context.Background()
+	mint := func(scopes ...string) ([]string, error) {
+		_, tok, err := Mint(ctx, s, "u-1", "acts", nil, scopes, time.Hour, 24*time.Hour)
+		if err != nil {
+			return nil, err
+		}
+		return tok.Scopes, nil
+	}
+	for _, c := range []struct{ asked, held string }{
+		{"machine.start", "machine.start"},
+		{"read,machine.start,machine.stop", "read,machine.start,machine.stop"},
+		{"machine.start:m-0123456789abcdef0,machine.start:m-0123456789abcdef0", "machine.start:m-0123456789abcdef0"},
+		{"read,write", "read,write"},
+		{"write", "write,read"},
+	} {
+		got, err := mint(strings.Split(c.asked, ",")...)
+		if err != nil || strings.Join(got, ",") != c.held {
+			t.Errorf("%s: held %v, %v", c.asked, got, err)
+		}
+	}
+	for asked, why := range map[string]string{
+		"start":                   `no scope "start"`,
+		"machine.":                `no scope "machine."`,
+		"Machine.start":           `no scope "Machine.start"`,
+		"machine.start:":          `no scope "machine.start:"`,
+		"machine.start:atelier":   `bound to "atelier", which is no resource's id`,
+		"write,machine.start":     "write already asks every action",
+		"read,write,machine.stop": "write already asks every action",
+		"room,machine.start":      "holds that scope alone",
+	} {
+		if _, err := mint(strings.Split(asked, ",")...); err == nil || !strings.Contains(err.Error(), why) {
+			t.Errorf("%s: %v", asked, err)
+		}
+	}
+
+	m := "m-0123456789abcdef0"
+	other := "m-00000000000000001"
+	for _, c := range []struct {
+		scopes          []string
+		typ, action, id string
+		canAct, reads   bool
+	}{
+		{nil, "machine", "delete", m, true, true},
+		{[]string{"read", "write"}, "machine", "resize", m, true, true},
+		{[]string{"read"}, "machine", "start", m, false, true},
+		{[]string{"read", "machine.start"}, "machine", "start", m, true, true},
+		{[]string{"read", "machine.start"}, "machine", "stop", m, false, true},
+		{[]string{"machine.start"}, "volume", "start", "vol-0123456789abcdef0", false, false},
+		{[]string{"machine.start:" + m}, "machine", "start", m, true, false},
+		{[]string{"machine.start:" + m}, "machine", "start", other, false, false},
+		{[]string{"room"}, "machine", "start", m, false, false},
+	} {
+		id := &Identity{Scopes: c.scopes}
+		if id.CanAct(c.typ, c.action, c.id) != c.canAct || id.Can(ScopeRead) != c.reads {
+			t.Errorf("%v asking %s.%s of %s: can %v, reads %v", c.scopes, c.typ, c.action, c.id, id.CanAct(c.typ, c.action, c.id), id.Can(ScopeRead))
+		}
+	}
+}
+
 func iss(t *testing.T) string {
 	return testoidc.New(t).Token(t, testoidc.Claims{Subject: "x", Audience: "hangar"})
 }

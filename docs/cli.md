@@ -46,6 +46,20 @@ line makes is `0700`; one that exists is left as it is.
 `HANGAR_TOKEN=hgr_… hangar …`, or `hangar login URL --with-token < file`. A
 brain that has no provider says so at `login`.
 
+**A token for one job** holds only what the job asks: `read` · `read,write`
+· or actions, with `read` or not — `read,machine.start,machine.stop` starts
+and stops any of its owner's machines and reads, and nothing else;
+`read,machine.start:atelier` starts that one machine alone (the name is held
+as the id it calls when the token is made: a machine made again under it is
+not the token's). Made in the console (« API tokens »), by `POST
+/v1/tokens`, or on the brain's host: `hangar token create --subject S
+--groups G --scopes read,machine.start:atelier --name night-wake --ttl
+8760h`. The command line reads the catalogue before it asks: a token for
+it asks `read` beside its actions (`hangar whoami` then says what it may);
+the bare API takes one without. Asked anything else, it is refused before
+the resource is looked up (« this token may only read, machine.start: not a
+delete »).
+
 `HANGAR_URL` names the brain; without it, the brain signed in to last.
 
 ### What the operator sets up at the provider

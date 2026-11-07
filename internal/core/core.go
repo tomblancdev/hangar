@@ -207,9 +207,56 @@ func (c *Core) Caller(ctx context.Context, id *identity.Identity) (*Caller, *Pro
 	return &Caller{Identity: id, Tier: t}, nil
 }
 
-func (c *Core) needWrite(ctx context.Context, who *Caller) *Problem {
+func (c *Core) needWrite(ctx context.Context, who *Caller, what string) *Problem {
 	if !who.Can(identity.ScopeWrite) {
-		return c.refused(ctx, problem(403, KindScope, "this token is read-only"))
+		return c.refused(ctx, scopeProblem(who, what))
+	}
+	return nil
+}
+
+// scopeProblem is what a token is told when it asks beyond its scopes: a
+// read-only one that it is so; one of actions, what it may ask.
+func scopeProblem(who *Caller, what string) *Problem {
+	if !who.Acts() {
+		return problem(403, KindScope, "this token is read-only")
+	}
+	return problem(403, KindScope, "this token may only %s: not %s", strings.Join(who.Scopes, ", "), what)
+}
+
+// mayAsk is what is known of a token before the resource is looked up:
+// write, or an action scope of that action whose type the id's prefix names,
+// unbound or bound to that id — so a token of actions is told nothing of a
+// resource it may not act on, of its own type or of another sharing the
+// action's name (a volume's resize, a machine's).
+func (c *Core) mayAsk(who *Caller, action, id string) bool {
+	if who.Can(identity.ScopeWrite) {
+		return true
+	}
+	for _, s := range who.Scopes {
+		typ, a, bound, ok := identity.ParseAction(s)
+		if !ok || a != action || (bound != "" && bound != id) {
+			continue
+		}
+		if t := c.host.Type(typ); t != nil && t.Prefix == ids.Prefix(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// Declared refuses a type or an action no enabled plugin declares — an
+// action scope's, before a token holds it.
+func (c *Core) Declared(typ, action string) error {
+	t := c.host.Type(typ)
+	if t == nil {
+		return fmt.Errorf("no type %q here", typ)
+	}
+	if t.Action(action) == nil {
+		names := []string{}
+		for _, x := range t.Actions {
+			names = append(names, x.Name)
+		}
+		return fmt.Errorf("type %s has no action %q (it has: %s)", t.Name, action, strings.Join(names, ", "))
 	}
 	return nil
 }
@@ -275,7 +322,7 @@ func (c *Core) Create(ctx context.Context, who *Caller, typeName string, in Crea
 // create is Create, with tags of the core's own added to the resource's
 // (a schedule's name on what it made).
 func (c *Core) create(ctx context.Context, who *Caller, typeName string, in CreateInput, coreTags map[string]string) (op *registry.Operation, r *registry.Resource, replayed bool, err error) {
-	if p := c.needWrite(ctx, who); p != nil {
+	if p := c.needWrite(ctx, who, "a create"); p != nil {
 		return nil, nil, false, p
 	}
 	rec := audit.From(ctx)
@@ -618,7 +665,7 @@ func (c *Core) busy(ctx context.Context, r *registry.Resource) *Problem {
 
 // Delete asks for a resource to go.
 func (c *Core) Delete(ctx context.Context, who *Caller, id, clientToken string) (*registry.Operation, *registry.Resource, bool, error) {
-	if p := c.needWrite(ctx, who); p != nil {
+	if p := c.needWrite(ctx, who, "a delete"); p != nil {
 		return nil, nil, false, p
 	}
 	r, t, p := c.resourceFor(ctx, who, id, true)
@@ -684,12 +731,24 @@ type ActInput struct {
 
 // Act asks for one of a type's actions.
 func (c *Core) Act(ctx context.Context, who *Caller, id, action string, in ActInput) (*registry.Operation, *registry.Resource, bool, error) {
-	if p := c.needWrite(ctx, who); p != nil {
-		return nil, nil, false, p
+	audit.From(ctx).Set(func(e *audit.Event) { e.Resource, e.Fields = id, map[string]string{"action": action} })
+	// a token of actions is refused what none of them names before the
+	// resource is looked up: it learns nothing of the others
+	if !c.mayAsk(who, action, id) {
+		return nil, nil, false, c.refused(ctx, scopeProblem(who, action+" of "+id))
 	}
 	r, t, p := c.resourceFor(ctx, who, id, true)
 	if p != nil {
+		// a token that cannot read learns of a resource only what acting on
+		// it tells: one shared with its owner is, to it, not there (the
+		// audit keeps why)
+		if p.Kind == KindShared && !who.Can(identity.ScopeRead) {
+			p = problem(404, KindNotFound, "no resource %s", id)
+		}
 		return nil, nil, false, p
+	}
+	if !who.CanAct(r.Type, action, r.ID) {
+		return nil, nil, false, c.refused(ctx, scopeProblem(who, r.Type+"."+action+" of "+r.ID))
 	}
 	audit.From(ctx).Set(func(e *audit.Event) { e.Fields = map[string]string{"action": action} })
 	a := t.Action(action)

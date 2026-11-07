@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+- **Un jeton qui démarre — a token of actions: it may ask one action of a
+  type, of any resource or of one alone, and nothing else.** A token's
+  scopes were `read`, `read,write` and `room`: a script that starts one
+  machine a night held everything its owner may ask — make, resize, delete.
+  An action scope names `type.action` — `machine.start`, `machine.stop` —
+  and may be bound to one resource, `machine.start:atelier` or
+  `machine.start:m-…`; a name is held as the id it calls when the token is
+  made, so a machine made again under that name is not the token's. It
+  allows nothing else write does (no create, no delete, no other action, no
+  name, no stream, no token) and adds nothing — not even `read`: a script
+  that waits on its operation asks `read` beside it. Beside `write` it is
+  refused (write asks every action already), beside `room` too. A token of
+  actions asking what none of its scopes names is refused before the
+  resource is looked up — « this token may only read, machine.start: not
+  stop of m-… » — whatever the id's type, so it learns nothing of what
+  else is there; the audit says it, `reason: scope`. One that cannot read
+  is told its operation and not the resource it acted on, and a resource
+  shared with its owner is, to it, not there; of one it may act on, its
+  refusals still say its state (busy, lost, the room held) and its
+  operation its name. A bound action's params may
+  still name the owner's other resources (an attach names its machine):
+  bind the actions whose params you mean. Made by the API (`POST /v1/tokens`: the type and
+  the action are checked against the catalogue, a name against the
+  person's own) and by `hangar token create --scopes` beside the registry
+  (a name bound alike; it knows no plugin, so an action it cannot check is
+  held as asked, and asks nothing). The console's token form offers « read,
+  start and stop machines »; `hangar whoami` says what a token may when it
+  is not read and write (the command line reads the catalogue first: a
+  token for it asks `read` beside its actions).
+- **A HEAD is a read**: Go's router runs the GET's handler for it, and a
+  token that cannot read (a room token, now one of actions) passed the
+  read gate by it — the body dropped, the status still said whether a
+  resource was there. Refused as the GET is.
+- **A token that does not write revokes itself alone** (`DELETE
+  /v1/tokens/{id}`): a read-only or a room token revoked any of its
+  owner's tokens — an operator's, anyone's. Another is revoked with write,
+  or signed in.
+
 ## v0.9.1 — 2026-11-06
 
 - **The release's own wheel at its version.** v0.9.0's tag published its

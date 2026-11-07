@@ -585,6 +585,7 @@ paths:
     delete:
       tags: [tokens]
       summary: Revoke a token.
+      description: "A token that does not write (read, room, actions) revokes itself alone."
       parameters:
         - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
       responses:
@@ -643,7 +644,7 @@ components:
         tier: { type: string }
         operator: { type: boolean }
         via: { type: string, description: "oidc, or token:<id>" }
-        scopes: { type: array, items: { type: string, enum: [read, write, room] } }
+        scopes: { type: array, items: { $ref: "#/components/schemas/Scope" } }
     Type:
       type: object
       required: [name, id_prefix, plugin, schema, zones, actions]
@@ -941,7 +942,8 @@ components:
           description: What each `@<schedule>` of the spec stood for (`@debian-13=img-…`).
     Accepted:
       type: object
-      required: [operation, resource]
+      required: [operation]
+      description: "The resource is left out for a token that cannot read (one of actions alone): it is told its operation."
       properties:
         operation: { $ref: "#/components/schemas/Operation" }
         resource: { $ref: "#/components/schemas/Resource" }
@@ -973,7 +975,7 @@ components:
         owner: { type: string }
         name: { type: string }
         groups: { type: array, items: { type: string } }
-        scopes: { type: array, items: { type: string, enum: [read, write, room] } }
+        scopes: { type: array, items: { $ref: "#/components/schemas/Scope" } }
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         last_used: { type: string, format: date-time }
@@ -987,8 +989,20 @@ components:
         expires_in: { type: integer, minimum: 60, description: Seconds. }
         scopes:
           type: array
-          items: { type: string, enum: [read, write, room] }
-          description: "Default — read and write. `room` stands alone: a guest's hook's token (claim and release, nothing else)."
+          items: { $ref: "#/components/schemas/Scope" }
+          description: |
+            Default — read and write. `room` stands alone: a guest's hook's
+            token (claim and release, nothing else). An action scope
+            (`machine.start`) asks that action of any resource of the type
+            its owner may change; bound (`machine.start:atelier`, or
+            `:m-…`), of that one alone — a name is held as the id of the
+            resource it calls when the token is made. It allows nothing else
+            write does and adds nothing, not even read; beside write it is
+            refused (write asks every action already).
+    Scope:
+      type: string
+      description: "read, write, room — or an action scope: type.action, then :id when bound to one resource."
+      pattern: "^(read|write|room|[a-z][a-z0-9_]*[.][a-z][a-z0-9_]*(:[a-z0-9][a-z0-9-]*)?)$"
     TokenCreated:
       type: object
       required: [token, secret]

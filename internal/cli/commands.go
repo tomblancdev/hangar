@@ -129,7 +129,12 @@ func whoami(env *Env, args []string) error {
 	if me.Operator {
 		role = " (operator)"
 	}
-	fmt.Fprintf(env.Stdout, "%s on %s — tier %s%s, via %s, groups: %s\n", me.who(), c.base, me.Tier, role, me.Via, strings.Join(me.Groups, ", "))
+	// a token that is not read and write says what it may: read alone, or its actions
+	may := ""
+	if len(me.Scopes) > 0 && !(len(me.Scopes) == 2 && slices.Contains(me.Scopes, "read") && slices.Contains(me.Scopes, "write")) {
+		may = " (may " + strings.Join(me.Scopes, ", ") + ")"
+	}
+	fmt.Fprintf(env.Stdout, "%s on %s — tier %s%s, via %s%s, groups: %s\n", me.who(), c.base, me.Tier, role, me.Via, may, strings.Join(me.Groups, ", "))
 	return nil
 }
 

@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -32,11 +33,32 @@ import (
 // Scopes an API token may carry. An OIDC session has read and write. Room is
 // a token's for a guest's hook: it claims and releases the room its
 // reservation keeps, and does nothing else — not even read.
+//
+// Beside them, an action scope names one action of one type: machine.start
+// lets the token ask a start of any machine its owner may change, and
+// machine.start:m-0123456789abcdef0 of that one machine alone. It allows
+// nothing else write does — no create, no delete, no other action, no name,
+// no stream — and adds nothing either, not even read: a script that waits
+// on its operation asks read beside it.
 const (
 	ScopeRead  = "read"
 	ScopeWrite = "write"
 	ScopeRoom  = "room"
 )
+
+// actionScope is type.action, then :id when bound to one resource (made from
+// a name by Bind before a token holds it).
+var actionScope = regexp.MustCompile(`^([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)(?::([a-z0-9][a-z0-9-]*))?$`)
+
+// ParseAction reads an action scope: its type, its action and the resource
+// it is bound to ("" when it is not). ok is false for any other scope.
+func ParseAction(scope string) (typ, action, bound string, ok bool) {
+	m := actionScope.FindStringSubmatch(scope)
+	if m == nil {
+		return "", "", "", false
+	}
+	return m[1], m[2], m[3], true
+}
 
 // TokenPrefix starts every API token's secret, so a leaked one is
 // recognisable by a secret scanner and never mistaken for a JWT.
@@ -57,6 +79,30 @@ type Identity struct {
 // Can reports whether the caller holds a scope.
 func (i *Identity) Can(scope string) bool {
 	return i.Scopes == nil || slices.Contains(i.Scopes, scope)
+}
+
+// CanAct reports whether the caller may ask this action of this resource of
+// this type: write, or the action scope that names them.
+func (i *Identity) CanAct(typ, action, id string) bool {
+	if i.Can(ScopeWrite) {
+		return true
+	}
+	for _, s := range i.Scopes {
+		if t, a, bound, ok := ParseAction(s); ok && t == typ && a == action && (bound == "" || bound == id) {
+			return true
+		}
+	}
+	return false
+}
+
+// Acts reports whether the caller holds an action scope.
+func (i *Identity) Acts() bool {
+	for _, s := range i.Scopes {
+		if _, _, _, ok := ParseAction(s); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // ViaLabel is how the audit names the credential used.
@@ -158,14 +204,33 @@ func Mint(ctx context.Context, store *registry.Store, owner, name string, groups
 	if len(scopes) == 0 {
 		scopes = []string{ScopeRead, ScopeWrite}
 	}
+	acts := false
 	for _, s := range scopes {
-		if s != ScopeRead && s != ScopeWrite && s != ScopeRoom {
-			return "", nil, &RequestError{Message: fmt.Sprintf("no scope %q: read, write, or room (a hook's)", s)}
+		if s == ScopeRead || s == ScopeWrite || s == ScopeRoom {
+			continue
 		}
+		_, _, bound, ok := ParseAction(s)
+		if !ok {
+			return "", nil, &RequestError{Message: fmt.Sprintf("no scope %q: read, write, room (a hook's), or an action — machine.start, machine.start:<id>", s)}
+		}
+		if bound != "" && !ids.Valid(bound) {
+			return "", nil, &RequestError{Message: fmt.Sprintf("%s is bound to %q, which is no resource's id", s, bound)}
+		}
+		acts = true
 	}
 	if slices.Contains(scopes, ScopeRoom) && len(scopes) > 1 {
 		return "", nil, &RequestError{Message: "a room token is a hook's, and holds that scope alone"}
 	}
+	if acts && slices.Contains(scopes, ScopeWrite) {
+		return "", nil, &RequestError{Message: "write already asks every action: name the actions without it, or write alone"}
+	}
+	var once []string
+	for _, s := range scopes {
+		if !slices.Contains(once, s) {
+			once = append(once, s)
+		}
+	}
+	scopes = once
 	if slices.Contains(scopes, ScopeWrite) && !slices.Contains(scopes, ScopeRead) {
 		scopes = append(scopes, ScopeRead)
 	}
@@ -182,6 +247,53 @@ func Mint(ctx context.Context, store *registry.Store, owner, name string, groups
 		return "", nil, err
 	}
 	return secret, tok, nil
+}
+
+// Bind makes the scopes a token is asked with into the ones it holds. An
+// action scope bound to a name is bound to the id of the live resource of its
+// type the owner calls so — machine.start:atelier holds machine.start:m-… —,
+// so a resource made again under the name is not the token's; one bound to an
+// id must name a live resource of that type the owner holds (anyone's, for
+// anyOwner: an operator's token acts on everyone's). declared, when given,
+// refuses a type or an action no enabled plugin declares: the brain knows
+// them; a command run beside its registry does not, and a scope naming none
+// asks nothing.
+func Bind(ctx context.Context, store *registry.Store, owner string, anyOwner bool, scopes []string, declared func(typ, action string) error) ([]string, error) {
+	out := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		typ, action, bound, ok := ParseAction(s)
+		if !ok {
+			out = append(out, s)
+			continue
+		}
+		if declared != nil {
+			if err := declared(typ, action); err != nil {
+				return nil, &RequestError{Message: fmt.Sprintf("%s: %v", s, err)}
+			}
+		}
+		switch {
+		case bound == "":
+		case ids.Valid(bound):
+			r, err := store.Resource(ctx, bound)
+			if err != nil && !errors.Is(err, registry.ErrNotFound) {
+				return nil, err
+			}
+			if err != nil || r.Type != typ || !slices.Contains(registry.Live, r.State) || (!anyOwner && r.Owner != owner) {
+				return nil, &RequestError{Message: fmt.Sprintf("%s: %s is no live %s of %s's", s, bound, typ, owner)}
+			}
+		default:
+			id, err := store.Named(ctx, owner, typ, bound)
+			if err != nil {
+				return nil, err
+			}
+			if id == "" {
+				return nil, &RequestError{Message: fmt.Sprintf("%s: %s calls no live %s %s", s, owner, typ, bound)}
+			}
+			s = typ + "." + action + ":" + id
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 // lazyVerifier discovers the provider on first use and retries a failed

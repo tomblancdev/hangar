@@ -234,7 +234,8 @@ func (s *Server) caller(rw http.ResponseWriter, r *http.Request, rec *audit.Reco
 	// someone in a tier: what they are called is remembered, so that what
 	// they own is shown by it
 	s.core.Seen(r.Context(), id)
-	if r.Method == http.MethodGet && !who.Can(identity.ScopeRead) {
+	// a HEAD runs the GET's handler: a read too
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && !who.Can(identity.ScopeRead) {
 		writeProblem(rw, &core.Problem{Status: 403, Kind: core.KindScope, Detail: "this token cannot read"})
 		return nil
 	}
@@ -529,12 +530,17 @@ func (s *Server) accepted(w http.ResponseWriter, r *http.Request, who *core.Call
 	if err != nil {
 		return err
 	}
-	s.core.Dress(r.Context(), who, res)
 	s.core.DressOps(r.Context(), op)
 	code := 202
 	if replayed {
 		code = 200
 	}
+	// a token that cannot read (one of actions alone) is told its
+	// operation, never the resource it acted on
+	if !who.Can(identity.ScopeRead) {
+		return writeJSON(w, code, map[string]any{"operation": op})
+	}
+	s.core.Dress(r.Context(), who, res)
 	return writeJSON(w, code, map[string]any{"operation": op, "resource": res})
 }
 
@@ -664,9 +670,16 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, who *core.C
 	if in.ExpiresIn < 60 {
 		return &core.Problem{Status: 400, Kind: core.KindBadRequest, Detail: "expires_in is at least 60 seconds"}
 	}
-	secret, tok, err := identity.Mint(r.Context(), s.store, who.Subject, in.Name, who.Groups, in.Scopes,
-		time.Duration(in.ExpiresIn)*time.Second, s.cfg.Identity.Tokens.MaxTTL)
+	scopes, err := identity.Bind(r.Context(), s.store, who.Subject, who.Tier.Operator, in.Scopes, s.core.Declared)
 	var re *identity.RequestError
+	if errors.As(err, &re) {
+		return &core.Problem{Status: 400, Kind: core.KindBadRequest, Detail: re.Message}
+	}
+	if err != nil {
+		return err
+	}
+	secret, tok, err := identity.Mint(r.Context(), s.store, who.Subject, in.Name, who.Groups, scopes,
+		time.Duration(in.ExpiresIn)*time.Second, s.cfg.Identity.Tokens.MaxTTL)
 	if errors.As(err, &re) {
 		return &core.Problem{Status: 400, Kind: core.KindBadRequest, Detail: re.Message}
 	}
@@ -684,6 +697,10 @@ func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request, who *core.C
 	}
 	id := r.PathValue("id")
 	audit.From(r.Context()).Set(func(e *audit.Event) { e.Resource = id })
+	// a token that does not write revokes itself alone
+	if !who.Can(identity.ScopeWrite) && id != who.TokenID {
+		return &core.Problem{Status: 403, Kind: core.KindScope, Detail: "this token revokes itself alone: another is revoked with write, or signed in"}
+	}
 	if err := s.store.RevokeToken(r.Context(), owner, id); err != nil {
 		if errors.Is(err, registry.ErrNotFound) {
 			return &core.Problem{Status: 404, Kind: core.KindNotFound, Detail: "no live token " + id}

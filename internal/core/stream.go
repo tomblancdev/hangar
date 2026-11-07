@@ -76,7 +76,11 @@ const streamTaken = "opened elsewhere: it is open in one place at a time"
 func (c *Core) OpenStream(ctx context.Context, who *Caller, id, name string, cols, rows int) (*Stream, error) {
 	audit.From(ctx).Set(func(e *audit.Event) { e.Fields = map[string]string{"stream": name} })
 	if !who.Can(identity.ScopeWrite) {
-		return nil, c.refused(ctx, problem(403, KindScope, "this token is read-only: a stream is not opened with it"))
+		p := problem(403, KindScope, "this token is read-only: a stream is not opened with it")
+		if who.Acts() {
+			p = scopeProblem(who, "a stream")
+		}
+		return nil, c.refused(ctx, p)
 	}
 	r, t, p := c.resourceFor(ctx, who, id, false)
 	if p != nil {

@@ -81,7 +81,7 @@ type RenameInput struct {
 // engine (its host name), stay. Its plugin writes the new words where the
 // engine shows them at the next look.
 func (c *Core) Rename(ctx context.Context, who *Caller, id string, in RenameInput) (*registry.Resource, error) {
-	if p := c.needWrite(ctx, who); p != nil {
+	if p := c.needWrite(ctx, who, "a name"); p != nil {
 		return nil, p
 	}
 	r, _, p := c.resourceFor(ctx, who, id, true)

@@ -305,7 +305,7 @@ func token(args []string, out io.Writer) error {
 	name := fs.String("name", "", "what the token is for")
 	groups := fs.String("groups", "", "comma-separated: the groups the token acts with")
 	ttl := fs.Duration("ttl", 24*time.Hour, "how long it lives")
-	scopes := fs.String("scopes", "read,write", "read; read,write; or room (a guest's hook: it claims and releases, nothing else)")
+	scopes := fs.String("scopes", "read,write", "read; read,write; room (a guest's hook: it claims and releases, nothing else); or actions, with read or not: machine.start,machine.stop asks those of any of the subject's machines, machine.start:NAME (or :ID) of that one alone — a name is held as the id it calls now")
 	rest := args[1:]
 	var id string
 	if args[0] == "revoke" {
@@ -329,7 +329,11 @@ func token(args []string, out io.Writer) error {
 		if *subject == "" || *name == "" {
 			return errors.New("token create needs --subject and --name")
 		}
-		secret, tok, err := identity.Mint(ctx, store, *subject, *name, split(*groups), split(*scopes), *ttl, cfg.Identity.Tokens.MaxTTL)
+		bound, err := identity.Bind(ctx, store, *subject, false, split(*scopes), nil)
+		if err != nil {
+			return err
+		}
+		secret, tok, err := identity.Mint(ctx, store, *subject, *name, split(*groups), bound, *ttl, cfg.Identity.Tokens.MaxTTL)
 		if err != nil {
 			return err
 		}

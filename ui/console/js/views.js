@@ -738,7 +738,7 @@ export function tokens(ctx) {
   const made = h('div', {'aria-live': 'polite'});
   const name = h('input', {id: 'tok-name', class: 'input', type: 'text', maxlength: 64, autocomplete: 'off'});
   const life = h('select', {id: 'tok-life', class: 'input'}, [['1 day', 86400], ['7 days', 604800], ['30 days', 2592000]].map(([w, s]) => h('option', {value: s}, w)));
-  const scope = h('select', {id: 'tok-scope', class: 'input'}, h('option', {value: 'read,write'}, 'read and write'), h('option', {value: 'read'}, 'read only'));
+  const scope = h('select', {id: 'tok-scope', class: 'input'}, h('option', {value: 'read,write'}, 'read and write'), h('option', {value: 'read'}, 'read only'), h('option', {value: 'read,machine.start,machine.stop'}, 'read, start and stop machines'));
 
   async function look() {
     const res = await api('GET', '/v1/tokens');
