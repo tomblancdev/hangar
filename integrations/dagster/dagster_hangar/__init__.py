@@ -10,7 +10,7 @@ The deployment's settings come from HANGAR_* variables (settings.py); with
 no HANGAR_URL every run runs in-process. The bake: python -m dagster_hangar bake.
 """
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 __all__ = ["HangarRunLauncher", "__version__"]
 
 

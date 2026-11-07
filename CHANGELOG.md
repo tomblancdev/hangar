@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.0 — 2026-11-07
 
 - **Un jeton qui démarre — a token of actions: it may ask one action of a
   type, of any resource or of one alone, and nothing else.** A token's
